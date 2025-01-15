@@ -68,7 +68,7 @@ func (b *KubeAPIServerBuilder) Build(c *fi.NodeupModelBuilderContext) error {
 	}
 
 	if b.CloudProvider() == kops.CloudProviderHetzner {
-		localIP, err := b.GetMetadataLocalIP()
+		localIP, err := b.GetMetadataLocalIP(c.Context())
 		if err != nil {
 			return err
 		}
@@ -394,15 +394,15 @@ func (b *KubeAPIServerBuilder) writeServerCertificate(c *fi.NodeupModelBuilderCo
 			"kubernetes",
 			"kubernetes.default",
 			"kubernetes.default.svc",
-			"kubernetes.default.svc." + b.Cluster.Spec.ClusterDNSDomain,
+			"kubernetes.default.svc." + b.NodeupConfig.APIServerConfig.ClusterDNSDomain,
 		}
 
 		// Names specified in the cluster spec
-		if b.Cluster.Spec.API.PublicName != "" {
-			alternateNames = append(alternateNames, b.Cluster.Spec.API.PublicName)
+		if b.NodeupConfig.APIServerConfig.API.PublicName != "" {
+			alternateNames = append(alternateNames, b.NodeupConfig.APIServerConfig.API.PublicName)
 		}
 		alternateNames = append(alternateNames, b.APIInternalName())
-		alternateNames = append(alternateNames, b.Cluster.Spec.API.AdditionalSANs...)
+		alternateNames = append(alternateNames, b.NodeupConfig.APIServerConfig.API.AdditionalSANs...)
 
 		// Load balancer IPs passed in through NodeupConfig
 		alternateNames = append(alternateNames, b.NodeupConfig.ApiserverAdditionalIPs...)
@@ -420,7 +420,7 @@ func (b *KubeAPIServerBuilder) writeServerCertificate(c *fi.NodeupModelBuilderCo
 		alternateNames = append(alternateNames, "127.0.0.1")
 
 		if b.CloudProvider() == kops.CloudProviderHetzner {
-			localIP, err := b.GetMetadataLocalIP()
+			localIP, err := b.GetMetadataLocalIP(c.Context())
 			if err != nil {
 				return err
 			}
@@ -518,7 +518,7 @@ func (b *KubeAPIServerBuilder) writeStaticCredentials(c *fi.NodeupModelBuilderCo
 	return nil
 }
 
-// allTokens returns a map of all auth tokens that are present
+// allAuthTokens returns a map of all auth tokens that are present
 func (b *KubeAPIServerBuilder) allAuthTokens() (map[string]string, error) {
 	possibleTokens := tokens.GetKubernetesAuthTokens_Deprecated()
 
@@ -595,20 +595,82 @@ func (b *KubeAPIServerBuilder) buildPod(ctx context.Context, kubeAPIServer *kops
 
 	useHealthcheckProxy := b.findHealthcheckManifest() != nil
 
-	probeAction := &v1.HTTPGetAction{
-		Host: "127.0.0.1",
-		Path: "/healthz",
-		Port: intstr.FromInt(wellknownports.KubeAPIServerHealthCheck),
+	livenessProbe := &v1.Probe{
+		ProbeHandler: v1.ProbeHandler{
+			HTTPGet: &v1.HTTPGetAction{
+				Host: "127.0.0.1",
+				Path: "/livez",
+				Port: intstr.FromInt(wellknownports.KubeAPIServerHealthCheck),
+			},
+		},
+		InitialDelaySeconds: 10,
+		TimeoutSeconds:      15,
+		FailureThreshold:    8,
+		PeriodSeconds:       10,
+	}
+
+	readinessProbe := &v1.Probe{
+		ProbeHandler: v1.ProbeHandler{
+			HTTPGet: &v1.HTTPGetAction{
+				Host: "127.0.0.1",
+				Path: "/healthz",
+				Port: intstr.FromInt(wellknownports.KubeAPIServerHealthCheck),
+			},
+		},
+		InitialDelaySeconds: 0,
+		TimeoutSeconds:      15,
+		FailureThreshold:    3,
+		PeriodSeconds:       1,
+	}
+
+	startupProbe := &v1.Probe{
+		ProbeHandler: v1.ProbeHandler{
+			HTTPGet: &v1.HTTPGetAction{
+				Host: "127.0.0.1",
+				Path: "/livez",
+				Port: intstr.FromInt(wellknownports.KubeAPIServerHealthCheck),
+			},
+		},
+		InitialDelaySeconds: 10,
+		TimeoutSeconds:      5 * 60,
+		FailureThreshold:    5 * 60 / 10,
+		PeriodSeconds:       10,
+	}
+
+	allProbes := []*v1.Probe{
+		startupProbe,
+		livenessProbe,
+		readinessProbe,
 	}
 
 	insecurePort := fi.ValueOf(kubeAPIServer.InsecurePort)
 	if useHealthcheckProxy {
 		// kube-apiserver-healthcheck sidecar container runs on port 3990
 	} else if insecurePort != 0 {
-		probeAction.Port = intstr.FromInt(int(insecurePort))
+		for _, probe := range allProbes {
+			probe.HTTPGet.Port = intstr.FromInt(int(insecurePort))
+		}
 	} else if kubeAPIServer.SecurePort != 0 {
-		probeAction.Port = intstr.FromInt(int(kubeAPIServer.SecurePort))
-		probeAction.Scheme = v1.URISchemeHTTPS
+		for _, probe := range allProbes {
+			probe.HTTPGet.Port = intstr.FromInt(int(kubeAPIServer.SecurePort))
+			probe.HTTPGet.Scheme = v1.URISchemeHTTPS
+		}
+	}
+
+	if b.IsKubernetesLT("1.31") {
+		// Compatibility: Use the old healthz probe for older clusters
+		for _, probe := range allProbes {
+			probe.HTTPGet.Path = "/healthz"
+		}
+
+		// Compatibility: Don't use startup probe / readiness probe
+		startupProbe = nil
+		readinessProbe = nil
+
+		// Compatibility: use old livenessProbe values
+		livenessProbe.FailureThreshold = 0
+		livenessProbe.PeriodSeconds = 0
+		livenessProbe.InitialDelaySeconds = 45
 	}
 
 	resourceRequests := v1.ResourceList{}
@@ -635,16 +697,12 @@ func (b *KubeAPIServerBuilder) buildPod(ctx context.Context, kubeAPIServer *kops
 	image := b.RemapImage(kubeAPIServer.Image)
 
 	container := &v1.Container{
-		Name:  "kube-apiserver",
-		Image: image,
-		Env:   proxy.GetProxyEnvVars(b.NodeupConfig.Networking.EgressProxy),
-		LivenessProbe: &v1.Probe{
-			ProbeHandler: v1.ProbeHandler{
-				HTTPGet: probeAction,
-			},
-			InitialDelaySeconds: 45,
-			TimeoutSeconds:      15,
-		},
+		Name:           "kube-apiserver",
+		Image:          image,
+		Env:            append(kubeAPIServer.Env, proxy.GetProxyEnvVars(b.NodeupConfig.Networking.EgressProxy)...),
+		LivenessProbe:  livenessProbe,
+		ReadinessProbe: readinessProbe,
+		StartupProbe:   startupProbe,
 		Ports: []v1.ContainerPort{
 			{
 				Name:          "https",
@@ -678,6 +736,9 @@ func (b *KubeAPIServerBuilder) buildPod(ctx context.Context, kubeAPIServer *kops
 			"/usr/local/bin/kube-apiserver",
 		}
 		container.Args = append(container.Args, sortedStrings(flags)...)
+		for _, issuer := range kubeAPIServer.AdditionalServiceAccountIssuers {
+			container.Args = append(container.Args, "--service-account-issuer="+issuer)
+		}
 	}
 
 	for _, path := range b.SSLHostPaths() {
@@ -741,16 +802,16 @@ func (b *KubeAPIServerBuilder) buildAnnotations() map[string]string {
 	annotations := make(map[string]string)
 	annotations["kubectl.kubernetes.io/default-container"] = "kube-apiserver"
 
-	if b.Cluster.UsesNoneDNS() {
+	if b.NodeupConfig.UsesNoneDNS {
 		return annotations
 	}
 
-	if b.Cluster.Spec.API.LoadBalancer == nil || !b.Cluster.Spec.API.LoadBalancer.UseForInternalAPI {
+	if b.NodeupConfig.APIServerConfig.API.LoadBalancer == nil || !b.NodeupConfig.APIServerConfig.API.LoadBalancer.UseForInternalAPI {
 		annotations["dns.alpha.kubernetes.io/internal"] = b.APIInternalName()
 	}
 
-	if b.Cluster.Spec.API.DNS != nil && b.Cluster.Spec.API.PublicName != "" {
-		annotations["dns.alpha.kubernetes.io/external"] = b.Cluster.Spec.API.PublicName
+	if b.NodeupConfig.APIServerConfig.API.DNS != nil && b.NodeupConfig.APIServerConfig.API.PublicName != "" {
+		annotations["dns.alpha.kubernetes.io/external"] = b.NodeupConfig.APIServerConfig.API.PublicName
 	}
 
 	return annotations

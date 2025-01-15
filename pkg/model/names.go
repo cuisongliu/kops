@@ -19,6 +19,7 @@ package model
 import (
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"k8s.io/klog/v2"
@@ -98,7 +99,7 @@ func (b *KopsModelContext) CLBName(prefix string) string {
 }
 
 func (b *KopsModelContext) NLBName(prefix string) string {
-	return strings.ReplaceAll(prefix+"-"+b.ClusterName(), ".", "-")
+	return prefix + "." + b.ClusterName()
 }
 
 func (b *KopsModelContext) NLBTargetGroupName(prefix string) string {
@@ -113,6 +114,11 @@ func (b *KopsModelContext) LinkToCLB(prefix string) *awstasks.ClassicLoadBalance
 func (b *KopsModelContext) LinkToNLB(prefix string) *awstasks.NetworkLoadBalancer {
 	name := b.NLBName(prefix)
 	return &awstasks.NetworkLoadBalancer{Name: &name}
+}
+
+func (b *KopsModelContext) NLBListenerName(loadBalancerPrefix string, port int) string {
+	name := b.NLBName(loadBalancerPrefix)
+	return name + "-" + strconv.Itoa(port)
 }
 
 func (b *KopsModelContext) LinkToTargetGroup(prefix string) *awstasks.TargetGroup {

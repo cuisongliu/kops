@@ -4,59 +4,66 @@ Name: master
 Lifecycle: ""
 Name: node
 ---
-ForAPIServer: true
 ID: null
 IP: null
 LB: null
 Lifecycle: Sync
 Name: fip-master-1-cluster
+WellKnownServices:
+- kube-apiserver
+- kops-controller
 ---
-ForAPIServer: true
 ID: null
 IP: null
 LB: null
 Lifecycle: Sync
 Name: fip-master-2-cluster
+WellKnownServices:
+- kube-apiserver
+- kops-controller
 ---
-ForAPIServer: true
 ID: null
 IP: null
 LB: null
 Lifecycle: Sync
 Name: fip-master-3-cluster
+WellKnownServices:
+- kube-apiserver
+- kops-controller
 ---
-ForAPIServer: false
 ID: null
 IP: null
 LB: null
 Lifecycle: Sync
 Name: fip-node-1-cluster
+WellKnownServices: null
 ---
-ForAPIServer: false
 ID: null
 IP: null
 LB: null
 Lifecycle: Sync
 Name: fip-node-2-cluster
+WellKnownServices: null
 ---
-ForAPIServer: false
 ID: null
 IP: null
 LB: null
 Lifecycle: Sync
 Name: fip-node-3-cluster
+WellKnownServices: null
 ---
 AvailabilityZone: zone-1
 ConfigDrive: false
 Flavor: blc.1-2
 FloatingIP:
-  ForAPIServer: true
   ID: null
   IP: null
   LB: null
   Lifecycle: Sync
   Name: fip-master-1-cluster
-ForAPIServer: false
+  WellKnownServices:
+  - kube-apiserver
+  - kops-controller
 GroupName: master
 ID: null
 Image: image
@@ -80,7 +87,6 @@ Name: master-1-cluster
 Port:
   AdditionalSecurityGroups: null
   AllowedAddressPairs: null
-  ForAPIServer: false
   ID: null
   InstanceGroupName: master
   Lifecycle: Sync
@@ -116,6 +122,7 @@ Port:
   - KopsInstanceGroup=master
   - KopsName=port-master-1
   - KubernetesCluster=cluster
+  WellKnownServices: null
 Region: region
 Role: ControlPlane
 SSHKey: kubernetes.cluster-ba_d8_85_a0_5b_50_b0_01_e0_b2_b0_ae_5d_f6_7a_d1
@@ -123,9 +130,9 @@ SecurityGroups: null
 ServerGroup:
   ClusterName: cluster
   ID: null
-  IGName: master
+  IGMap:
+    master: 3
   Lifecycle: Sync
-  MaxSize: 3
   Name: cluster-master
   Policies:
   - anti-affinity
@@ -134,18 +141,20 @@ UserData:
   task:
     Lifecycle: ""
     Name: master
+WellKnownServices: null
 ---
 AvailabilityZone: zone-2
 ConfigDrive: false
 Flavor: blc.1-2
 FloatingIP:
-  ForAPIServer: true
   ID: null
   IP: null
   LB: null
   Lifecycle: Sync
   Name: fip-master-2-cluster
-ForAPIServer: false
+  WellKnownServices:
+  - kube-apiserver
+  - kops-controller
 GroupName: master
 ID: null
 Image: image
@@ -169,7 +178,6 @@ Name: master-2-cluster
 Port:
   AdditionalSecurityGroups: null
   AllowedAddressPairs: null
-  ForAPIServer: false
   ID: null
   InstanceGroupName: master
   Lifecycle: Sync
@@ -205,6 +213,7 @@ Port:
   - KopsInstanceGroup=master
   - KopsName=port-master-2
   - KubernetesCluster=cluster
+  WellKnownServices: null
 Region: region
 Role: ControlPlane
 SSHKey: kubernetes.cluster-ba_d8_85_a0_5b_50_b0_01_e0_b2_b0_ae_5d_f6_7a_d1
@@ -212,9 +221,9 @@ SecurityGroups: null
 ServerGroup:
   ClusterName: cluster
   ID: null
-  IGName: master
+  IGMap:
+    master: 3
   Lifecycle: Sync
-  MaxSize: 3
   Name: cluster-master
   Policies:
   - anti-affinity
@@ -223,18 +232,20 @@ UserData:
   task:
     Lifecycle: ""
     Name: master
+WellKnownServices: null
 ---
 AvailabilityZone: zone-3
 ConfigDrive: false
 Flavor: blc.1-2
 FloatingIP:
-  ForAPIServer: true
   ID: null
   IP: null
   LB: null
   Lifecycle: Sync
   Name: fip-master-3-cluster
-ForAPIServer: false
+  WellKnownServices:
+  - kube-apiserver
+  - kops-controller
 GroupName: master
 ID: null
 Image: image
@@ -258,7 +269,6 @@ Name: master-3-cluster
 Port:
   AdditionalSecurityGroups: null
   AllowedAddressPairs: null
-  ForAPIServer: false
   ID: null
   InstanceGroupName: master
   Lifecycle: Sync
@@ -294,6 +304,7 @@ Port:
   - KopsInstanceGroup=master
   - KopsName=port-master-3
   - KubernetesCluster=cluster
+  WellKnownServices: null
 Region: region
 Role: ControlPlane
 SSHKey: kubernetes.cluster-ba_d8_85_a0_5b_50_b0_01_e0_b2_b0_ae_5d_f6_7a_d1
@@ -301,9 +312,9 @@ SecurityGroups: null
 ServerGroup:
   ClusterName: cluster
   ID: null
-  IGName: master
+  IGMap:
+    master: 3
   Lifecycle: Sync
-  MaxSize: 3
   Name: cluster-master
   Policies:
   - anti-affinity
@@ -312,18 +323,18 @@ UserData:
   task:
     Lifecycle: ""
     Name: master
+WellKnownServices: null
 ---
 AvailabilityZone: zone-1
 ConfigDrive: false
 Flavor: blc.1-2
 FloatingIP:
-  ForAPIServer: false
   ID: null
   IP: null
   LB: null
   Lifecycle: Sync
   Name: fip-node-1-cluster
-ForAPIServer: false
+  WellKnownServices: null
 GroupName: node
 ID: null
 Image: image
@@ -344,7 +355,6 @@ Name: node-1-cluster
 Port:
   AdditionalSecurityGroups: null
   AllowedAddressPairs: null
-  ForAPIServer: false
   ID: null
   InstanceGroupName: node
   Lifecycle: Sync
@@ -374,6 +384,7 @@ Port:
   - KopsInstanceGroup=node
   - KopsName=port-node-1
   - KubernetesCluster=cluster
+  WellKnownServices: null
 Region: region
 Role: Node
 SSHKey: kubernetes.cluster-ba_d8_85_a0_5b_50_b0_01_e0_b2_b0_ae_5d_f6_7a_d1
@@ -381,9 +392,9 @@ SecurityGroups: null
 ServerGroup:
   ClusterName: cluster
   ID: null
-  IGName: node
+  IGMap:
+    node: 3
   Lifecycle: Sync
-  MaxSize: 3
   Name: cluster-node
   Policies:
   - anti-affinity
@@ -392,18 +403,18 @@ UserData:
   task:
     Lifecycle: ""
     Name: node
+WellKnownServices: null
 ---
 AvailabilityZone: zone-2
 ConfigDrive: false
 Flavor: blc.1-2
 FloatingIP:
-  ForAPIServer: false
   ID: null
   IP: null
   LB: null
   Lifecycle: Sync
   Name: fip-node-2-cluster
-ForAPIServer: false
+  WellKnownServices: null
 GroupName: node
 ID: null
 Image: image
@@ -424,7 +435,6 @@ Name: node-2-cluster
 Port:
   AdditionalSecurityGroups: null
   AllowedAddressPairs: null
-  ForAPIServer: false
   ID: null
   InstanceGroupName: node
   Lifecycle: Sync
@@ -454,6 +464,7 @@ Port:
   - KopsInstanceGroup=node
   - KopsName=port-node-2
   - KubernetesCluster=cluster
+  WellKnownServices: null
 Region: region
 Role: Node
 SSHKey: kubernetes.cluster-ba_d8_85_a0_5b_50_b0_01_e0_b2_b0_ae_5d_f6_7a_d1
@@ -461,9 +472,9 @@ SecurityGroups: null
 ServerGroup:
   ClusterName: cluster
   ID: null
-  IGName: node
+  IGMap:
+    node: 3
   Lifecycle: Sync
-  MaxSize: 3
   Name: cluster-node
   Policies:
   - anti-affinity
@@ -472,18 +483,18 @@ UserData:
   task:
     Lifecycle: ""
     Name: node
+WellKnownServices: null
 ---
 AvailabilityZone: zone-3
 ConfigDrive: false
 Flavor: blc.1-2
 FloatingIP:
-  ForAPIServer: false
   ID: null
   IP: null
   LB: null
   Lifecycle: Sync
   Name: fip-node-3-cluster
-ForAPIServer: false
+  WellKnownServices: null
 GroupName: node
 ID: null
 Image: image
@@ -504,7 +515,6 @@ Name: node-3-cluster
 Port:
   AdditionalSecurityGroups: null
   AllowedAddressPairs: null
-  ForAPIServer: false
   ID: null
   InstanceGroupName: node
   Lifecycle: Sync
@@ -534,6 +544,7 @@ Port:
   - KopsInstanceGroup=node
   - KopsName=port-node-3
   - KubernetesCluster=cluster
+  WellKnownServices: null
 Region: region
 Role: Node
 SSHKey: kubernetes.cluster-ba_d8_85_a0_5b_50_b0_01_e0_b2_b0_ae_5d_f6_7a_d1
@@ -541,9 +552,9 @@ SecurityGroups: null
 ServerGroup:
   ClusterName: cluster
   ID: null
-  IGName: node
+  IGMap:
+    node: 3
   Lifecycle: Sync
-  MaxSize: 3
   Name: cluster-node
   Policies:
   - anti-affinity
@@ -552,6 +563,7 @@ UserData:
   task:
     Lifecycle: ""
     Name: node
+WellKnownServices: null
 ---
 Lifecycle: ""
 Name: apiserver-aggregator-ca
@@ -681,7 +693,6 @@ PublicACL: null
 ---
 AdditionalSecurityGroups: null
 AllowedAddressPairs: null
-ForAPIServer: false
 ID: null
 InstanceGroupName: master
 Lifecycle: Sync
@@ -717,10 +728,10 @@ Tags:
 - KopsInstanceGroup=master
 - KopsName=port-master-1
 - KubernetesCluster=cluster
+WellKnownServices: null
 ---
 AdditionalSecurityGroups: null
 AllowedAddressPairs: null
-ForAPIServer: false
 ID: null
 InstanceGroupName: master
 Lifecycle: Sync
@@ -756,10 +767,10 @@ Tags:
 - KopsInstanceGroup=master
 - KopsName=port-master-2
 - KubernetesCluster=cluster
+WellKnownServices: null
 ---
 AdditionalSecurityGroups: null
 AllowedAddressPairs: null
-ForAPIServer: false
 ID: null
 InstanceGroupName: master
 Lifecycle: Sync
@@ -795,10 +806,10 @@ Tags:
 - KopsInstanceGroup=master
 - KopsName=port-master-3
 - KubernetesCluster=cluster
+WellKnownServices: null
 ---
 AdditionalSecurityGroups: null
 AllowedAddressPairs: null
-ForAPIServer: false
 ID: null
 InstanceGroupName: node
 Lifecycle: Sync
@@ -828,10 +839,10 @@ Tags:
 - KopsInstanceGroup=node
 - KopsName=port-node-1
 - KubernetesCluster=cluster
+WellKnownServices: null
 ---
 AdditionalSecurityGroups: null
 AllowedAddressPairs: null
-ForAPIServer: false
 ID: null
 InstanceGroupName: node
 Lifecycle: Sync
@@ -861,10 +872,10 @@ Tags:
 - KopsInstanceGroup=node
 - KopsName=port-node-2
 - KubernetesCluster=cluster
+WellKnownServices: null
 ---
 AdditionalSecurityGroups: null
 AllowedAddressPairs: null
-ForAPIServer: false
 ID: null
 InstanceGroupName: node
 Lifecycle: Sync
@@ -894,21 +905,22 @@ Tags:
 - KopsInstanceGroup=node
 - KopsName=port-node-3
 - KubernetesCluster=cluster
+WellKnownServices: null
 ---
 ClusterName: cluster
 ID: null
-IGName: master
+IGMap:
+  master: 3
 Lifecycle: Sync
-MaxSize: 3
 Name: cluster-master
 Policies:
 - anti-affinity
 ---
 ClusterName: cluster
 ID: null
-IGName: node
+IGMap:
+  node: 3
 Lifecycle: Sync
-MaxSize: 3
 Name: cluster-node
 Policies:
 - anti-affinity

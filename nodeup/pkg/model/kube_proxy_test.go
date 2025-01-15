@@ -21,13 +21,13 @@ import (
 	"testing"
 
 	"k8s.io/kops/pkg/apis/kops"
+	kopsmodel "k8s.io/kops/pkg/apis/kops/model"
 	"k8s.io/kops/pkg/apis/nodeup"
 	"k8s.io/kops/pkg/flagbuilder"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/util/pkg/architectures"
 	"k8s.io/kops/util/pkg/exec"
 
-	"github.com/blang/semver/v4"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -38,18 +38,17 @@ func TestKubeProxyBuilder_buildPod(t *testing.T) {
 	// https://pkg.go.dev/k8s.io/kops/pkg/apis/kops#ClusterSpec
 	// https://pkg.go.dev/k8s.io/kops/pkg/apis/kops#KubeProxyConfig
 
-	cluster := &kops.Cluster{}
-
-	cluster.Spec.KubeProxy = &kops.KubeProxyConfig{}
-	cluster.Spec.KubeProxy.Image = "kube-proxy:1.2"
-	cluster.Spec.KubeProxy.CPURequest = resource.NewScaledQuantity(20, resource.Milli)
-	cluster.Spec.KubeProxy.CPULimit = resource.NewScaledQuantity(30, resource.Milli)
-
-	nodeupConfig := &nodeup.Config{
-		KubeProxy: cluster.Spec.KubeProxy,
+	kubeProxy := kops.KubeProxyConfig{
+		Image:      "kube-proxy:1.2",
+		CPURequest: resource.NewScaledQuantity(20, resource.Milli),
+		CPULimit:   resource.NewScaledQuantity(30, resource.Milli),
 	}
 
-	flags, _ := flagbuilder.BuildFlagsList(cluster.Spec.KubeProxy)
+	nodeupConfig := &nodeup.Config{
+		KubeProxy: &kubeProxy,
+	}
+
+	flags, _ := flagbuilder.BuildFlagsList(&kubeProxy)
 
 	flags = append(flags, []string{
 		"--kubeconfig=/var/lib/kube-proxy/kubeconfig",
@@ -70,9 +69,8 @@ func TestKubeProxyBuilder_buildPod(t *testing.T) {
 			"Setup KubeProxy for kubernetes version 1.20",
 			fields{
 				&NodeupModelContext{
-					Cluster:           cluster,
 					NodeupConfig:      nodeupConfig,
-					kubernetesVersion: semver.Version{Major: 1, Minor: 20},
+					kubernetesVersion: kopsmodel.MustParseKubernetesVersion("1.20"),
 				},
 			},
 			&v1.Pod{

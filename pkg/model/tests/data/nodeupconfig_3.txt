@@ -1,5 +1,4 @@
 CAs: {}
-ContainerRuntime: docker
 FileAssets:
 - content: user,token
   name: tokens
@@ -10,6 +9,7 @@ Hooks:
       ExecStart=/usr/bin/systemctl start apply-to-all.service
     name: apply-to-all.service
 - null
+InstallCNIAssets: true
 KeypairIDs: {}
 KubeProxy:
   cpuLimit: 30m
@@ -26,7 +26,5 @@ Networking:
 UpdatePolicy: automatic
 containerdConfig:
   logLevel: info
-docker:
-  logLevel: INFO
 usesLegacyGossip: false
 usesNoneDNS: false

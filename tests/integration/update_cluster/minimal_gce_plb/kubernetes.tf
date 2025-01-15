@@ -146,14 +146,6 @@ resource "aws_s3_object" "minimal-gce-plb-example-com-addons-limit-range-addons-
   server_side_encryption = "AES256"
 }
 
-resource "aws_s3_object" "minimal-gce-plb-example-com-addons-metadata-proxy-addons-k8s-io-v0-1-12" {
-  bucket                 = "testingBucket"
-  content                = file("${path.module}/data/aws_s3_object_minimal-gce-plb.example.com-addons-metadata-proxy.addons.k8s.io-v0.1.12_content")
-  key                    = "tests/minimal-gce-plb.example.com/addons/metadata-proxy.addons.k8s.io/v0.1.12.yaml"
-  provider               = aws.files
-  server_side_encryption = "AES256"
-}
-
 resource "aws_s3_object" "minimal-gce-plb-example-com-addons-storage-gce-addons-k8s-io-v1-7-0" {
   bucket                 = "testingBucket"
   content                = file("${path.module}/data/aws_s3_object_minimal-gce-plb.example.com-addons-storage-gce.addons.k8s.io-v1.7.0_content")
@@ -180,6 +172,23 @@ resource "aws_s3_object" "nodeupconfig-nodes" {
 
 resource "google_compute_address" "api-minimal-gce-plb-example-com" {
   name = "api-minimal-gce-plb-example-com"
+}
+
+resource "google_compute_address" "api-us-test1-minimal-gce-plb-example-com" {
+  address_type = "INTERNAL"
+  name         = "api-us-test1-minimal-gce-plb-example-com"
+  purpose      = "SHARED_LOADBALANCER_VIP"
+  subnetwork   = google_compute_subnetwork.us-test1-minimal-gce-plb-example-com.name
+}
+
+resource "google_compute_backend_service" "api-minimal-gce-plb-example-com" {
+  backend {
+    group = google_compute_instance_group_manager.a-master-us-test1-a-minimal-gce-plb-example-com.instance_group
+  }
+  health_checks         = [google_compute_health_check.api-minimal-gce-plb-example-com.id]
+  load_balancing_scheme = "INTERNAL_SELF_MANAGED"
+  name                  = "api-minimal-gce-plb-example-com"
+  protocol              = "TCP"
 }
 
 resource "google_compute_disk" "a-etcd-events-minimal-gce-plb-example-com" {
@@ -237,7 +246,7 @@ resource "google_compute_firewall" "lb-health-checks-minimal-gce-plb-example-com
   disabled      = false
   name          = "lb-health-checks-minimal-gce-plb-example-com"
   network       = google_compute_network.minimal-gce-plb-example-com.name
-  source_ranges = ["35.191.0.0/16", "130.211.0.0/22"]
+  source_ranges = ["35.191.0.0/16", "130.211.0.0/22", "209.85.204.0/22", "209.85.152.0/22"]
   target_tags   = ["minimal-gce-plb-example-com-k8s-io-role-control-plane"]
 }
 
@@ -422,9 +431,36 @@ resource "google_compute_firewall" "ssh-external-to-node-minimal-gce-plb-example
 resource "google_compute_forwarding_rule" "api-minimal-gce-plb-example-com" {
   ip_address  = google_compute_address.api-minimal-gce-plb-example-com.address
   ip_protocol = "TCP"
-  name        = "api-minimal-gce-plb-example-com"
-  port_range  = "443-443"
-  target      = google_compute_target_pool.api-minimal-gce-plb-example-com.self_link
+  labels = {
+    "k8s-io-cluster-name" = "minimal-gce-plb-example-com"
+    "name"                = "api"
+  }
+  load_balancing_scheme = "EXTERNAL"
+  name                  = "api-minimal-gce-plb-example-com"
+  port_range            = "443-443"
+  target                = google_compute_target_pool.api-minimal-gce-plb-example-com.self_link
+}
+
+resource "google_compute_forwarding_rule" "api-us-test1-minimal-gce-plb-example-com" {
+  backend_service = google_compute_backend_service.api-minimal-gce-plb-example-com.id
+  ip_address      = google_compute_address.api-us-test1-minimal-gce-plb-example-com.address
+  ip_protocol     = "TCP"
+  labels = {
+    "k8s-io-cluster-name" = "minimal-gce-plb-example-com"
+    "name"                = "api-us-test1"
+  }
+  load_balancing_scheme = "INTERNAL"
+  name                  = "api-us-test1-minimal-gce-plb-example-com"
+  network               = google_compute_network.minimal-gce-plb-example-com.name
+  ports                 = ["443"]
+  subnetwork            = google_compute_subnetwork.us-test1-minimal-gce-plb-example-com.name
+}
+
+resource "google_compute_health_check" "api-minimal-gce-plb-example-com" {
+  name = "api-minimal-gce-plb-example-com"
+  tcp_health_check {
+    port = 443
+  }
 }
 
 resource "google_compute_http_health_check" "api-minimal-gce-plb-example-com" {
@@ -434,10 +470,11 @@ resource "google_compute_http_health_check" "api-minimal-gce-plb-example-com" {
 }
 
 resource "google_compute_instance_group_manager" "a-master-us-test1-a-minimal-gce-plb-example-com" {
-  base_instance_name = "master-us-test1-a"
-  name               = "a-master-us-test1-a-minimal-gce-plb-example-com"
-  target_pools       = [google_compute_target_pool.api-minimal-gce-plb-example-com.self_link]
-  target_size        = 1
+  base_instance_name             = "master-us-test1-a"
+  list_managed_instances_results = "PAGINATED"
+  name                           = "a-master-us-test1-a-minimal-gce-plb-example-com"
+  target_pools                   = [google_compute_target_pool.api-minimal-gce-plb-example-com.self_link]
+  target_size                    = 1
   version {
     instance_template = google_compute_instance_template.master-us-test1-a-minimal-gce-plb-example-com.self_link
   }
@@ -445,9 +482,10 @@ resource "google_compute_instance_group_manager" "a-master-us-test1-a-minimal-gc
 }
 
 resource "google_compute_instance_group_manager" "a-nodes-minimal-gce-plb-example-com" {
-  base_instance_name = "nodes"
-  name               = "a-nodes-minimal-gce-plb-example-com"
-  target_size        = 2
+  base_instance_name             = "nodes"
+  list_managed_instances_results = "PAGINATED"
+  name                           = "a-nodes-minimal-gce-plb-example-com"
+  target_size                    = 2
   version {
     instance_template = google_compute_instance_template.nodes-minimal-gce-plb-example-com.self_link
   }
@@ -483,7 +521,7 @@ resource "google_compute_instance_template" "master-us-test1-a-minimal-gce-plb-e
     "cluster-name"                    = "minimal-gce-plb.example.com"
     "kops-k8s-io-instance-group-name" = "master-us-test1-a"
     "ssh-keys"                        = "admin: ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAAAgQCtWu40XQo8dczLsCq0OWV+hxm9uV3WxeH9Kgh4sMzQxNtoU1pvW0XdjpkBesRKGoolfWeCLXWxpyQb1IaiMkKoz7MdhQ/6UKjMjP66aFWWp3pwD0uj0HuJ7tq4gKHKRYGTaZIRWpzUiANBrjugVgA+Sd7E/mYwc/DMXkIyRZbvhQ=="
-    "startup-script"                  = file("${path.module}/data/google_compute_instance_template_master-us-test1-a-minimal-gce-plb-example-com_metadata_startup-script")
+    "user-data"                       = file("${path.module}/data/google_compute_instance_template_master-us-test1-a-minimal-gce-plb-example-com_metadata_user-data")
   }
   name_prefix = "master-us-test1-a-minimal-b9uem4-"
   network_interface {
@@ -498,8 +536,8 @@ resource "google_compute_instance_template" "master-us-test1-a-minimal-gce-plb-e
     provisioning_model  = "STANDARD"
   }
   service_account {
-    email  = google_service_account.control-plane.email
-    scopes = ["https://www.googleapis.com/auth/compute", "https://www.googleapis.com/auth/monitoring", "https://www.googleapis.com/auth/logging.write", "https://www.googleapis.com/auth/devstorage.read_write", "https://www.googleapis.com/auth/ndev.clouddns.readwrite"]
+    email  = "default"
+    scopes = ["https://www.googleapis.com/auth/compute", "https://www.googleapis.com/auth/monitoring", "https://www.googleapis.com/auth/logging.write", "https://www.googleapis.com/auth/cloud-platform", "https://www.googleapis.com/auth/devstorage.read_write", "https://www.googleapis.com/auth/ndev.clouddns.readwrite"]
   }
   tags = ["minimal-gce-plb-example-com-k8s-io-role-control-plane", "minimal-gce-plb-example-com-k8s-io-role-master"]
 }
@@ -533,7 +571,7 @@ resource "google_compute_instance_template" "nodes-minimal-gce-plb-example-com" 
     "kops-k8s-io-instance-group-name" = "nodes"
     "kube-env"                        = "AUTOSCALER_ENV_VARS: os_distribution=ubuntu;arch=amd64;os=linux"
     "ssh-keys"                        = "admin: ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAAAgQCtWu40XQo8dczLsCq0OWV+hxm9uV3WxeH9Kgh4sMzQxNtoU1pvW0XdjpkBesRKGoolfWeCLXWxpyQb1IaiMkKoz7MdhQ/6UKjMjP66aFWWp3pwD0uj0HuJ7tq4gKHKRYGTaZIRWpzUiANBrjugVgA+Sd7E/mYwc/DMXkIyRZbvhQ=="
-    "startup-script"                  = file("${path.module}/data/google_compute_instance_template_nodes-minimal-gce-plb-example-com_metadata_startup-script")
+    "user-data"                       = file("${path.module}/data/google_compute_instance_template_nodes-minimal-gce-plb-example-com_metadata_user-data")
   }
   name_prefix = "nodes-minimal-gce-plb-exa-7p2hv9-"
   network_interface {
@@ -548,8 +586,8 @@ resource "google_compute_instance_template" "nodes-minimal-gce-plb-example-com" 
     provisioning_model  = "STANDARD"
   }
   service_account {
-    email  = google_service_account.node.email
-    scopes = ["https://www.googleapis.com/auth/compute", "https://www.googleapis.com/auth/monitoring", "https://www.googleapis.com/auth/logging.write", "https://www.googleapis.com/auth/devstorage.read_only"]
+    email  = "default"
+    scopes = ["https://www.googleapis.com/auth/compute", "https://www.googleapis.com/auth/monitoring", "https://www.googleapis.com/auth/logging.write", "https://www.googleapis.com/auth/cloud-platform", "https://www.googleapis.com/auth/devstorage.read_only"]
   }
   tags = ["minimal-gce-plb-example-com-k8s-io-role-node"]
 }
@@ -589,43 +627,17 @@ resource "google_compute_target_pool" "api-minimal-gce-plb-example-com" {
   name          = "api-minimal-gce-plb-example-com"
 }
 
-resource "google_project_iam_binding" "serviceaccount-control-plane" {
-  members = ["serviceAccount:control-plane-minimal-g-1ohncl@testproject.iam.gserviceaccount.com"]
-  project = "testproject"
-  role    = "roles/container.serviceAgent"
-}
-
-resource "google_project_iam_binding" "serviceaccount-nodes" {
-  members = ["serviceAccount:node-minimal-gce-plb-ex-1ohncl@testproject.iam.gserviceaccount.com"]
-  project = "testproject"
-  role    = "roles/compute.viewer"
-}
-
-resource "google_service_account" "control-plane" {
-  account_id   = "control-plane-minimal-g-1ohncl"
-  description  = "kubernetes control-plane instances"
-  display_name = "control-plane"
-  project      = "testproject"
-}
-
-resource "google_service_account" "node" {
-  account_id   = "node-minimal-gce-plb-ex-1ohncl"
-  description  = "kubernetes worker nodes"
-  display_name = "node"
-  project      = "testproject"
-}
-
 terraform {
   required_version = ">= 0.15.0"
   required_providers {
     aws = {
       "configuration_aliases" = [aws.files]
       "source"                = "hashicorp/aws"
-      "version"               = ">= 4.0.0"
+      "version"               = ">= 5.0.0"
     }
     google = {
       "source"  = "hashicorp/google"
-      "version" = ">= 2.19.0"
+      "version" = ">= 5.11.0"
     }
   }
 }

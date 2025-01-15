@@ -66,6 +66,9 @@ var (
 	editClusterExample = templates.Examples(i18n.T(`
 	# Edit a cluster configuration in AWS.
 	kops edit cluster k8s.cluster.site --state=s3://my-state-store
+
+	# Set cluster spec values.
+	kops edit cluster testcluster.k8s.local --set spec.kubernetesVersion=1.28.4
 	`))
 )
 
@@ -84,7 +87,7 @@ func NewCmdEditCluster(f *util.Factory, out io.Writer) *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringSliceVar(&options.Sets, "set", options.Sets, "Directly set values in the spec")
+	LazyQuoteStringSliceVar(cmd.Flags(), &options.Sets, "set", options.Sets, "Directly set values in the spec")
 	cmd.RegisterFlagCompletionFunc("set", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	})
@@ -255,18 +258,18 @@ func updateCluster(ctx context.Context, clientset simple.Clientset, oldCluster, 
 		return "", err
 	}
 
-	err = cloudup.PerformAssignments(newCluster, cloud)
+	err = cloudup.PerformAssignments(newCluster, clientset.VFSContext(), cloud)
 	if err != nil {
 		return "", fmt.Errorf("error populating configuration: %v", err)
 	}
 
-	assetBuilder := assets.NewAssetBuilder(newCluster.Spec.Assets, newCluster.Spec.KubernetesVersion, false)
-	fullCluster, err := cloudup.PopulateClusterSpec(ctx, clientset, newCluster, cloud, assetBuilder)
+	assetBuilder := assets.NewAssetBuilder(clientset.VFSContext(), newCluster.Spec.Assets, false)
+	fullCluster, err := cloudup.PopulateClusterSpec(ctx, clientset, newCluster, instanceGroups, cloud, assetBuilder)
 	if err != nil {
 		return fmt.Sprintf("error populating cluster spec: %s", err), nil
 	}
 
-	err = validation.DeepValidate(fullCluster, instanceGroups, true, cloud)
+	err = validation.DeepValidate(fullCluster, instanceGroups, true, clientset.VFSContext(), cloud)
 	if err != nil {
 		return fmt.Sprintf("validation failed: %s", err), nil
 	}

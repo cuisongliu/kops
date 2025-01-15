@@ -51,25 +51,16 @@ type ClusterSpec struct {
 	Channel string `json:"channel,omitempty"`
 	// Additional addons that should be installed on the cluster
 	Addons []AddonSpec `json:"addons,omitempty"`
-	// ConfigBase is the path where we store configuration for the cluster
-	// This might be different that the location when the cluster spec itself is stored,
-	// both because this must be accessible to the cluster,
-	// and because it might be on a different cloud or storage system (etcd vs S3)
-	ConfigBase string `json:"configBase,omitempty"`
+	// ConfigStore configures the stores that nodes use to get their configuration.
+	ConfigStore ConfigStoreSpec `json:"configStore"`
 	// CloudProvider configures the cloud provider to use.
 	CloudProvider CloudProviderSpec `json:"cloudProvider,omitempty"`
 	// GossipConfig for the cluster assuming the use of gossip DNS
 	GossipConfig *GossipConfig `json:"gossipConfig,omitempty"`
-	// Container runtime to use for Kubernetes
-	ContainerRuntime string `json:"containerRuntime,omitempty"`
+	// ContainerRuntime was removed.
+	ContainerRuntime string `json:"-"`
 	// The version of kubernetes to install (optional, and can be a "spec" like stable)
 	KubernetesVersion string `json:"kubernetesVersion,omitempty"`
-	// SecretStore is the VFS path to where secrets are stored
-	SecretStore string `json:"secretStore,omitempty"`
-	// KeyStore is the VFS path to where SSL keys and certificates are stored
-	KeyStore string `json:"keyStore,omitempty"`
-	// ConfigStore is the VFS path to where the configuration (Cluster, InstanceGroups etc) is stored
-	ConfigStore string `json:"configStore,omitempty"`
 	// DNSZone is the DNS zone we should use when configuring DNS
 	// This is because some clouds let us define a managed zone foo.bar, and then have
 	// kubernetes.dev.foo.bar, without needing to define dev.foo.bar as a hosted zone.
@@ -101,9 +92,10 @@ type ClusterSpec struct {
 	FileAssets []FileAssetSpec `json:"fileAssets,omitempty"`
 	// EtcdClusters stores the configuration for each cluster
 	EtcdClusters []EtcdClusterSpec `json:"etcdClusters,omitempty"`
+	// Docker was removed.
+	Docker *DockerConfig `json:"-"`
 	// Component configurations
 	Containerd                     *ContainerdConfig             `json:"containerd,omitempty"`
-	Docker                         *DockerConfig                 `json:"docker,omitempty"`
 	KubeDNS                        *KubeDNSConfig                `json:"kubeDNS,omitempty"`
 	KubeAPIServer                  *KubeAPIServerConfig          `json:"kubeAPIServer,omitempty"`
 	KubeControllerManager          *KubeControllerManagerConfig  `json:"kubeControllerManager,omitempty"`
@@ -119,6 +111,8 @@ type ClusterSpec struct {
 	CloudConfig         *CloudConfiguration `json:"cloudConfig,omitempty"`
 	ExternalDNS         *ExternalDNSConfig  `json:"externalDNS,omitempty"`
 	NTP                 *NTPConfig          `json:"ntp,omitempty"`
+	// Packages specifies additional packages to be installed.
+	Packages []string `json:"packages,omitempty"`
 
 	// NodeProblemDetector determines the node problem detector configuration.
 	NodeProblemDetector *NodeProblemDetectorConfig `json:"nodeProblemDetector,omitempty"`
@@ -164,6 +158,19 @@ type ClusterSpec struct {
 	SnapshotController *SnapshotControllerConfig `json:"snapshotController,omitempty"`
 	// Karpenter defines the Karpenter configuration.
 	Karpenter *KarpenterConfig `json:"karpenter,omitempty"`
+}
+
+// ConfigStoreSpec configures the stores that nodes use to get their configuration.
+type ConfigStoreSpec struct {
+	// Base is the VFS path where we store configuration for the cluster
+	// This might be different than the location where the cluster spec itself is stored,
+	// both because this must be accessible to the cluster,
+	// and because it might be on a different cloud or storage system (etcd vs S3).
+	Base string `json:"base,omitempty"`
+	// Keypairs is the VFS path to where certificates and corresponding private keys are stored.
+	Keypairs string `json:"keypairs,omitempty"`
+	// Secrets is the VFS path to where secrets are stored.
+	Secrets string `json:"secrets,omitempty"`
 }
 
 // PodIdentityWebhookSpec configures an EKS Pod Identity Webhook.
@@ -218,7 +225,7 @@ type AWSSpec struct {
 	SpotinstOrientation *string `json:"spotinstOrientation,omitempty"`
 
 	// BinariesLocation is the location of the AWS cloud provider binaries.
-	BinariesLocation *string `json:"binaryLocation,omitempty"`
+	BinariesLocation *string `json:"binariesLocation,omitempty"`
 }
 
 // DOSpec configures the Digital Ocean cloud provider.
@@ -235,6 +242,11 @@ type GCESpec struct {
 	NodeInstancePrefix *string `json:"nodeInstancePrefix,omitempty"`
 	// PDCSIDriver is the config for the PD CSI driver.
 	PDCSIDriver *PDCSIDriver `json:"pdCSIDriver,omitempty"`
+	// UseStartupScript specifies enables using startup-script instead of user-data metadata.
+	UseStartupScript *bool `json:"useStartupScript,omitempty"`
+
+	// BinariesLocation is the location of the GCE cloud provider binaries.
+	BinariesLocation *string `json:"binariesLocation,omitempty"`
 }
 
 // HetznerSpec configures the Hetzner cloud provider.
@@ -245,7 +257,13 @@ type ScalewaySpec struct {
 }
 
 type KarpenterConfig struct {
-	Enabled bool `json:"enabled,omitempty"`
+	Enabled       bool               `json:"enabled,omitempty"`
+	LogEncoding   string             `json:"logEncoding,omitempty"`
+	LogLevel      string             `json:"logLevel,omitempty"`
+	Image         string             `json:"image,omitempty"`
+	MemoryLimit   *resource.Quantity `json:"memoryLimit,omitempty"`
+	MemoryRequest *resource.Quantity `json:"memoryRequest,omitempty"`
+	CPURequest    *resource.Quantity `json:"cpuRequest,omitempty"`
 }
 
 // ServiceAccountIssuerDiscoveryConfig configures an OIDC Issuer.

@@ -58,16 +58,14 @@ func FindDistribution(rootfs string) (Distribution, error) {
 		return DistributionDebian11, nil
 	case "debian-12":
 		return DistributionDebian12, nil
+	case "fedora-41":
+		return DistributionFedora41, nil
 	case "ubuntu-20.04":
 		return DistributionUbuntu2004, nil
-	case "ubuntu-20.10":
-		return DistributionUbuntu2010, nil
-	case "ubuntu-21.04":
-		return DistributionUbuntu2104, nil
-	case "ubuntu-21.10":
-		return DistributionUbuntu2110, nil
 	case "ubuntu-22.04":
 		return DistributionUbuntu2204, nil
+	case "ubuntu-24.04":
+		return DistributionUbuntu2404, nil
 	}
 
 	// Some distros have a more verbose VERSION_ID
@@ -86,8 +84,11 @@ func FindDistribution(rootfs string) (Distribution, error) {
 	if strings.HasPrefix(distro, "rocky-8.") {
 		return DistributionRocky8, nil
 	}
+	if strings.HasPrefix(distro, "rocky-9.") {
+		return DistributionRocky9, nil
+	}
 
 	// Some distros are not supported
 	klog.V(2).Infof("Contents of /etc/os-release:\n%s", osReleaseBytes)
-	return Distribution{}, fmt.Errorf("unsupported distro: %s", distro)
+	return Distribution{}, fmt.Errorf("unsupported distro %q", distro)
 }

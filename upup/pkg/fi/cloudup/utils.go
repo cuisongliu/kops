@@ -17,6 +17,7 @@ limitations under the License.
 package cloudup
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -30,17 +31,19 @@ import (
 	"k8s.io/kops/upup/pkg/fi/cloudup/do"
 	"k8s.io/kops/upup/pkg/fi/cloudup/gce"
 	"k8s.io/kops/upup/pkg/fi/cloudup/hetzner"
+	"k8s.io/kops/upup/pkg/fi/cloudup/metal"
 	"k8s.io/kops/upup/pkg/fi/cloudup/openstack"
 	"k8s.io/kops/upup/pkg/fi/cloudup/scaleway"
 )
 
 func BuildCloud(cluster *kops.Cluster) (fi.Cloud, error) {
 	var cloud fi.Cloud
+	ctx := context.TODO()
 
 	region := ""
 	project := ""
 
-	switch cluster.Spec.GetCloudProvider() {
+	switch cluster.GetCloudProvider() {
 	case kops.CloudProviderGCE:
 		{
 			for _, subnet := range cluster.Spec.Networking.Subnets {
@@ -57,7 +60,8 @@ func BuildCloud(cluster *kops.Cluster) (fi.Cloud, error) {
 				return nil, fmt.Errorf("project is required for GCE - try gcloud config get-value project")
 			}
 
-			labels := map[string]string{gce.GceLabelNameKubernetesCluster: gce.SafeClusterName(cluster.ObjectMeta.Name)}
+			clusterLabel := gce.LabelForCluster(cluster.ObjectMeta.Name)
+			labels := map[string]string{clusterLabel.Key: clusterLabel.Value}
 
 			gceCloud, err := gce.NewGCECloud(region, project, labels)
 			if err != nil {
@@ -74,7 +78,7 @@ func BuildCloud(cluster *kops.Cluster) (fi.Cloud, error) {
 				return nil, err
 			}
 
-			err = awsup.ValidateRegion(region)
+			err = awsup.ValidateRegion(ctx, region)
 			if err != nil {
 				return nil, err
 			}
@@ -154,7 +158,9 @@ func BuildCloud(cluster *kops.Cluster) (fi.Cloud, error) {
 
 			cloudTags := map[string]string{azure.TagClusterName: cluster.ObjectMeta.Name}
 
-			azureCloud, err := azure.NewAzureCloud(cluster.Spec.CloudProvider.Azure.SubscriptionID, region, cloudTags)
+			subscriptionID := cluster.Spec.CloudProvider.Azure.SubscriptionID
+			resourceGroupName := cluster.Spec.CloudProvider.Azure.ResourceGroupName
+			azureCloud, err := azure.NewAzureCloud(subscriptionID, resourceGroupName, region, cloudTags)
 			if err != nil {
 				return nil, err
 			}
@@ -188,8 +194,14 @@ func BuildCloud(cluster *kops.Cluster) (fi.Cloud, error) {
 
 			cloud = scwCloud
 		}
+	case kops.CloudProviderMetal:
+		metalCloud, err := metal.NewCloud()
+		if err != nil {
+			return nil, fmt.Errorf("error initializing Metal cloud: %w", err)
+		}
+		cloud = metalCloud
 	default:
-		return nil, fmt.Errorf("unknown CloudProvider %q", cluster.Spec.GetCloudProvider())
+		return nil, fmt.Errorf("unknown CloudProvider %q", cluster.GetCloudProvider())
 	}
 	return cloud, nil
 }
@@ -222,7 +234,7 @@ func FindDNSHostedZone(dns dnsprovider.Interface, clusterDNSName string, dnsType
 				hostedZone := awsZone.Route53HostedZone()
 				if hostedZone.Config != nil {
 					zoneDNSType := kops.DNSTypePublic
-					if fi.ValueOf(hostedZone.Config.PrivateZone) {
+					if hostedZone.Config.PrivateZone {
 						zoneDNSType = kops.DNSTypePrivate
 					}
 					if zoneDNSType != dnsType {

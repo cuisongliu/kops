@@ -17,6 +17,7 @@ limitations under the License.
 package openstack
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
 	"net/http"
@@ -25,30 +26,30 @@ import (
 	"time"
 
 	"github.com/blang/semver/v4"
-	"github.com/gophercloud/gophercloud"
-	"github.com/gophercloud/gophercloud/openstack"
-	cinder "github.com/gophercloud/gophercloud/openstack/blockstorage/v3/volumes"
-	az "github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/availabilityzones"
-	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/keypairs"
-	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/servergroups"
-	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/volumeattach"
-	"github.com/gophercloud/gophercloud/openstack/compute/v2/flavors"
-	"github.com/gophercloud/gophercloud/openstack/compute/v2/servers"
-	"github.com/gophercloud/gophercloud/openstack/dns/v2/recordsets"
-	"github.com/gophercloud/gophercloud/openstack/dns/v2/zones"
-	"github.com/gophercloud/gophercloud/openstack/imageservice/v2/images"
-	"github.com/gophercloud/gophercloud/openstack/loadbalancer/v2/apiversions"
-	"github.com/gophercloud/gophercloud/openstack/loadbalancer/v2/listeners"
-	"github.com/gophercloud/gophercloud/openstack/loadbalancer/v2/loadbalancers"
-	"github.com/gophercloud/gophercloud/openstack/loadbalancer/v2/monitors"
-	v2pools "github.com/gophercloud/gophercloud/openstack/loadbalancer/v2/pools"
-	l3floatingip "github.com/gophercloud/gophercloud/openstack/networking/v2/extensions/layer3/floatingips"
-	"github.com/gophercloud/gophercloud/openstack/networking/v2/extensions/layer3/routers"
-	sg "github.com/gophercloud/gophercloud/openstack/networking/v2/extensions/security/groups"
-	sgr "github.com/gophercloud/gophercloud/openstack/networking/v2/extensions/security/rules"
-	"github.com/gophercloud/gophercloud/openstack/networking/v2/networks"
-	"github.com/gophercloud/gophercloud/openstack/networking/v2/ports"
-	"github.com/gophercloud/gophercloud/openstack/networking/v2/subnets"
+	"github.com/gophercloud/gophercloud/v2"
+	"github.com/gophercloud/gophercloud/v2/openstack"
+	cinder "github.com/gophercloud/gophercloud/v2/openstack/blockstorage/v3/volumes"
+	az "github.com/gophercloud/gophercloud/v2/openstack/compute/v2/availabilityzones"
+	"github.com/gophercloud/gophercloud/v2/openstack/compute/v2/flavors"
+	"github.com/gophercloud/gophercloud/v2/openstack/compute/v2/keypairs"
+	"github.com/gophercloud/gophercloud/v2/openstack/compute/v2/servergroups"
+	"github.com/gophercloud/gophercloud/v2/openstack/compute/v2/servers"
+	"github.com/gophercloud/gophercloud/v2/openstack/compute/v2/volumeattach"
+	"github.com/gophercloud/gophercloud/v2/openstack/dns/v2/recordsets"
+	"github.com/gophercloud/gophercloud/v2/openstack/dns/v2/zones"
+	"github.com/gophercloud/gophercloud/v2/openstack/image/v2/images"
+	"github.com/gophercloud/gophercloud/v2/openstack/loadbalancer/v2/apiversions"
+	"github.com/gophercloud/gophercloud/v2/openstack/loadbalancer/v2/listeners"
+	"github.com/gophercloud/gophercloud/v2/openstack/loadbalancer/v2/loadbalancers"
+	"github.com/gophercloud/gophercloud/v2/openstack/loadbalancer/v2/monitors"
+	v2pools "github.com/gophercloud/gophercloud/v2/openstack/loadbalancer/v2/pools"
+	l3floatingip "github.com/gophercloud/gophercloud/v2/openstack/networking/v2/extensions/layer3/floatingips"
+	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/extensions/layer3/routers"
+	sg "github.com/gophercloud/gophercloud/v2/openstack/networking/v2/extensions/security/groups"
+	sgr "github.com/gophercloud/gophercloud/v2/openstack/networking/v2/extensions/security/rules"
+	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/networks"
+	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/ports"
+	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/subnets"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/klog/v2"
@@ -117,7 +118,7 @@ type OpenstackCloud interface {
 	ListInstances(servers.ListOptsBuilder) ([]servers.Server, error)
 
 	// CreateInstance will create an openstack server provided create opts
-	CreateInstance(servers.CreateOptsBuilder, string) (*servers.Server, error)
+	CreateInstance(servers.CreateOptsBuilder, servers.SchedulerHintOptsBuilder, string) (*servers.Server, error)
 
 	// DeleteInstanceWithID will delete instance
 	DeleteInstanceWithID(instanceID string) error
@@ -168,7 +169,7 @@ type OpenstackCloud interface {
 	// ListNetworks will return the Neutron networks which match the options
 	ListNetworks(opt networks.ListOptsBuilder) ([]networks.Network, error)
 
-	// ListExternalNetworks will return the Neutron networks with the router:external property
+	// GetExternalNetwork will return the Neutron networks with the router:external property
 	GetExternalNetwork() (*networks.Network, error)
 
 	// GetExternalSubnet will return the subnet for floatingip which is used in external router
@@ -361,7 +362,7 @@ func NewOpenstackCloud(cluster *kops.Cluster, uagent string) (OpenstackCloud, er
 
 	klog.V(2).Info("authenticating to keystone")
 
-	err = openstack.Authenticate(provider, authOption)
+	err = openstack.Authenticate(context.TODO(), provider, authOption)
 	if err != nil {
 		return nil, fmt.Errorf("error building openstack authenticated client: %v", err)
 	}
@@ -404,7 +405,7 @@ func buildClients(provider *gophercloud.ProviderClient, tags map[string]string, 
 	// 2.47 is the minimum version where the compute API /server/details returns flavor names
 	novaClient.Microversion = "2.47"
 
-	glanceClient, err := openstack.NewImageServiceV2(provider, gophercloud.EndpointOpts{
+	glanceClient, err := openstack.NewImageV2(provider, gophercloud.EndpointOpts{
 		Type:   "image",
 		Region: region,
 	})
@@ -603,23 +604,48 @@ func (c *openstackCloud) DeleteGroup(g *cloudinstances.CloudInstanceGroup) error
 	return deleteGroup(c, g)
 }
 
-func deleteGroup(c OpenstackCloud, g *cloudinstances.CloudInstanceGroup) error {
-	grp := g.Raw.(*servergroups.ServerGroup)
+// InstanceInClusterAndIG checks if instance is in current cluster and instancegroup
+func InstanceInClusterAndIG(instance servers.Server, clusterName string, instanceGroupName string) bool {
+	value, ok := instance.Metadata[TagKopsInstanceGroup]
+	if !ok || value != instanceGroupName {
+		return false
+	}
+	cName, clusterok := instance.Metadata["k8s"]
+	if !clusterok || cName != clusterName {
+		return false
+	}
+	return true
+}
 
-	for _, id := range grp.Members {
-		err := c.DeleteInstanceWithID(id)
-		if err != nil {
-			return fmt.Errorf("could not delete instance %q: %v", id, err)
-		}
+func deleteGroup(c OpenstackCloud, g *cloudinstances.CloudInstanceGroup) error {
+	cluster := g.Raw.(*kops.Cluster)
+	allInstances, err := c.ListInstances(servers.ListOpts{
+		Name: fmt.Sprintf("^%s", g.InstanceGroup.Name),
+	})
+	if err != nil {
+		return err
 	}
 
+	instances := []servers.Server{}
+	for _, instance := range allInstances {
+		if !InstanceInClusterAndIG(instance, cluster.Name, g.InstanceGroup.Name) {
+			continue
+		}
+		instances = append(instances, instance)
+	}
+	for _, instance := range instances {
+		err := c.DeleteInstanceWithID(instance.ID)
+		if err != nil {
+			return fmt.Errorf("could not delete instance %q: %v", instance.ID, err)
+		}
+	}
 	ports, err := c.ListPorts(ports.ListOpts{})
 	if err != nil {
-		return fmt.Errorf("Could not list ports %v", err)
+		return fmt.Errorf("could not list ports %v", err)
 	}
 
 	for _, port := range ports {
-		if strings.Contains(port.Name, grp.Name) {
+		if strings.HasPrefix(port.Name, fmt.Sprintf("port-%s", g.InstanceGroup.Name)) && fi.ArrayContains(port.Tags, fmt.Sprintf("%s=%s", TagClusterName, cluster.Name)) {
 			err := c.DeletePort(port.ID)
 			if err != nil {
 				return fmt.Errorf("could not delete port %q: %v", port.ID, err)
@@ -627,11 +653,28 @@ func deleteGroup(c OpenstackCloud, g *cloudinstances.CloudInstanceGroup) error {
 		}
 	}
 
-	err = c.DeleteServerGroup(grp.ID)
+	sgName := g.InstanceGroup.Name
+	if name, ok := g.InstanceGroup.Annotations[OS_ANNOTATION+SERVER_GROUP_NAME]; ok {
+		sgName = name
+	}
+	sgs, err := c.ListServerGroups(servergroups.ListOpts{})
 	if err != nil {
-		return fmt.Errorf("could not server group %q: %v", grp.ID, err)
+		return fmt.Errorf("could not list server groups %v", err)
 	}
 
+	for _, sg := range sgs {
+		if fmt.Sprintf("%s-%s", cluster.Name, sgName) == sg.Name {
+			if len(sg.Members) == 0 {
+				err = c.DeleteServerGroup(sg.ID)
+				if err != nil {
+					return fmt.Errorf("could not delete server group %q: %v", sg.ID, err)
+				}
+			} else {
+				klog.Infof("Server group %q still has members (IDs: %s), delete not executed", sg.ID, strings.Join(sg.Members, ", "))
+			}
+			break
+		}
+	}
 	return nil
 }
 
@@ -642,27 +685,11 @@ func (c *openstackCloud) GetCloudGroups(cluster *kops.Cluster, instancegroups []
 func getCloudGroups(c OpenstackCloud, cluster *kops.Cluster, instancegroups []*kops.InstanceGroup, warnUnmatched bool, nodes []v1.Node) (map[string]*cloudinstances.CloudInstanceGroup, error) {
 	nodeMap := cloudinstances.GetNodeMap(nodes, cluster)
 	groups := make(map[string]*cloudinstances.CloudInstanceGroup)
-
-	serverGrps, err := c.ListServerGroups(servergroups.ListOpts{})
-	if err != nil {
-		return nil, fmt.Errorf("unable to list servergroups: %v", err)
-	}
-
-	for _, grp := range serverGrps {
-		name := grp.Name
-		instancegroup, err := matchInstanceGroup(name, cluster.ObjectMeta.Name, instancegroups)
+	for _, ig := range instancegroups {
+		var err error
+		groups[ig.ObjectMeta.Name], err = osBuildCloudInstanceGroup(c, cluster, ig, nodeMap)
 		if err != nil {
-			return nil, fmt.Errorf("error getting instance group for servergroup %q", name)
-		}
-		if instancegroup == nil {
-			if warnUnmatched {
-				klog.Warningf("Found servergrp with no corresponding instance group %q", name)
-			}
-			continue
-		}
-		groups[instancegroup.ObjectMeta.Name], err = osBuildCloudInstanceGroup(c, cluster, instancegroup, grp, nodeMap)
-		if err != nil {
-			return nil, fmt.Errorf("error getting cloud instance group %q: %v", instancegroup.ObjectMeta.Name, err)
+			return nil, fmt.Errorf("error getting cloud instance group %q: %v", ig.ObjectMeta.Name, err)
 		}
 	}
 	return groups, nil
@@ -688,7 +715,7 @@ func useLoadBalancerVIPACL(c OpenstackCloud) (bool, error) {
 	if c.LoadBalancerClient() == nil {
 		return false, nil
 	}
-	allPages, err := apiversions.List(c.LoadBalancerClient()).AllPages()
+	allPages, err := apiversions.List(c.LoadBalancerClient()).AllPages(context.TODO())
 	if err != nil {
 		return false, err
 	}
@@ -803,7 +830,7 @@ func getIPIngressStatus(c OpenstackCloud, cluster *kops.Cluster) (ingresses []fi
 }
 
 func isNotFound(err error) bool {
-	if _, ok := err.(gophercloud.ErrDefault404); ok {
+	if gophercloud.ResponseCodeIs(err, http.StatusNotFound) {
 		return true
 	}
 
@@ -820,13 +847,8 @@ func isNotFound(err error) bool {
 	return false
 }
 
-func MakeCloudConfig(spec kops.ClusterSpec) []string {
+func MakeCloudConfig(osc *kops.OpenstackSpec) []string {
 	var lines []string
-
-	osc := spec.CloudProvider.Openstack
-	if osc == nil {
-		return nil
-	}
 
 	// Support mapping of older keystone API
 	tenantName := os.Getenv("OS_TENANT_NAME")
@@ -846,15 +868,8 @@ func MakeCloudConfig(spec kops.ClusterSpec) []string {
 		fmt.Sprintf("tenant-name=\"%s\"", tenantName),
 		fmt.Sprintf("domain-name=\"%s\"", os.Getenv("OS_DOMAIN_NAME")),
 		fmt.Sprintf("domain-id=\"%s\"", os.Getenv("OS_DOMAIN_ID")),
-	)
-	if spec.ExternalCloudControllerManager != nil {
-		lines = append(lines,
-			fmt.Sprintf("application-credential-id=\"%s\"", os.Getenv("OS_APPLICATION_CREDENTIAL_ID")),
-			fmt.Sprintf("application-credential-secret=\"%s\"", os.Getenv("OS_APPLICATION_CREDENTIAL_SECRET")),
-		)
-	}
-
-	lines = append(lines,
+		fmt.Sprintf("application-credential-id=\"%s\"", os.Getenv("OS_APPLICATION_CREDENTIAL_ID")),
+		fmt.Sprintf("application-credential-secret=\"%s\"", os.Getenv("OS_APPLICATION_CREDENTIAL_SECRET")),
 		"",
 	)
 

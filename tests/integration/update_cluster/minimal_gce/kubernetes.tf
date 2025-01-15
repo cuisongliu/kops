@@ -146,14 +146,6 @@ resource "aws_s3_object" "minimal-gce-example-com-addons-limit-range-addons-k8s-
   server_side_encryption = "AES256"
 }
 
-resource "aws_s3_object" "minimal-gce-example-com-addons-metadata-proxy-addons-k8s-io-v0-1-12" {
-  bucket                 = "testingBucket"
-  content                = file("${path.module}/data/aws_s3_object_minimal-gce.example.com-addons-metadata-proxy.addons.k8s.io-v0.1.12_content")
-  key                    = "tests/minimal-gce.example.com/addons/metadata-proxy.addons.k8s.io/v0.1.12.yaml"
-  provider               = aws.files
-  server_side_encryption = "AES256"
-}
-
 resource "aws_s3_object" "minimal-gce-example-com-addons-storage-gce-addons-k8s-io-v1-7-0" {
   bucket                 = "testingBucket"
   content                = file("${path.module}/data/aws_s3_object_minimal-gce.example.com-addons-storage-gce.addons.k8s.io-v1.7.0_content")
@@ -405,9 +397,10 @@ resource "google_compute_firewall" "ssh-external-to-node-minimal-gce-example-com
 }
 
 resource "google_compute_instance_group_manager" "a-master-us-test1-a-minimal-gce-example-com" {
-  base_instance_name = "master-us-test1-a"
-  name               = "a-master-us-test1-a-minimal-gce-example-com"
-  target_size        = 1
+  base_instance_name             = "master-us-test1-a"
+  list_managed_instances_results = "PAGINATED"
+  name                           = "a-master-us-test1-a-minimal-gce-example-com"
+  target_size                    = 1
   version {
     instance_template = google_compute_instance_template.master-us-test1-a-minimal-gce-example-com.self_link
   }
@@ -415,9 +408,10 @@ resource "google_compute_instance_group_manager" "a-master-us-test1-a-minimal-gc
 }
 
 resource "google_compute_instance_group_manager" "a-nodes-minimal-gce-example-com" {
-  base_instance_name = "nodes"
-  name               = "a-nodes-minimal-gce-example-com"
-  target_size        = 2
+  base_instance_name             = "nodes"
+  list_managed_instances_results = "PAGINATED"
+  name                           = "a-nodes-minimal-gce-example-com"
+  target_size                    = 2
   version {
     instance_template = google_compute_instance_template.nodes-minimal-gce-example-com.self_link
   }
@@ -453,7 +447,7 @@ resource "google_compute_instance_template" "master-us-test1-a-minimal-gce-examp
     "cluster-name"                    = "minimal-gce.example.com"
     "kops-k8s-io-instance-group-name" = "master-us-test1-a"
     "ssh-keys"                        = "admin: ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAAAgQCtWu40XQo8dczLsCq0OWV+hxm9uV3WxeH9Kgh4sMzQxNtoU1pvW0XdjpkBesRKGoolfWeCLXWxpyQb1IaiMkKoz7MdhQ/6UKjMjP66aFWWp3pwD0uj0HuJ7tq4gKHKRYGTaZIRWpzUiANBrjugVgA+Sd7E/mYwc/DMXkIyRZbvhQ=="
-    "startup-script"                  = file("${path.module}/data/google_compute_instance_template_master-us-test1-a-minimal-gce-example-com_metadata_startup-script")
+    "user-data"                       = file("${path.module}/data/google_compute_instance_template_master-us-test1-a-minimal-gce-example-com_metadata_user-data")
   }
   name_prefix = "master-us-test1-a-minimal-do16cp-"
   network_interface {
@@ -470,8 +464,8 @@ resource "google_compute_instance_template" "master-us-test1-a-minimal-gce-examp
     provisioning_model  = "STANDARD"
   }
   service_account {
-    email  = google_service_account.control-plane.email
-    scopes = ["https://www.googleapis.com/auth/compute", "https://www.googleapis.com/auth/monitoring", "https://www.googleapis.com/auth/logging.write", "https://www.googleapis.com/auth/devstorage.read_write", "https://www.googleapis.com/auth/ndev.clouddns.readwrite"]
+    email  = "default"
+    scopes = ["https://www.googleapis.com/auth/compute", "https://www.googleapis.com/auth/monitoring", "https://www.googleapis.com/auth/logging.write", "https://www.googleapis.com/auth/cloud-platform", "https://www.googleapis.com/auth/devstorage.read_write", "https://www.googleapis.com/auth/ndev.clouddns.readwrite"]
   }
   tags = ["minimal-gce-example-com-k8s-io-role-control-plane", "minimal-gce-example-com-k8s-io-role-master"]
 }
@@ -505,7 +499,7 @@ resource "google_compute_instance_template" "nodes-minimal-gce-example-com" {
     "kops-k8s-io-instance-group-name" = "nodes"
     "kube-env"                        = "AUTOSCALER_ENV_VARS: os_distribution=ubuntu;arch=amd64;os=linux"
     "ssh-keys"                        = "admin: ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAAAgQCtWu40XQo8dczLsCq0OWV+hxm9uV3WxeH9Kgh4sMzQxNtoU1pvW0XdjpkBesRKGoolfWeCLXWxpyQb1IaiMkKoz7MdhQ/6UKjMjP66aFWWp3pwD0uj0HuJ7tq4gKHKRYGTaZIRWpzUiANBrjugVgA+Sd7E/mYwc/DMXkIyRZbvhQ=="
-    "startup-script"                  = file("${path.module}/data/google_compute_instance_template_nodes-minimal-gce-example-com_metadata_startup-script")
+    "user-data"                       = file("${path.module}/data/google_compute_instance_template_nodes-minimal-gce-example-com_metadata_user-data")
   }
   name_prefix = "nodes-minimal-gce-example-com-"
   network_interface {
@@ -522,8 +516,8 @@ resource "google_compute_instance_template" "nodes-minimal-gce-example-com" {
     provisioning_model  = "STANDARD"
   }
   service_account {
-    email  = google_service_account.node.email
-    scopes = ["https://www.googleapis.com/auth/compute", "https://www.googleapis.com/auth/monitoring", "https://www.googleapis.com/auth/logging.write", "https://www.googleapis.com/auth/devstorage.read_only"]
+    email  = "default"
+    scopes = ["https://www.googleapis.com/auth/compute", "https://www.googleapis.com/auth/monitoring", "https://www.googleapis.com/auth/logging.write", "https://www.googleapis.com/auth/cloud-platform", "https://www.googleapis.com/auth/devstorage.read_only"]
   }
   tags = ["minimal-gce-example-com-k8s-io-role-node"]
 }
@@ -541,43 +535,17 @@ resource "google_compute_subnetwork" "us-test1-minimal-gce-example-com" {
   stack_type    = "IPV4_ONLY"
 }
 
-resource "google_project_iam_binding" "serviceaccount-control-plane" {
-  members = ["serviceAccount:control-plane-minimal-g-fu1mg6@testproject.iam.gserviceaccount.com"]
-  project = "testproject"
-  role    = "roles/container.serviceAgent"
-}
-
-resource "google_project_iam_binding" "serviceaccount-nodes" {
-  members = ["serviceAccount:node-minimal-gce-example-com@testproject.iam.gserviceaccount.com"]
-  project = "testproject"
-  role    = "roles/compute.viewer"
-}
-
-resource "google_service_account" "control-plane" {
-  account_id   = "control-plane-minimal-g-fu1mg6"
-  description  = "kubernetes control-plane instances"
-  display_name = "control-plane"
-  project      = "testproject"
-}
-
-resource "google_service_account" "node" {
-  account_id   = "node-minimal-gce-example-com"
-  description  = "kubernetes worker nodes"
-  display_name = "node"
-  project      = "testproject"
-}
-
 terraform {
   required_version = ">= 0.15.0"
   required_providers {
     aws = {
       "configuration_aliases" = [aws.files]
       "source"                = "hashicorp/aws"
-      "version"               = ">= 4.0.0"
+      "version"               = ">= 5.0.0"
     }
     google = {
       "source"  = "hashicorp/google"
-      "version" = ">= 2.19.0"
+      "version" = ">= 5.11.0"
     }
   }
 }

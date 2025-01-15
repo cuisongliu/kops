@@ -28,6 +28,7 @@ import (
 	"k8s.io/kops/pkg/assets"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/gce"
+	"k8s.io/kops/util/pkg/vfs"
 )
 
 func TestServiceAccount(t *testing.T) {
@@ -100,7 +101,7 @@ func checkHasChanges(t *testing.T, ctx context.Context, cloud fi.Cloud, allTasks
 func runTasks(t *testing.T, ctx context.Context, cloud gce.GCECloud, allTasks map[string]fi.CloudupTask) {
 	target := gce.NewGCEAPITarget(cloud)
 
-	context, err := fi.NewCloudupContext(ctx, target, nil, cloud, nil, nil, nil, allTasks)
+	context, err := fi.NewCloudupContext(ctx, fi.DeletionProcessingModeDeleteIncludingDeferred, target, nil, cloud, nil, nil, nil, allTasks)
 	if err != nil {
 		t.Fatalf("error building context: %v", err)
 	}
@@ -117,9 +118,9 @@ func doDryRun(t *testing.T, ctx context.Context, cloud fi.Cloud, allTasks map[st
 			KubernetesVersion: "v1.23.0",
 		},
 	}
-	assetBuilder := assets.NewAssetBuilder(cluster.Spec.Assets, cluster.Spec.KubernetesVersion, false)
+	assetBuilder := assets.NewAssetBuilder(vfs.Context, cluster.Spec.Assets, false)
 	target := fi.NewCloudupDryRunTarget(assetBuilder, os.Stderr)
-	context, err := fi.NewCloudupContext(ctx, target, nil, cloud, nil, nil, nil, allTasks)
+	context, err := fi.NewCloudupContext(ctx, fi.DeletionProcessingModeDeleteIncludingDeferred, target, nil, cloud, nil, nil, nil, allTasks)
 	if err != nil {
 		t.Fatalf("error building context: %v", err)
 	}

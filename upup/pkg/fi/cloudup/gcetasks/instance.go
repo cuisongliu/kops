@@ -166,6 +166,7 @@ func init() {
 		"monitoring":       "https://www.googleapis.com/auth/monitoring",
 		"monitoring-write": "https://www.googleapis.com/auth/monitoring.write",
 		"logging-write":    "https://www.googleapis.com/auth/logging.write",
+		"cloud-platform":   "https://www.googleapis.com/auth/cloud-platform",
 	}
 }
 
@@ -481,7 +482,7 @@ func (_ *Instance) RenderTerraform(t *terraform.TerraformTarget, a, e, changes *
 	}
 	tf.Metadata = metadata
 
-	// Using metadata_startup_script is now mandatory (?)
+	// Using metadata_startup_script (is explicitly enabled)
 	{
 		startupScript, found := tf.Metadata["startup-script"]
 		if found {

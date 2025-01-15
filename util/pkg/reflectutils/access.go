@@ -21,7 +21,10 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"time"
 
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
@@ -130,6 +133,27 @@ func setType(v reflect.Value, newValue string) error {
 
 	t := v.Type().String()
 
+	if v.Type().Kind() == reflect.Map {
+		if v.IsNil() {
+			v.Set(reflect.MakeMap(v.Type()))
+		}
+
+		switch t {
+		case "map[string]string":
+			name, value, _ := strings.Cut(newValue, "=")
+			v.SetMapIndex(reflect.ValueOf(name), reflect.ValueOf(value))
+
+		case "map[string]intstr.IntOrString":
+			name, value, _ := strings.Cut(newValue, "=")
+			v.SetMapIndex(reflect.ValueOf(name), reflect.ValueOf(intstr.Parse(value)))
+
+		default:
+			return fmt.Errorf("unhandled type %q", t)
+		}
+
+		return nil
+	}
+
 	var newV reflect.Value
 
 	switch t {
@@ -164,6 +188,7 @@ func setType(v reflect.Value, newValue string) error {
 		default:
 			panic("missing case in int switch")
 		}
+
 	case "uint64", "uint32", "uint16", "uint":
 		v, err := strconv.Atoi(newValue)
 		if err != nil {
@@ -185,8 +210,43 @@ func setType(v reflect.Value, newValue string) error {
 		default:
 			panic("missing case in uint switch")
 		}
+
 	case "intstr.IntOrString":
 		newV = reflect.ValueOf(intstr.Parse(newValue))
+
+	case "kops.EnvVar":
+		newV = reflect.New(v.Type()).Elem()
+
+		envVarType := newV.Type()
+
+		fdName, found := envVarType.FieldByName("Name")
+		if !found {
+			return fmt.Errorf("field Name not found in %T", newV.Interface())
+		}
+		fdValue, found := envVarType.FieldByName("Value")
+		if !found {
+			return fmt.Errorf("field Value not found in %T", newV.Interface())
+		}
+
+		name, value, hasValue := strings.Cut(newValue, "=")
+		newV.FieldByIndex(fdName.Index).SetString(name)
+		if hasValue {
+			newV.FieldByIndex(fdValue.Index).SetString(value)
+		}
+
+	case "v1.Duration":
+		duration, err := time.ParseDuration(newValue)
+		if err != nil {
+			return fmt.Errorf("cannot interpret %q value as v1.Duration", newValue)
+		}
+		newV = reflect.ValueOf(metav1.Duration{Duration: duration})
+
+	case "resource.Quantity":
+		quantity, err := resource.ParseQuantity(newValue)
+		if err != nil {
+			return fmt.Errorf("cannot interpret %q value as resource.Quantity", newValue)
+		}
+		newV = reflect.ValueOf(quantity)
 
 	default:
 		// This handles enums and other simple conversions

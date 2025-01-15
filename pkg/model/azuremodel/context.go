@@ -64,7 +64,7 @@ func (c *AzureModelContext) LinkToAzureSubnet(spec *kops.ClusterSubnetSpec) *azu
 
 // NameForRouteTable returns the name of the Route Table object for the cluster.
 func (c *AzureModelContext) NameForRouteTable() string {
-	return c.Cluster.Spec.CloudProvider.Azure.RouteTableName
+	return c.Cluster.AzureRouteTableName()
 }
 
 // LinkToLoadBalancer returns the Load Balancer object for the cluster.
@@ -75,6 +75,26 @@ func (c *AzureModelContext) LinkToLoadBalancer() *azuretasks.LoadBalancer {
 // NameForLoadBalancer returns the name of the Load Balancer object for the cluster.
 func (c *AzureModelContext) NameForLoadBalancer() string {
 	return "api-" + c.ClusterName()
+}
+
+// NameForApplicationSecurityGroupControlPlane returns the name of the Application Security Group object for the ControlPlane role.
+func (c *AzureModelContext) NameForApplicationSecurityGroupControlPlane() string {
+	return kops.InstanceGroupRoleControlPlane.ToLowerString() + "." + c.ClusterName()
+}
+
+// NameForApplicationSecurityGroupNodes returns the name of the Application Security Group object for the Node role.
+func (c *AzureModelContext) NameForApplicationSecurityGroupNodes() string {
+	return kops.InstanceGroupRoleNode.ToLowerString() + "s." + c.ClusterName()
+}
+
+// LinkToApplicationSecurityGroupControlPlane returns the Application Security Group object for the ControlPlane role.
+func (c *AzureModelContext) LinkToApplicationSecurityGroupControlPlane() *azuretasks.ApplicationSecurityGroup {
+	return &azuretasks.ApplicationSecurityGroup{Name: fi.PtrTo(c.NameForApplicationSecurityGroupControlPlane())}
+}
+
+// LinkToApplicationSecurityGroupNodes returns the Application Security Group object for the Node role.
+func (c *AzureModelContext) LinkToApplicationSecurityGroupNodes() *azuretasks.ApplicationSecurityGroup {
+	return &azuretasks.ApplicationSecurityGroup{Name: fi.PtrTo(c.NameForApplicationSecurityGroupNodes())}
 }
 
 // CloudTagsForInstanceGroup computes the tags to apply to instances in the specified InstanceGroup

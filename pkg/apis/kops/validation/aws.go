@@ -22,8 +22,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/aws/aws-sdk-go/aws/arn"
-	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/validation/field"
@@ -32,13 +33,15 @@ import (
 	"k8s.io/kops/upup/pkg/fi/cloudup/awsup"
 )
 
-func awsValidateCluster(c *kops.Cluster) field.ErrorList {
+func awsValidateCluster(c *kops.Cluster, strict bool) field.ErrorList {
 	allErrs := field.ErrorList{}
 
 	if c.Spec.API.LoadBalancer != nil {
 		lbPath := field.NewPath("spec", "api", "loadBalancer")
 		lbSpec := c.Spec.API.LoadBalancer
-		allErrs = append(allErrs, IsValidValue(lbPath.Child("class"), &lbSpec.Class, kops.SupportedLoadBalancerClasses)...)
+		if strict || lbSpec.Class != "" {
+			allErrs = append(allErrs, IsValidValue(lbPath.Child("class"), &lbSpec.Class, kops.SupportedLoadBalancerClasses)...)
+		}
 		allErrs = append(allErrs, awsValidateTopologyDNS(lbPath.Child("type"), c)...)
 		allErrs = append(allErrs, awsValidateSecurityGroupOverride(lbPath.Child("securityGroupOverride"), lbSpec)...)
 		allErrs = append(allErrs, awsValidateAdditionalSecurityGroups(lbPath.Child("additionalSecurityGroups"), lbSpec.AdditionalSecurityGroups)...)
@@ -52,7 +55,7 @@ func awsValidateCluster(c *kops.Cluster) field.ErrorList {
 		allErrs = append(allErrs, awsValidateLoadBalancerSubnets(lbPath.Child("subnets"), c.Spec)...)
 	}
 
-	allErrs = append(allErrs, awsValidateExternalCloudControllerManager(c)...)
+	allErrs = append(allErrs, awsValidateEBSCSIDriver(c)...)
 
 	if c.Spec.Authentication != nil && c.Spec.Authentication.AWS != nil {
 		allErrs = append(allErrs, awsValidateIAMAuthenticator(field.NewPath("spec", "authentication", "aws"), c.Spec.Authentication.AWS)...)
@@ -61,16 +64,12 @@ func awsValidateCluster(c *kops.Cluster) field.ErrorList {
 	return allErrs
 }
 
-func awsValidateExternalCloudControllerManager(cluster *kops.Cluster) (allErrs field.ErrorList) {
+func awsValidateEBSCSIDriver(cluster *kops.Cluster) (allErrs field.ErrorList) {
 	c := cluster.Spec
 
-	if c.ExternalCloudControllerManager == nil {
-		return allErrs
-	}
-	fldPath := field.NewPath("spec", "externalCloudControllerManager")
-	if !hasAWSEBSCSIDriver(c) {
-		allErrs = append(allErrs, field.Forbidden(fldPath,
-			"AWS external CCM cannot be used without enabling spec.cloudProvider.aws.ebsCSIDriverSpec."))
+	fldPath := field.NewPath("spec", "cloudProvider", "aws", "ebsCSIDriver", "enabled")
+	if c.CloudProvider.AWS.EBSCSIDriver != nil && c.CloudProvider.AWS.EBSCSIDriver.Enabled != nil && !*c.CloudProvider.AWS.EBSCSIDriver.Enabled {
+		allErrs = append(allErrs, field.Forbidden(fldPath, "must not be disabled"))
 	}
 	return allErrs
 }
@@ -188,7 +187,7 @@ func awsValidateInstanceTypeAndImage(instanceTypeFieldPath *field.Path, imageFie
 		return append(allErrs, field.Invalid(imageFieldPath, image,
 			fmt.Sprintf("specified image %q is invalid: %s", image, err)))
 	}
-	imageArch := fi.ValueOf(imageInfo.Architecture)
+	imageArch := string(imageInfo.Architecture)
 
 	// Spotinst uses the instance type field to keep a "," separated list of instance types
 	for _, instanceType := range strings.Split(instanceTypes, ",") {
@@ -201,15 +200,17 @@ func awsValidateInstanceTypeAndImage(instanceTypeFieldPath *field.Path, imageFie
 		found := false
 		if machineInfo != nil && machineInfo.ProcessorInfo != nil {
 			for _, machineArch := range machineInfo.ProcessorInfo.SupportedArchitectures {
-				if imageArch == fi.ValueOf(machineArch) {
+				if imageArch == string(machineArch) {
 					found = true
 				}
 			}
 		}
 		if !found {
-			var machineArch []string
+			machineArch := make([]string, 0)
 			if machineInfo != nil && machineInfo.ProcessorInfo != nil && machineInfo.ProcessorInfo.SupportedArchitectures != nil {
-				machineArch = fi.StringSliceValue(machineInfo.ProcessorInfo.SupportedArchitectures)
+				for _, arch := range machineInfo.ProcessorInfo.SupportedArchitectures {
+					machineArch = append(machineArch, string(arch))
+				}
 			}
 			allErrs = append(allErrs, field.Invalid(instanceTypeFieldPath, instanceTypes,
 				fmt.Sprintf("machine type architecture %q does not match image architecture %q", strings.Join(machineArch, ","), imageArch)))
@@ -232,8 +233,8 @@ func awsValidateSpotDurationInMinute(fieldPath *field.Path, ig *kops.InstanceGro
 func awsValidateInstanceInterruptionBehavior(fieldPath *field.Path, ig *kops.InstanceGroup) field.ErrorList {
 	allErrs := field.ErrorList{}
 	if ig.Spec.InstanceInterruptionBehavior != nil {
-		instanceInterruptionBehavior := *ig.Spec.InstanceInterruptionBehavior
-		allErrs = append(allErrs, IsValidValue(fieldPath, &instanceInterruptionBehavior, ec2.InstanceInterruptionBehavior_Values())...)
+		instanceInterruptionBehavior := ec2types.InstanceInterruptionBehavior(*ig.Spec.InstanceInterruptionBehavior)
+		allErrs = append(allErrs, IsValidValue(fieldPath, &instanceInterruptionBehavior, ec2types.InstanceInterruptionBehavior("").Values())...)
 	}
 	return allErrs
 }
@@ -242,7 +243,7 @@ func awsValidateInstanceInterruptionBehavior(fieldPath *field.Path, ig *kops.Ins
 func awsValidateMixedInstancesPolicy(path *field.Path, spec *kops.MixedInstancesPolicySpec, ig *kops.InstanceGroup, cloud awsup.AWSCloud) field.ErrorList {
 	var errs field.ErrorList
 
-	mainMachineTypeInfo, err := awsup.GetMachineTypeInfo(cloud, ig.Spec.MachineType)
+	mainMachineTypeInfo, err := awsup.GetMachineTypeInfo(cloud, ec2types.InstanceType(ig.Spec.MachineType))
 	if err != nil {
 		errs = append(errs, field.Invalid(field.NewPath("spec", "machineType"), ig.Spec.MachineType, fmt.Sprintf("machine type specified is invalid: %q", ig.Spec.MachineType)))
 		return errs
@@ -256,7 +257,7 @@ func awsValidateMixedInstancesPolicy(path *field.Path, spec *kops.MixedInstances
 		errs = append(errs, awsValidateInstanceTypeAndImage(path.Child("instances").Index(i), path.Child("image"), instanceTypes, ig.Spec.Image, cloud)...)
 
 		for _, instanceType := range strings.Split(instanceTypes, ",") {
-			machineTypeInfo, err := awsup.GetMachineTypeInfo(cloud, instanceType)
+			machineTypeInfo, err := awsup.GetMachineTypeInfo(cloud, ec2types.InstanceType(instanceType))
 			if err != nil {
 				errs = append(errs, field.Invalid(field.NewPath("spec", "machineType"), ig.Spec.MachineType, fmt.Sprintf("machine type specified is invalid: %q", ig.Spec.MachineType)))
 				return errs
@@ -393,15 +394,6 @@ func awsValidateIAMAuthenticator(fieldPath *field.Path, spec *kops.AWSAuthentica
 		}
 	}
 	return allErrs
-}
-
-func hasAWSEBSCSIDriver(c kops.ClusterSpec) bool {
-	// EBSCSIDriverSpec will have a default value, so if this is all false, it will be populated on next pass
-	if c.CloudProvider.AWS.EBSCSIDriver == nil || c.CloudProvider.AWS.EBSCSIDriver.Enabled == nil {
-		return true
-	}
-
-	return *c.CloudProvider.AWS.EBSCSIDriver.Enabled
 }
 
 func awsValidateAdditionalRoutes(fieldPath *field.Path, routes []kops.RouteSpec, networkCIDRs []*net.IPNet) field.ErrorList {

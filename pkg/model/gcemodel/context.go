@@ -54,7 +54,7 @@ func (c *GCEModelContext) NameForIPAliasRange(key string) string {
 	// but there's a 5 IP alias range limit per subnet anwyay, so
 	// this is rather pointless and in practice we just use a
 	// separate subnet per cluster
-	return c.SafeObjectName(key)
+	return c.SafeSuffixedObjectName(key)
 }
 
 // LinkToSubnet returns a link to the GCE subnet object
@@ -82,7 +82,7 @@ func (c *GCEModelContext) SafeClusterName() string {
 	return gce.SafeClusterName(c.Cluster.ObjectMeta.Name)
 }
 
-// SafeClusterName returns the cluster name escaped and truncated for use as a GCE resource name
+// SafeTruncatedClusterName returns the cluster name escaped and truncated for use as a GCE resource name
 func (c *GCEModelContext) SafeTruncatedClusterName() string {
 	return gce.SafeTruncatedClusterName(c.Cluster.ObjectMeta.Name, 63)
 }
@@ -101,11 +101,11 @@ func (c *GCEModelContext) NameForTargetPool(id string) string {
 }
 
 func (c *GCEModelContext) NameForHealthCheck(id string) string {
-	return c.SafeObjectName(id)
+	return c.SafeSuffixedObjectName(id)
 }
 
 func (c *GCEModelContext) NameForBackendService(id string) string {
-	return c.SafeObjectName(id)
+	return c.SafeSuffixedObjectName(id)
 }
 
 func (c *GCEModelContext) NameForForwardingRule(id string) string {

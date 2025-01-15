@@ -24,7 +24,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aws/aws-sdk-go/service/ec2"
+	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"k8s.io/kops/util/pkg/vfs"
 
 	"k8s.io/kops/cloudmock/aws/mockec2"
 	"k8s.io/kops/pkg/apis/kops"
@@ -77,18 +78,7 @@ func TestElasticIPCreate(t *testing.T) {
 		allTasks := buildTasks()
 		eip1 := allTasks["eip1"].(*ElasticIP)
 
-		target := &awsup.AWSAPITarget{
-			Cloud: cloud,
-		}
-
-		context, err := fi.NewCloudupContext(ctx, target, nil, cloud, nil, nil, nil, allTasks)
-		if err != nil {
-			t.Fatalf("error building context: %v", err)
-		}
-
-		if err := context.RunTasks(testRunTasksOptions); err != nil {
-			t.Fatalf("unexpected error during Run: %v", err)
-		}
+		runTasks(t, cloud, allTasks)
 
 		if fi.ValueOf(eip1.ID) == "" {
 			t.Fatalf("ID not set after create")
@@ -98,11 +88,11 @@ func TestElasticIPCreate(t *testing.T) {
 			t.Fatalf("Expected exactly one ElasticIP; found %v", c.Addresses)
 		}
 
-		expected := &ec2.Address{
+		expected := &ec2types.Address{
 			AllocationId: eip1.ID,
-			Domain:       s("vpc"),
+			Domain:       ec2types.DomainTypeVpc,
 			PublicIp:     s("192.0.2.1"),
-			Tags: []*ec2.Tag{
+			Tags: []ec2types.Tag{
 				{
 					Key:   s("Name"),
 					Value: s("eip1"),
@@ -127,9 +117,9 @@ func checkNoChanges(t *testing.T, ctx context.Context, cloud fi.Cloud, allTasks 
 			KubernetesVersion: "v1.9.0",
 		},
 	}
-	assetBuilder := assets.NewAssetBuilder(cluster.Spec.Assets, cluster.Spec.KubernetesVersion, false)
+	assetBuilder := assets.NewAssetBuilder(vfs.Context, cluster.Spec.Assets, false)
 	target := fi.NewCloudupDryRunTarget(assetBuilder, os.Stderr)
-	context, err := fi.NewCloudupContext(ctx, target, nil, cloud, nil, nil, nil, allTasks)
+	context, err := fi.NewCloudupContext(ctx, fi.DeletionProcessingModeDeleteIncludingDeferred, target, nil, cloud, nil, nil, nil, allTasks)
 	if err != nil {
 		t.Fatalf("error building context: %v", err)
 	}

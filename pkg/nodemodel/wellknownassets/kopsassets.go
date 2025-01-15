@@ -1,0 +1,160 @@
+/*
+Copyright 2019 The Kubernetes Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package wellknownassets
+
+import (
+	"fmt"
+	"net/url"
+	"os"
+	"path"
+
+	"k8s.io/klog/v2"
+	"k8s.io/kops"
+	"k8s.io/kops/pkg/assets"
+	"k8s.io/kops/util/pkg/architectures"
+)
+
+const (
+	defaultKopsBaseURL = "https://artifacts.k8s.io/binaries/kops/%s/"
+)
+
+var kopsBaseURL *url.URL
+
+// nodeUpAsset caches the nodeup binary download url/hash
+var nodeUpAsset map[architectures.Architecture]*assets.MirroredAsset
+
+// protokubeAsset caches the protokube binary download url/hash
+var protokubeAsset map[architectures.Architecture]*assets.MirroredAsset
+
+// channelsAsset caches the channels binary download url/hash
+var channelsAsset map[architectures.Architecture]*assets.MirroredAsset
+
+// BaseURL returns the base url for the distribution of kops - in particular for nodeup & docker images
+func BaseURL() (*url.URL, error) {
+	// returning cached value
+	// Avoid repeated logging
+	if kopsBaseURL != nil {
+		klog.V(8).Infof("Using cached kopsBaseUrl url: %q", kopsBaseURL.String())
+		return copyBaseURL(kopsBaseURL)
+	}
+
+	baseURLString := os.Getenv("KOPS_BASE_URL")
+	var err error
+	if baseURLString == "" {
+		baseURLString = fmt.Sprintf(defaultKopsBaseURL, kops.Version)
+		klog.V(8).Infof("Using default base url: %q", baseURLString)
+		kopsBaseURL, err = url.Parse(baseURLString)
+		if err != nil {
+			return nil, fmt.Errorf("unable to parse %q as a url: %v", baseURLString, err)
+		}
+	} else {
+		kopsBaseURL, err = url.Parse(baseURLString)
+		if err != nil {
+			return nil, fmt.Errorf("unable to parse env var KOPS_BASE_URL %q as a url: %v", baseURLString, err)
+		}
+		klog.Warningf("Using base url from env var: KOPS_BASE_URL=%q", baseURLString)
+	}
+
+	return copyBaseURL(kopsBaseURL)
+}
+
+// copyBaseURL makes a copy of the base url or the path.Joins can append stuff to this URL
+func copyBaseURL(base *url.URL) (*url.URL, error) {
+	u, err := url.Parse(base.String())
+	if err != nil {
+		return nil, err
+	}
+	return u, nil
+}
+
+// NodeUpAsset returns the asset for where nodeup should be downloaded
+func NodeUpAsset(assetsBuilder *assets.AssetBuilder, arch architectures.Architecture) (*assets.MirroredAsset, error) {
+	if nodeUpAsset == nil {
+		nodeUpAsset = make(map[architectures.Architecture]*assets.MirroredAsset)
+	}
+	if nodeUpAsset[arch] != nil {
+		// Avoid repeated logging
+		klog.V(8).Infof("Using cached nodeup location for %s: %v", arch, nodeUpAsset[arch].Locations)
+		return nodeUpAsset[arch], nil
+	}
+
+	asset, err := KopsFileURL(fmt.Sprintf("linux/%s/nodeup", arch), assetsBuilder)
+	if err != nil {
+		return nil, err
+	}
+	nodeUpAsset[arch] = assets.BuildMirroredAsset(asset)
+	klog.V(8).Infof("Using default nodeup location for %s: %q", arch, asset.DownloadURL.String())
+
+	return nodeUpAsset[arch], nil
+}
+
+// ProtokubeAsset returns the url and hash of the protokube binary
+func ProtokubeAsset(assetsBuilder *assets.AssetBuilder, arch architectures.Architecture) (*assets.MirroredAsset, error) {
+	if protokubeAsset == nil {
+		protokubeAsset = make(map[architectures.Architecture]*assets.MirroredAsset)
+	}
+	if protokubeAsset[arch] != nil {
+		klog.V(8).Infof("Using cached protokube binary location for %s: %v", arch, protokubeAsset[arch].Locations)
+		return protokubeAsset[arch], nil
+	}
+
+	asset, err := KopsFileURL(fmt.Sprintf("linux/%s/protokube", arch), assetsBuilder)
+	if err != nil {
+		return nil, err
+	}
+	protokubeAsset[arch] = assets.BuildMirroredAsset(asset)
+	klog.V(8).Infof("Using default protokube location for %s: %q", arch, asset.DownloadURL.String())
+
+	return protokubeAsset[arch], nil
+}
+
+// ChannelsAsset returns the url and hash of the channels binary
+func ChannelsAsset(assetsBuilder *assets.AssetBuilder, arch architectures.Architecture) (*assets.MirroredAsset, error) {
+	if channelsAsset == nil {
+		channelsAsset = make(map[architectures.Architecture]*assets.MirroredAsset)
+	}
+	if channelsAsset[arch] != nil {
+		klog.V(8).Infof("Using cached channels binary location for %s: %v", arch, channelsAsset[arch].Locations)
+		return channelsAsset[arch], nil
+	}
+
+	asset, err := KopsFileURL(fmt.Sprintf("linux/%s/channels", arch), assetsBuilder)
+	if err != nil {
+		return nil, err
+	}
+	channelsAsset[arch] = assets.BuildMirroredAsset(asset)
+	klog.V(8).Infof("Using default channels location for %s: %q", arch, asset.DownloadURL.String())
+
+	return channelsAsset[arch], nil
+}
+
+// KopsFileURL returns the base url for the distribution of kops - in particular for nodeup & docker images
+func KopsFileURL(file string, assetBuilder *assets.AssetBuilder) (*assets.FileAsset, error) {
+	base, err := BaseURL()
+	if err != nil {
+		return nil, err
+	}
+
+	base.Path = path.Join(base.Path, file)
+
+	asset, err := assetBuilder.RemapFile(base, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return asset, nil
+}

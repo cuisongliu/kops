@@ -20,14 +20,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"k8s.io/klog/v2"
 	"k8s.io/kops/tests/e2e/kubetest2-kops/gce"
-	"k8s.io/kops/tests/e2e/pkg/kops"
 	"k8s.io/kops/tests/e2e/pkg/target"
 	"k8s.io/kops/tests/e2e/pkg/util"
 	"sigs.k8s.io/kubetest2/pkg/boskos"
@@ -41,11 +38,6 @@ func (d *deployer) init() error {
 
 // initialize should only be called by init(), behind a sync.Once
 func (d *deployer) initialize() error {
-	if d.commonOptions.ShouldBuild() {
-		if err := d.verifyBuildFlags(); err != nil {
-			return fmt.Errorf("init failed to check build flags: %v", err)
-		}
-	}
 	if d.commonOptions.ShouldUp() || d.commonOptions.ShouldDown() {
 		if err := d.verifyKopsFlags(); err != nil {
 			return fmt.Errorf("init failed to check kops flags: %v", err)
@@ -56,17 +48,15 @@ func (d *deployer) initialize() error {
 			return fmt.Errorf("init failed to check up flags: %v", err)
 		}
 	}
-	if d.KopsVersionMarker != "" {
-		d.KopsBinaryPath = path.Join(d.commonOptions.RunDir(), "kops")
-		baseURL, err := kops.DownloadKops(d.KopsVersionMarker, d.KopsBinaryPath)
-		if err != nil {
-			return fmt.Errorf("init failed to download kops from url: %v", err)
-		}
-		d.KopsBaseURL = baseURL
-	}
 
 	switch d.CloudProvider {
 	case "aws":
+		if d.SSHPrivateKeyPath == "" {
+			d.SSHPrivateKeyPath = os.Getenv("AWS_SSH_PRIVATE_KEY_FILE")
+		}
+		if d.SSHPublicKeyPath == "" {
+			d.SSHPublicKeyPath = os.Getenv("AWS_SSH_PUBLIC_KEY_FILE")
+		}
 		if d.SSHPrivateKeyPath == "" || d.SSHPublicKeyPath == "" {
 			publicKeyPath, privateKeyPath, err := util.CreateSSHKeyPair(d.ClusterName)
 			if err != nil {
@@ -87,7 +77,7 @@ func (d *deployer) initialize() error {
 		if d.GCPProject == "" {
 			klog.V(1).Info("No GCP project provided, acquiring from Boskos")
 
-			boskosClient, err := boskos.NewClient("http://boskos.test-pods.svc.cluster.local.")
+			boskosClient, err := boskos.NewClient(d.BoskosLocation)
 			if err != nil {
 				return fmt.Errorf("failed to make boskos client: %s", err)
 			}
@@ -95,9 +85,9 @@ func (d *deployer) initialize() error {
 
 			resource, err := boskos.Acquire(
 				d.boskos,
-				"gce-project",
-				5*time.Minute,
-				5*time.Minute,
+				d.BoskosResourceType,
+				d.BoskosAcquireTimeout,
+				d.BoskosHeartbeatInterval,
 				d.boskosHeartbeatClose,
 			)
 			if err != nil {
@@ -106,6 +96,12 @@ func (d *deployer) initialize() error {
 			d.GCPProject = resource.Name
 			klog.V(1).Infof("Got project %s from boskos", d.GCPProject)
 
+			if d.SSHPrivateKeyPath == "" {
+				d.SSHPrivateKeyPath = os.Getenv("GCE_SSH_PRIVATE_KEY_FILE")
+			}
+			if d.SSHPublicKeyPath == "" {
+				d.SSHPublicKeyPath = os.Getenv("GCE_SSH_PUBLIC_KEY_FILE")
+			}
 			if d.SSHPrivateKeyPath == "" && d.SSHPublicKeyPath == "" {
 				privateKey, publicKey, err := gce.SetupSSH(d.GCPProject)
 				if err != nil {
@@ -114,15 +110,28 @@ func (d *deployer) initialize() error {
 				d.SSHPrivateKeyPath = privateKey
 				d.SSHPublicKeyPath = publicKey
 			}
+
 			d.createBucket = true
+		} else if d.SSHPrivateKeyPath == "" && os.Getenv("KUBE_SSH_KEY_PATH") != "" {
+			d.SSHPrivateKeyPath = os.Getenv("KUBE_SSH_KEY_PATH")
+		}
+	}
+
+	klog.V(1).Infof("Using SSH keypair: [%s,%s]", d.SSHPrivateKeyPath, d.SSHPublicKeyPath)
+
+	if d.commonOptions.ShouldBuild() {
+		if err := d.verifyBuildFlags(); err != nil {
+			return fmt.Errorf("init failed to check build flags: %v", err)
 		}
 	}
 
 	if d.SSHUser == "" {
 		d.SSHUser = os.Getenv("KUBE_SSH_USER")
 	}
+	klog.V(1).Infof("Using SSH user: [%s]", d.SSHUser)
+
 	if d.TerraformVersion != "" {
-		t, err := target.NewTerraform(d.TerraformVersion)
+		t, err := target.NewTerraform(d.TerraformVersion, d.ArtifactsDir)
 		if err != nil {
 			return err
 		}
@@ -157,8 +166,8 @@ func (d *deployer) verifyKopsFlags() error {
 		return errors.New("missing required --kops-binary-path when --kops-version-marker is not used")
 	}
 
-	if d.ControlPlaneSize == 0 {
-		d.ControlPlaneSize = 1
+	if d.ControlPlaneCount == 0 {
+		d.ControlPlaneCount = 1
 	}
 
 	switch d.CloudProvider {
@@ -183,6 +192,10 @@ func (d *deployer) env() []string {
 		"KOPS_RUN_TOO_NEW_VERSION=1",
 	}...)
 
+	if d.BuildOptions.TargetBuildArch != "" {
+		vars = append(vars, fmt.Sprintf("KOPS_ARCH=%s", strings.Trim(d.BuildOptions.TargetBuildArch, "linux/")))
+	}
+
 	// Pass-through some env vars if set (on all clouds)
 	for _, k := range []string{"KOPS_ARCH"} {
 		if v := os.Getenv(k); v != "" {
@@ -192,7 +205,7 @@ func (d *deployer) env() []string {
 
 	if d.CloudProvider == "aws" {
 		// Pass through some env vars if set
-		for _, k := range []string{"AWS_PROFILE", "AWS_SHARED_CREDENTIALS_FILE"} {
+		for _, k := range []string{"AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE", "AWS_CONTAINER_CREDENTIALS_FULL_URI", "AWS_PROFILE", "AWS_SHARED_CREDENTIALS_FILE"} {
 			v := os.Getenv(k)
 			if v != "" {
 				vars = append(vars, k+"="+v)
@@ -217,6 +230,29 @@ func (d *deployer) env() []string {
 	} else if baseURL := os.Getenv("KOPS_BASE_URL"); baseURL != "" {
 		vars = append(vars, fmt.Sprintf("KOPS_BASE_URL=%v", os.Getenv("KOPS_BASE_URL")))
 	}
+
+	// Pass through OpenTelemetry flags
+	{
+		foundOTEL := false
+		for _, k := range []string{
+			"OTEL_EXPORTER_OTLP_TRACES_FILE", "OTEL_EXPORTER_OTLP_FILE",
+			"OTEL_EXPORTER_OTLP_TRACES_DIR", "OTEL_EXPORTER_OTLP_DIR",
+		} {
+			v := os.Getenv(k)
+			if v != "" {
+				foundOTEL = true
+				vars = append(vars, k+"="+v)
+			}
+		}
+
+		// If no otel flags were explicitly specified, and we have artifacts, log under the artifacts directory
+		if !foundOTEL {
+			artifacts := d.ArtifactsDir
+			if artifacts != "" {
+				vars = append(vars, "OTEL_EXPORTER_OTLP_TRACES_DIR="+filepath.Join(artifacts, "otlp"))
+			}
+		}
+	}
 	return vars
 }
 
@@ -237,10 +273,14 @@ func (d *deployer) featureFlags() string {
 
 // defaultClusterName returns a kops cluster name to use when ClusterName is not set
 func defaultClusterName(cloudProvider string) (string, error) {
+	dnsDomain := os.Getenv("KOPS_DNS_DOMAIN")
 	jobName := os.Getenv("JOB_NAME")
 	jobType := os.Getenv("JOB_TYPE")
 	buildID := os.Getenv("BUILD_ID")
 	pullNumber := os.Getenv("PULL_NUMBER")
+	if dnsDomain == "" {
+		dnsDomain = "test-cncf-aws.k8s.io"
+	}
 	if jobName == "" || buildID == "" {
 		return "", errors.New("JOB_NAME, and BUILD_ID env vars are required when --cluster-name is not set")
 	}
@@ -251,15 +291,26 @@ func defaultClusterName(cloudProvider string) (string, error) {
 	var suffix string
 	switch cloudProvider {
 	case "aws":
-		suffix = "test-cncf-aws.k8s.io"
+		suffix = dnsDomain
 	default:
 		suffix = "k8s.local"
 	}
 
-	if jobType == "presubmit" {
-		return fmt.Sprintf("e2e-pr%s.%s.%s", pullNumber, jobName, suffix), nil
+	if len(jobName) > 79 { // SNS has char limit of 80
+		jobName = jobName[:79]
 	}
-	return fmt.Sprintf("e2e-%s.%s", jobName, suffix), nil
+	if jobType == "presubmit" {
+		jobName = fmt.Sprintf("e2e-pr%s.%s", pullNumber, jobName)
+	} else {
+		jobName = fmt.Sprintf("e2e-%s", jobName)
+	}
+
+	// GCP has char limit of 64
+	gcpLimit := 63 - (len(suffix) + 1) // 1 for the dot
+	if len(jobName) > gcpLimit && cloudProvider == "gce" {
+		jobName = jobName[:gcpLimit]
+	}
+	return fmt.Sprintf("%v.%v", jobName, suffix), nil
 }
 
 // stateStore returns the kops state store to use
@@ -272,12 +323,36 @@ func (d *deployer) stateStore() string {
 			ss = "s3://k8s-kops-prow"
 		case "gce":
 			d.createBucket = true
-			ss = "gs://" + gce.GCSBucketName(d.GCPProject)
+			ss = "gs://" + gce.GCSBucketName(d.GCPProject, "state")
 		case "digitalocean":
 			ss = "do://e2e-kops-space"
 		}
 	}
 	return ss
+}
+
+// discoveryStore returns the VFS path to use for public OIDC documents
+func (d *deployer) discoveryStore() string {
+	discovery := os.Getenv("KOPS_DISCOVERY_STORE")
+	if discovery == "" {
+		switch d.CloudProvider {
+		case "aws":
+			discovery = "s3://k8s-kops-ci-prow"
+		}
+	}
+	return discovery
+}
+
+func (d *deployer) stagingStore() string {
+	sb := os.Getenv("KOPS_STAGING_BUCKET")
+	if sb == "" {
+		switch d.CloudProvider {
+		case "gce":
+			d.createBucket = true
+			sb = "gs://" + gce.GCSBucketName(d.GCPProject, "staging")
+		}
+	}
+	return sb
 }
 
 // the default is $ARTIFACTS if set, otherwise ./_artifacts

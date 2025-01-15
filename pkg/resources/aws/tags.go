@@ -17,27 +17,27 @@ limitations under the License.
 package aws
 
 import (
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awsup"
 )
 
 // HasOwnedTag looks for the new tag indicating that the cluster does owns the resource, or the legacy tag
-func HasOwnedTag(description string, tags []*ec2.Tag, clusterName string) bool {
+func HasOwnedTag(description string, tags []ec2types.Tag, clusterName string) bool {
 	tagKey := "kubernetes.io/cluster/" + clusterName
 
-	var found *ec2.Tag
+	var found *ec2types.Tag
 	for _, tag := range tags {
-		if aws.StringValue(tag.Key) != tagKey {
+		if aws.ToString(tag.Key) != tagKey {
 			continue
 		}
 
-		found = tag
+		found = &tag
 	}
 
 	if found != nil {
-		tagValue := aws.StringValue(found.Value)
+		tagValue := aws.ToString(found.Value)
 		switch tagValue {
 		case "owned":
 			return true
@@ -52,11 +52,11 @@ func HasOwnedTag(description string, tags []*ec2.Tag, clusterName string) bool {
 
 	// Look for legacy tag - we assume that implies ownership
 	for _, tag := range tags {
-		if aws.StringValue(tag.Key) != awsup.TagClusterName {
+		if aws.ToString(tag.Key) != awsup.TagClusterName {
 			continue
 		}
 
-		found = tag
+		found = &tag
 	}
 
 	if found != nil {

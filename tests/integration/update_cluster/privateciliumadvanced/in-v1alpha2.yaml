@@ -27,7 +27,7 @@ spec:
     anonymousAuth: false
   kubeProxy:
     enabled: false
-  kubernetesVersion: v1.26.0
+  kubernetesVersion: v1.32.0
   masterPublicName: api.privateciliumadvanced.example.com
   networkCIDR: 172.20.0.0/16
   networking:
@@ -39,9 +39,6 @@ spec:
   nonMasqueradeCIDR: 100.64.0.0/10
   sshAccess:
   - 0.0.0.0/0
-  topology:
-    masters: private
-    nodes: private
   subnets:
   - cidr: 172.20.32.0/19
     name: us-test-1a

@@ -52,7 +52,7 @@ func (b *KubeControllerManagerBuilder) Build(c *fi.NodeupModelBuilderContext) er
 
 	pathSrvKCM := filepath.Join(b.PathSrvKubernetes(), "kube-controller-manager")
 
-	kcm := *b.Cluster.Spec.KubeControllerManager
+	kcm := b.NodeupConfig.ControlPlaneConfig.KubeControllerManager
 	kcm.RootCAFile = filepath.Join(b.PathSrvKubernetes(), "ca.crt")
 
 	// Include the CA Key
@@ -117,7 +117,7 @@ func (b *KubeControllerManagerBuilder) writeServerCertificate(c *fi.NodeupModelB
 
 	if kcm.TLSCertFile == nil {
 		alternateNames := []string{
-			"kube-controller-manager.kube-system.svc." + b.Cluster.Spec.ClusterDNSDomain,
+			"kube-controller-manager.kube-system.svc." + b.NodeupConfig.APIServerConfig.ClusterDNSDomain,
 		}
 
 		issueCert := &nodetasks.IssueCert{
@@ -202,6 +202,27 @@ func (b *KubeControllerManagerBuilder) buildPod(kcm *kops.KubeControllerManagerC
 	// Add the volumePluginDir flag if provided in the kubelet spec, or set above based on the OS
 	flags = append(flags, "--flex-volume-plugin-dir="+volumePluginDir)
 
+	resourceRequests := v1.ResourceList{}
+	resourceLimits := v1.ResourceList{}
+
+	cpuRequest := resource.MustParse("100m")
+	if kcm.CPURequest != nil {
+		cpuRequest = *kcm.CPURequest
+	}
+	resourceRequests["cpu"] = cpuRequest
+
+	if kcm.CPULimit != nil {
+		resourceLimits["cpu"] = *kcm.CPULimit
+	}
+
+	if kcm.MemoryRequest != nil {
+		resourceRequests["memory"] = *kcm.MemoryRequest
+	}
+
+	if kcm.MemoryLimit != nil {
+		resourceLimits["memory"] = *kcm.MemoryLimit
+	}
+
 	image := b.RemapImage(kcm.Image)
 
 	container := &v1.Container{
@@ -221,9 +242,8 @@ func (b *KubeControllerManagerBuilder) buildPod(kcm *kops.KubeControllerManagerC
 			TimeoutSeconds:      15,
 		},
 		Resources: v1.ResourceRequirements{
-			Requests: v1.ResourceList{
-				v1.ResourceCPU: resource.MustParse("100m"),
-			},
+			Requests: resourceRequests,
+			Limits:   resourceLimits,
 		},
 	}
 

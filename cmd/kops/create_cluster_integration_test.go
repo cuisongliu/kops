@@ -25,8 +25,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -46,13 +46,14 @@ var MagicTimestamp = metav1.Time{Time: time.Date(2017, 1, 1, 0, 0, 0, 0, time.UT
 
 // TestCreateClusterMinimal runs kops create cluster minimal.example.com --zones us-test-1a
 func TestCreateClusterMinimal(t *testing.T) {
-	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/minimal-1.23", "v1alpha2")
-	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/minimal-1.24", "v1alpha2")
-	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/minimal-1.25", "v1alpha2")
-	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/minimal-1.26", "v1alpha2")
 	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/minimal-1.27", "v1alpha2")
-	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/minimal-1.26-arm64", "v1alpha2")
-	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/minimal-1.26-irsa", "v1alpha2")
+	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/minimal-1.28", "v1alpha2")
+	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/minimal-1.29", "v1alpha2")
+	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/minimal-1.30", "v1alpha2")
+	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/minimal-1.31", "v1alpha2")
+	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/minimal-1.32", "v1alpha2")
+	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/minimal-arm64", "v1alpha2")
+	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/minimal-irsa", "v1alpha2")
 }
 
 // TestCreateClusterHetzner runs kops create cluster minimal.k8s.local --zones fsn1
@@ -97,6 +98,11 @@ func TestCreateClusterComplex(t *testing.T) {
 	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/complex", "v1alpha2")
 }
 
+// TestCreateClusterComplexPrivate runs kops create cluster, with a grab-bag of edge cases
+func TestCreateClusterComplexPrivate(t *testing.T) {
+	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/complex-private", "v1alpha2")
+}
+
 // TestCreateClusterHA runs kops create cluster ha.example.com --zones us-test-1a,us-test-1b,us-test-1c --master-zones us-test-1a,us-test-1b,us-test-1c
 func TestCreateClusterHA(t *testing.T) {
 	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/ha", "v1alpha2")
@@ -105,8 +111,8 @@ func TestCreateClusterHA(t *testing.T) {
 
 // TestCreateClusterMinimalGCE runs kops create cluster minimal.example.com --cloud gce --zones us-test1-a
 func TestCreateClusterMinimalGCE(t *testing.T) {
-	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/minimal-1.26-gce", "v1alpha2")
-	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/minimal-1.26-gce-dns-none", "v1alpha2")
+	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/minimal-gce", "v1alpha2")
+	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/minimal-gce-dns-none", "v1alpha2")
 }
 
 // TestCreateClusterHAGCE runs kops create cluster ha-gce.example.com --cloud gce --zones us-test1-a,us-test1-b,us-test1-c --master-zones us-test1-a,us-test1-b,us-test1-c
@@ -213,13 +219,13 @@ func runCreateClusterIntegrationTest(t *testing.T, srcDir string, version string
 		CidrBlock: aws.String("10.0.0.0/12"),
 	}, "vpc-12345678")
 
-	awsCloud.EC2().CreateSubnet(&ec2.CreateSubnetInput{
+	awsCloud.EC2().CreateSubnet(ctx, &ec2.CreateSubnetInput{
 		AvailabilityZone: aws.String("us-test-1a"),
 		VpcId:            aws.String("vpc-12345678"),
 		CidrBlock:        aws.String("10.10.0.0/24"),
 	})
 
-	awsCloud.EC2().CreateSubnet(&ec2.CreateSubnetInput{
+	awsCloud.EC2().CreateSubnet(ctx, &ec2.CreateSubnetInput{
 		AvailabilityZone: aws.String("us-test-1a"),
 		VpcId:            aws.String("vpc-12345678"),
 		CidrBlock:        aws.String("10.11.0.0/24"),

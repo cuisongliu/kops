@@ -102,6 +102,7 @@ func (b *AutoscalingGroupModelBuilder) buildInstanceTemplate(c *fi.CloudupModelB
 					"compute-rw",
 					"monitoring",
 					"logging-write",
+					"cloud-platform",
 				},
 				Metadata: map[string]fi.Resource{
 					gcemetadata.MetadataKeyClusterName:           fi.NewStringResource(b.ClusterName()),
@@ -110,7 +111,12 @@ func (b *AutoscalingGroupModelBuilder) buildInstanceTemplate(c *fi.CloudupModelB
 			}
 
 			if startupScript != nil {
-				t.Metadata["startup-script"] = startupScript
+				if !fi.ValueOf(b.Cluster.Spec.CloudProvider.GCE.UseStartupScript) {
+					// Use "user-data" instead of "startup-script", for compatibility with cloud-init
+					t.Metadata["user-data"] = startupScript
+				} else {
+					t.Metadata["startup-script"] = startupScript
+				}
 			}
 
 			if ig.Spec.Role == kops.InstanceGroupRoleNode {
@@ -174,11 +180,12 @@ func (b *AutoscalingGroupModelBuilder) buildInstanceTemplate(c *fi.CloudupModelB
 			case kops.InstanceGroupRoleBastion:
 				t.Tags = append(t.Tags, b.GCETagForRole(kops.InstanceGroupRoleBastion))
 			}
+			clusterLabel := gce.LabelForCluster(b.ClusterName())
 			roleLabel := gce.GceLabelNameRolePrefix + ig.Spec.Role.ToLowerString()
 			t.Labels = map[string]string{
-				gce.GceLabelNameKubernetesCluster: gce.SafeClusterName(b.ClusterName()),
-				roleLabel:                         "",
-				gce.GceLabelNameInstanceGroup:     ig.ObjectMeta.Name,
+				clusterLabel.Key:              clusterLabel.Value,
+				roleLabel:                     "",
+				gce.GceLabelNameInstanceGroup: ig.ObjectMeta.Name,
 			}
 			if ig.Spec.Role == kops.InstanceGroupRoleControlPlane {
 				t.Labels[gce.GceLabelNameRolePrefix+"master"] = ""
@@ -187,8 +194,12 @@ func (b *AutoscalingGroupModelBuilder) buildInstanceTemplate(c *fi.CloudupModelB
 			if gce.UsesIPAliases(b.Cluster) {
 				t.CanIPForward = fi.PtrTo(false)
 
+				nodeCIDRMaskSize := int32(24)
+				if b.Cluster.Spec.KubeControllerManager.NodeCIDRMaskSize != nil {
+					nodeCIDRMaskSize = *b.Cluster.Spec.KubeControllerManager.NodeCIDRMaskSize
+				}
 				t.AliasIPRanges = map[string]string{
-					b.NameForIPAliasRange("pods"): "/24",
+					b.NameForIPAliasRange("pods"): fmt.Sprintf("/%d", nodeCIDRMaskSize),
 				}
 			} else {
 				t.CanIPForward = fi.PtrTo(true)
@@ -295,15 +306,16 @@ func (b *AutoscalingGroupModelBuilder) Build(c *fi.CloudupModelBuilderContext) e
 		}
 
 		for zone, targetSize := range instanceCountByZone {
-			name := gce.NameForInstanceGroupManager(b.Cluster, ig, zone)
+			name := gce.NameForInstanceGroupManager(b.Cluster.ObjectMeta.Name, ig.ObjectMeta.Name, zone)
 
 			t := &gcetasks.InstanceGroupManager{
-				Name:             s(name),
-				Lifecycle:        b.Lifecycle,
-				Zone:             s(zone),
-				TargetSize:       fi.PtrTo(int64(targetSize)),
-				BaseInstanceName: s(ig.ObjectMeta.Name),
-				InstanceTemplate: instanceTemplate,
+				Name:                        s(name),
+				Lifecycle:                   b.Lifecycle,
+				Zone:                        s(zone),
+				TargetSize:                  fi.PtrTo(int64(targetSize)),
+				BaseInstanceName:            s(ig.ObjectMeta.Name),
+				InstanceTemplate:            instanceTemplate,
+				ListManagedInstancesResults: "PAGINATED",
 			}
 
 			// Attach masters to load balancer if we're using one

@@ -27,6 +27,7 @@ import (
 	"k8s.io/kops/pkg/model/iam"
 	"k8s.io/kops/pkg/testutils"
 	"k8s.io/kops/upup/pkg/fi"
+	"k8s.io/kops/util/pkg/vfs"
 )
 
 func Test_RunEtcdManagerBuilder(t *testing.T) {
@@ -52,7 +53,7 @@ func Test_RunEtcdManagerBuilder(t *testing.T) {
 
 			builder := EtcdManagerBuilder{
 				KopsModelContext: kopsModelContext,
-				AssetBuilder:     assets.NewAssetBuilder(kopsModelContext.Cluster.Spec.Assets, kopsModelContext.Cluster.Spec.KubernetesVersion, false),
+				AssetBuilder:     assets.NewAssetBuilder(vfs.Context, kopsModelContext.Cluster.Spec.Assets, false),
 			}
 
 			if err := builder.Build(context); err != nil {
@@ -80,8 +81,9 @@ func LoadKopsModelContext(basedir string) (*model.KopsModelContext, error) {
 	}
 
 	kopsContext := &model.KopsModelContext{
-		IAMModelContext: iam.IAMModelContext{Cluster: spec.Cluster},
-		InstanceGroups:  spec.InstanceGroups,
+		IAMModelContext:   iam.IAMModelContext{Cluster: spec.Cluster},
+		AllInstanceGroups: spec.InstanceGroups,
+		InstanceGroups:    spec.InstanceGroups,
 	}
 
 	return kopsContext, nil

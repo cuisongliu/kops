@@ -24,21 +24,19 @@ spec:
     cidrAllocatorType: CloudAllocator
     clusterCIDR: 100.96.0.0/11
     clusterName: minimal-gce-example-com
-    image: k8scloudprovidergcp/cloud-controller-manager:latest
+    controllers:
+    - '*'
+    image: gcr.io/k8s-staging-cloud-provider-gcp/cloud-controller-manager:master
     leaderElection:
       leaderElect: true
   cloudProvider: gce
   clusterDNSDomain: cluster.local
   configBase: memfs://tests/minimal-gce.example.com
-  configStore: memfs://tests/minimal-gce.example.com
-  containerRuntime: containerd
   containerd:
     logLevel: info
     runc:
-      version: 1.1.5
-    version: 1.6.20
-  docker:
-    skipInstall: true
+      version: 1.2.4
+    version: 1.7.25
   etcdClusters:
   - backups:
       backupStore: memfs://tests/minimal-gce.example.com/backups/etcd/main
@@ -50,7 +48,7 @@ spec:
       backupRetentionDays: 90
     memoryRequest: 100Mi
     name: main
-    version: 3.5.9
+    version: 3.5.17
   - backups:
       backupStore: memfs://tests/minimal-gce.example.com/backups/etcd/events
     cpuRequest: 100m
@@ -61,7 +59,7 @@ spec:
       backupRetentionDays: 90
     memoryRequest: 100Mi
     name: events
-    version: 3.5.9
+    version: 3.5.17
   iam:
     legacy: false
   keyStore: memfs://tests/minimal-gce.example.com/pki
@@ -88,7 +86,7 @@ spec:
     - https://127.0.0.1:4001
     etcdServersOverrides:
     - /events#https://127.0.0.1:4002
-    image: registry.k8s.io/kube-apiserver:v1.26.0
+    image: registry.k8s.io/kube-apiserver:v1.32.0
     kubeletPreferredAddressTypes:
     - InternalIP
     - Hostname
@@ -114,7 +112,7 @@ spec:
     clusterCIDR: 100.96.0.0/11
     clusterName: minimal-gce.example.com
     configureCloudRoutes: false
-    image: registry.k8s.io/kube-controller-manager:v1.26.0
+    image: registry.k8s.io/kube-controller-manager:v1.32.0
     leaderElection:
       leaderElect: true
     logLevel: 2
@@ -129,17 +127,17 @@ spec:
     nodeLocalDNS:
       cpuRequest: 25m
       enabled: false
-      image: registry.k8s.io/dns/k8s-dns-node-cache:1.22.20
+      image: registry.k8s.io/dns/k8s-dns-node-cache:1.23.0
       memoryRequest: 5Mi
     provider: CoreDNS
     serverIP: 100.64.0.10
   kubeProxy:
     clusterCIDR: 100.96.0.0/11
     cpuRequest: 100m
-    image: registry.k8s.io/kube-proxy:v1.26.0
+    image: registry.k8s.io/kube-proxy:v1.32.0
     logLevel: 2
   kubeScheduler:
-    image: registry.k8s.io/kube-scheduler:v1.26.0
+    image: registry.k8s.io/kube-scheduler:v1.32.0
     leaderElection:
       leaderElect: true
     logLevel: 2
@@ -164,7 +162,7 @@ spec:
   kubernetesApiAccess:
   - 0.0.0.0/0
   - ::/0
-  kubernetesVersion: 1.26.0
+  kubernetesVersion: 1.32.0
   masterKubelet:
     anonymousAuth: false
     cgroupDriver: systemd
@@ -202,5 +200,3 @@ spec:
   topology:
     dns:
       type: None
-    masters: private
-    nodes: private

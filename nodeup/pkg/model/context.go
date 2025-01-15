@@ -17,6 +17,7 @@ limitations under the License.
 package model
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
@@ -24,14 +25,12 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/aws/aws-sdk-go/aws/ec2metadata"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/blang/semver/v4"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/feature/ec2/imds"
 	hcloudmetadata "github.com/hetznercloud/hcloud-go/hcloud/metadata"
 	"k8s.io/klog/v2"
 	"k8s.io/kops/pkg/apis/kops"
-	"k8s.io/kops/pkg/apis/kops/model"
-	"k8s.io/kops/pkg/apis/kops/util"
+	kopsmodel "k8s.io/kops/pkg/apis/kops/model"
 	"k8s.io/kops/pkg/apis/nodeup"
 	"k8s.io/kops/pkg/systemd"
 	"k8s.io/kops/upup/pkg/fi"
@@ -54,8 +53,6 @@ type NodeupModelContext struct {
 	Architecture architectures.Architecture
 	GPUVendor    architectures.GPUVendor
 	Assets       *fi.AssetStore
-	// Deprecated: Fields should be accessed from NodeupConfig or BootConfig.
-	Cluster      *kops.Cluster
 	ConfigBase   vfs.Path
 	Distribution distributions.Distribution
 	KeyStore     fi.KeystoreReader
@@ -75,7 +72,10 @@ type NodeupModelContext struct {
 	// usesNoneDNS is true if the cluster runs with dns=none (which uses fixed IPs, for example a load balancer, instead of DNS)
 	usesNoneDNS bool
 
-	kubernetesVersion   semver.Version
+	// Deprecated: This should be renamed to controlPlaneVersion / nodeVersion;
+	// controlPlaneVersion should probably/ideally only be populated on control plane nodes.
+	kubernetesVersion *kopsmodel.KubernetesVersion
+
 	bootstrapCerts      map[string]*nodetasks.BootstrapCert
 	bootstrapKeypairIDs map[string]string
 
@@ -87,11 +87,11 @@ type NodeupModelContext struct {
 
 // Init completes initialization of the object, for example pre-parsing the kubernetes version
 func (c *NodeupModelContext) Init() error {
-	k8sVersion, err := util.ParseKubernetesVersion(c.NodeupConfig.KubernetesVersion)
-	if err != nil || k8sVersion == nil {
-		return fmt.Errorf("unable to parse KubernetesVersion %q", c.NodeupConfig.KubernetesVersion)
+	k8sVersion, err := kopsmodel.ParseKubernetesVersion(c.NodeupConfig.KubernetesVersion)
+	if err != nil {
+		return fmt.Errorf("unable to parse KubernetesVersion %q: %w", c.NodeupConfig.KubernetesVersion, err)
 	}
-	c.kubernetesVersion = *k8sVersion
+	c.kubernetesVersion = k8sVersion
 	c.bootstrapCerts = map[string]*nodetasks.BootstrapCert{}
 	c.bootstrapKeypairIDs = map[string]string{}
 
@@ -218,17 +218,6 @@ func (c *NodeupModelContext) PathSrvSshproxy() string {
 	}
 }
 
-// KubeletBootstrapKubeconfig is the path the bootstrap config file
-func (c *NodeupModelContext) KubeletBootstrapKubeconfig() string {
-	path := c.NodeupConfig.KubeletConfig.BootstrapKubeconfig
-
-	if path != "" {
-		return path
-	}
-
-	return "/var/lib/kubelet/bootstrap-kubeconfig"
-}
-
 // KubeletKubeConfig is the path of the kubelet kubeconfig file
 func (c *NodeupModelContext) KubeletKubeConfig() string {
 	return "/var/lib/kubelet/kubeconfig"
@@ -284,82 +273,27 @@ func (c *NodeupModelContext) GetBootstrapCert(name string, signer string) (cert,
 
 // BuildBootstrapKubeconfig generates a kubeconfig with a client certificate from either kops-controller or the state store.
 func (c *NodeupModelContext) BuildBootstrapKubeconfig(name string, ctx *fi.NodeupModelBuilderContext) (fi.Resource, error) {
-	if c.UseKopsControllerForNodeBootstrap() {
-		cert, key, err := c.GetBootstrapCert(name, fi.CertificateIDCA)
-		if err != nil {
-			return nil, err
-		}
-
-		kubeConfig := &nodetasks.KubeConfig{
-			Name: name,
-			Cert: cert,
-			Key:  key,
-			CA:   fi.NewStringResource(c.NodeupConfig.CAs[fi.CertificateIDCA]),
-		}
-		if c.HasAPIServer {
-			// @note: use https even for local connections, so we can turn off the insecure port
-			kubeConfig.ServerURL = "https://127.0.0.1"
-		} else {
-			kubeConfig.ServerURL = "https://" + c.APIInternalName()
-		}
-
-		ctx.EnsureTask(kubeConfig)
-
-		return kubeConfig.GetConfig(), nil
-	} else {
-		keyset, err := c.KeyStore.FindKeyset(ctx.Context(), name)
-		if err != nil {
-			return nil, fmt.Errorf("error fetching keyset %q from keystore: %w", name, err)
-		}
-		if keyset == nil {
-			return nil, fmt.Errorf("keyset %q not found", name)
-		}
-
-		keypairID := c.NodeupConfig.KeypairIDs[name]
-		if keypairID == "" {
-			return nil, fmt.Errorf("keypairID for %s missing from NodeupConfig", name)
-		}
-		item := keyset.Items[keypairID]
-		if item == nil {
-			return nil, fmt.Errorf("keypairID %s missing from %s keyset", keypairID, name)
-		}
-
-		cert, err := item.Certificate.AsBytes()
-		if err != nil {
-			return nil, err
-		}
-
-		key, err := item.PrivateKey.AsBytes()
-		if err != nil {
-			return nil, err
-		}
-
-		kubeConfig := &nodetasks.KubeConfig{
-			Name: name,
-			Cert: fi.NewBytesResource(cert),
-			Key:  fi.NewBytesResource(key),
-			CA:   fi.NewStringResource(c.NodeupConfig.CAs[fi.CertificateIDCA]),
-		}
-		if c.HasAPIServer {
-			// @note: use https even for local connections, so we can turn off the insecure port
-			// This code path is used for the kubelet cert in Kubernetes 1.18 and earlier.
-			kubeConfig.ServerURL = "https://127.0.0.1"
-		} else {
-			kubeConfig.ServerURL = "https://" + c.APIInternalName()
-		}
-
-		err = kubeConfig.Run(nil)
-		if err != nil {
-			return nil, err
-		}
-
-		config, err := fi.ResourceAsBytes(kubeConfig.GetConfig())
-		if err != nil {
-			return nil, err
-		}
-
-		return fi.NewBytesResource(config), nil
+	cert, key, err := c.GetBootstrapCert(name, fi.CertificateIDCA)
+	if err != nil {
+		return nil, err
 	}
+
+	kubeConfig := &nodetasks.KubeConfig{
+		Name: name,
+		Cert: cert,
+		Key:  key,
+		CA:   fi.NewStringResource(c.NodeupConfig.CAs[fi.CertificateIDCA]),
+	}
+	if c.HasAPIServer {
+		// @note: use https even for local connections, so we can turn off the insecure port
+		kubeConfig.ServerURL = "https://127.0.0.1"
+	} else {
+		kubeConfig.ServerURL = "https://" + c.APIInternalName()
+	}
+
+	ctx.EnsureTask(kubeConfig)
+
+	return kubeConfig.GetConfig(), nil
 }
 
 // RemapImage applies any needed remapping to an image reference.
@@ -370,20 +304,20 @@ func (c *NodeupModelContext) RemapImage(image string) string {
 	return image
 }
 
-// IsKubernetesGTE checks if the version is greater-than-or-equal
+// IsKubernetesGTE checks if the kubernetes version is greater-than-or-equal-to version
 func (c *NodeupModelContext) IsKubernetesGTE(version string) bool {
-	if c.kubernetesVersion.Major == 0 {
+	if c.kubernetesVersion == nil {
 		klog.Fatalf("kubernetesVersion not set (%s); Init not called", c.kubernetesVersion)
 	}
-	return util.IsKubernetesGTE(version, c.kubernetesVersion)
+	return c.kubernetesVersion.IsGTE(version)
 }
 
-// IsKubernetesLT checks if the version is less-than
+// IsKubernetesLT checks if the kubernetes version is less-than version
 func (c *NodeupModelContext) IsKubernetesLT(version string) bool {
-	if c.kubernetesVersion.Major == 0 {
+	if c.kubernetesVersion == nil {
 		klog.Fatalf("kubernetesVersion not set (%s); Init not called", c.kubernetesVersion)
 	}
-	return !c.IsKubernetesGTE(version)
+	return c.kubernetesVersion.IsLT(version)
 }
 
 // UseVolumeMounts is used to check if we have volume mounts enabled as we need to
@@ -392,18 +326,13 @@ func (c *NodeupModelContext) UseVolumeMounts() bool {
 	return len(c.NodeupConfig.VolumeMounts) > 0
 }
 
-// UseKopsControllerForNodeBootstrap checks if nodeup should use kops-controller to bootstrap.
-func (c *NodeupModelContext) UseKopsControllerForNodeBootstrap() bool {
-	return model.UseKopsControllerForNodeBootstrap(c.CloudProvider())
-}
-
 // UseChallengeCallback is true if we should use a callback challenge during node provisioning with kops-controller.
 func (c *NodeupModelContext) UseChallengeCallback(cloudProvider kops.CloudProviderID) bool {
-	return model.UseChallengeCallback(cloudProvider)
+	return kopsmodel.UseChallengeCallback(cloudProvider)
 }
 
-func (c *NodeupModelContext) UseExternalECRCredentialsProvider() bool {
-	return model.UseExternalECRCredentialsProvider(c.kubernetesVersion, c.CloudProvider())
+func (c *NodeupModelContext) UseExternalKubeletCredentialProvider() bool {
+	return kopsmodel.UseExternalKubeletCredentialProvider(c.kubernetesVersion, c.CloudProvider())
 }
 
 // UsesSecondaryIP checks if the CNI in use attaches secondary interfaces to the host.
@@ -412,15 +341,6 @@ func (c *NodeupModelContext) UsesSecondaryIP() bool {
 		c.NodeupConfig.Networking.AmazonVPC != nil ||
 		(c.NodeupConfig.Networking.Cilium != nil && c.NodeupConfig.Networking.Cilium.IPAM == kops.CiliumIpamEni) ||
 		c.BootConfig.CloudProvider == kops.CloudProviderHetzner
-}
-
-// UseBootstrapTokens checks if we are using bootstrap tokens
-func (c *NodeupModelContext) UseBootstrapTokens() bool {
-	if c.HasAPIServer {
-		return fi.ValueOf(c.NodeupConfig.APIServerConfig.KubeAPIServer.EnableBootstrapAuthToken)
-	}
-
-	return c.NodeupConfig.KubeletConfig.BootstrapKubeconfig != ""
 }
 
 // KubectlPath returns distro based path for kubectl
@@ -642,14 +562,17 @@ func (c *NodeupModelContext) RunningOnAzure() bool {
 }
 
 // GetMetadataLocalIP returns the local IP address read from metadata
-func (c *NodeupModelContext) GetMetadataLocalIP() (string, error) {
+func (c *NodeupModelContext) GetMetadataLocalIP(ctx context.Context) (string, error) {
 	var internalIP string
 
 	switch c.BootConfig.CloudProvider {
 	case kops.CloudProviderAWS:
-		sess := session.Must(session.NewSession())
-		metadata := ec2metadata.New(sess)
-		localIPv4, err := metadata.GetMetadata("local-ipv4")
+		config, err := awsconfig.LoadDefaultConfig(ctx)
+		if err != nil {
+			return "", fmt.Errorf("failed to load AWS config: %w", err)
+		}
+		metadata := imds.NewFromConfig(config)
+		localIPv4, err := getMetadata(ctx, metadata, "local-ipv4")
 		if err != nil {
 			return "", fmt.Errorf("failed to get local-ipv4 address from ec2 metadata: %w", err)
 		}

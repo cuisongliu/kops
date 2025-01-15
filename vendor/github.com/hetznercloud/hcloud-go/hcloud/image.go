@@ -78,6 +78,7 @@ const (
 // ImageClient is a client for the image API.
 type ImageClient struct {
 	client *Client
+	Action *ResourceActionClient
 }
 
 // GetByID retrieves an image by its ID. If the image does not exist, nil is returned.
@@ -163,7 +164,7 @@ type ImageListOpts struct {
 }
 
 func (l ImageListOpts) values() url.Values {
-	vals := l.ListOpts.values()
+	vals := l.ListOpts.Values()
 	for _, typ := range l.Type {
 		vals.Add("type", string(typ))
 	}

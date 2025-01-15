@@ -17,6 +17,8 @@ limitations under the License.
 package fi
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -52,7 +54,7 @@ func (o *RunTasksOptions) InitDefaults() {
 
 // RunTasks executes all the tasks, considering their dependencies
 // It will perform some re-execution on error, retrying as long as progress is still being made
-func (e *executor[T]) RunTasks(taskMap map[string]Task[T]) error {
+func (e *executor[T]) RunTasks(ctx context.Context, taskMap map[string]Task[T]) error {
 	dependencies := FindTaskDependencies(taskMap)
 
 	for _, task := range taskMap {
@@ -118,14 +120,14 @@ func (e *executor[T]) RunTasks(taskMap map[string]Task[T]) error {
 		var tasks []*taskState[T]
 		tasks = append(tasks, canRun...)
 
-		taskErrors := e.forkJoin(tasks)
-		var errors []error
+		taskErrors := e.forkJoin(ctx, tasks)
+		var errs []error
 		for i, err := range taskErrors {
 			ts := tasks[i]
 			if err != nil {
 				//  print warning message and continue like the task succeeded
 				if _, ok := err.(*ExistsAndWarnIfChangesError); ok {
-					klog.Warningf(err.Error())
+					klog.Warning(err.Error())
 					ts.done = true
 					ts.lastError = nil
 					progress = true
@@ -138,7 +140,7 @@ func (e *executor[T]) RunTasks(taskMap map[string]Task[T]) error {
 				} else {
 					klog.Warningf("error running task %q (%v remaining to succeed): %v", ts.key, remaining, err)
 				}
-				errors = append(errors, err)
+				errs = append(errs, err)
 				ts.lastError = err
 			} else {
 				ts.done = true
@@ -148,11 +150,28 @@ func (e *executor[T]) RunTasks(taskMap map[string]Task[T]) error {
 		}
 
 		if !progress {
-			if len(errors) == 0 {
+			n := len(errs)
+
+			if n == 0 {
 				// Logic error!
 				panic("did not make progress executing tasks; but no errors reported")
 			}
-			klog.Infof("No progress made, sleeping before retrying %d task(s)", len(errors))
+
+			tryAgainLaterCount := 0
+			for _, err := range errs {
+				var tryAgainLaterError TryAgainLaterError
+				if !errors.Is(err, &tryAgainLaterError) {
+					tryAgainLaterCount++
+				}
+			}
+			formatTaskCount := func(n int) string {
+				return fmt.Sprintf("%d task(s)", n)
+			}
+			if tryAgainLaterCount == n {
+				klog.Infof("Continuing to run %s", formatTaskCount(tryAgainLaterCount))
+			} else {
+				klog.Infof("No progress made, sleeping before retrying %s", formatTaskCount(n))
+			}
 			time.Sleep(e.options.WaitAfterAllTasksFailed)
 		}
 	}
@@ -171,7 +190,7 @@ func (e *executor[T]) RunTasks(taskMap map[string]Task[T]) error {
 	return nil
 }
 
-func (e *executor[T]) forkJoin(tasks []*taskState[T]) []error {
+func (e *executor[T]) forkJoin(ctx context.Context, tasks []*taskState[T]) []error {
 	if len(tasks) == 0 {
 		return nil
 	}
@@ -184,6 +203,9 @@ func (e *executor[T]) forkJoin(tasks []*taskState[T]) []error {
 		wg.Add(1)
 		go func(ts *taskState[T], index int) {
 			defer wg.Done()
+
+			_, span := tracer.Start(ctx, "task-"+ts.key)
+			defer span.End()
 
 			resultsMutex.Lock()
 			results[index] = fmt.Errorf("function panic")

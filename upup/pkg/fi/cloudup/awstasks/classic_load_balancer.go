@@ -17,16 +17,18 @@ limitations under the License.
 package awstasks
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strconv"
 	"strings"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/awserr"
-	"github.com/aws/aws-sdk-go/service/elb"
-	"github.com/aws/aws-sdk-go/service/route53"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	elb "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancing"
+	elbtypes "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancing/types"
+	route53types "github.com/aws/aws-sdk-go-v2/service/route53/types"
 	"k8s.io/klog/v2"
+	"k8s.io/kops/pkg/wellknownservices"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awsup"
 	"k8s.io/kops/upup/pkg/fi/cloudup/terraform"
@@ -67,11 +69,14 @@ type ClassicLoadBalancer struct {
 	CrossZoneLoadBalancing *ClassicLoadBalancerCrossZoneLoadBalancing
 	SSLCertificateID       string
 
-	Tags         map[string]string
-	ForAPIServer bool
+	Tags map[string]string
 
 	// Shared is set if this is an external LB (one we don't create or own)
 	Shared *bool
+
+	// WellKnownServices indicates which services are supported by this resource.
+	// This field is internal and is not rendered to the cloud.
+	WellKnownServices []wellknownservices.WellKnownService
 }
 
 var _ fi.CompareWithID = &ClassicLoadBalancer{}
@@ -82,14 +87,14 @@ func (e *ClassicLoadBalancer) CompareWithID() *string {
 }
 
 type ClassicLoadBalancerListener struct {
-	InstancePort     int
+	InstancePort     int32
 	SSLCertificateID string
 }
 
-func (e *ClassicLoadBalancerListener) mapToAWS(loadBalancerPort int64) *elb.Listener {
-	l := &elb.Listener{
-		LoadBalancerPort: aws.Int64(loadBalancerPort),
-		InstancePort:     aws.Int64(int64(e.InstancePort)),
+func (e *ClassicLoadBalancerListener) mapToAWS(loadBalancerPort int32) elbtypes.Listener {
+	l := elbtypes.Listener{
+		LoadBalancerPort: loadBalancerPort,
+		InstancePort:     aws.Int32(e.InstancePort),
 	}
 
 	if e.SSLCertificateID != "" {
@@ -110,25 +115,23 @@ func (e *ClassicLoadBalancerListener) GetDependencies(tasks map[string]fi.Cloudu
 	return nil
 }
 
-func findLoadBalancerByLoadBalancerName(cloud awsup.AWSCloud, loadBalancerName string) (*elb.LoadBalancerDescription, error) {
+func findLoadBalancerByLoadBalancerName(ctx context.Context, cloud awsup.AWSCloud, loadBalancerName string) (*elbtypes.LoadBalancerDescription, error) {
 	request := &elb.DescribeLoadBalancersInput{
-		LoadBalancerNames: []*string{&loadBalancerName},
+		LoadBalancerNames: []string{loadBalancerName},
 	}
-	found, err := describeLoadBalancers(cloud, request, func(lb *elb.LoadBalancerDescription) bool {
+	found, err := describeLoadBalancers(ctx, cloud, request, func(lb elbtypes.LoadBalancerDescription) bool {
 		// TODO: Filter by cluster?
 
-		if aws.StringValue(lb.LoadBalancerName) == loadBalancerName {
+		if aws.ToString(lb.LoadBalancerName) == loadBalancerName {
 			return true
 		}
 
-		klog.Warningf("Got ELB with unexpected name: %q", aws.StringValue(lb.LoadBalancerName))
+		klog.Warningf("Got ELB with unexpected name: %q", aws.ToString(lb.LoadBalancerName))
 		return false
 	})
 	if err != nil {
-		if awsError, ok := err.(awserr.Error); ok {
-			if awsError.Code() == "LoadBalancerNotFound" {
-				return nil, nil
-			}
+		if awsup.AWSErrorCode(err) == "LoadBalancerNotFound" {
+			return nil, nil
 		}
 
 		return nil, fmt.Errorf("error listing ELBs: %v", err)
@@ -142,29 +145,30 @@ func findLoadBalancerByLoadBalancerName(cloud awsup.AWSCloud, loadBalancerName s
 		return nil, fmt.Errorf("Found multiple ELBs with name %q", loadBalancerName)
 	}
 
-	return found[0], nil
+	return &found[0], nil
 }
 
-func findLoadBalancerByAlias(cloud awsup.AWSCloud, alias *route53.AliasTarget) (*elb.LoadBalancerDescription, error) {
+func findLoadBalancerByAlias(cloud awsup.AWSCloud, alias *route53types.AliasTarget) (*elbtypes.LoadBalancerDescription, error) {
+	ctx := context.TODO()
 	// TODO: Any way to avoid listing all ELBs?
 	request := &elb.DescribeLoadBalancersInput{}
 
-	dnsName := aws.StringValue(alias.DNSName)
+	dnsName := aws.ToString(alias.DNSName)
 	matchDnsName := strings.TrimSuffix(dnsName, ".")
 	if matchDnsName == "" {
 		return nil, fmt.Errorf("DNSName not set on AliasTarget")
 	}
 
-	matchHostedZoneId := aws.StringValue(alias.HostedZoneId)
+	matchHostedZoneId := aws.ToString(alias.HostedZoneId)
 
-	found, err := describeLoadBalancers(cloud, request, func(lb *elb.LoadBalancerDescription) bool {
+	found, err := describeLoadBalancers(ctx, cloud, request, func(lb elbtypes.LoadBalancerDescription) bool {
 		// TODO: Filter by cluster?
 
-		if matchHostedZoneId != aws.StringValue(lb.CanonicalHostedZoneNameID) {
+		if matchHostedZoneId != aws.ToString(lb.CanonicalHostedZoneNameID) {
 			return false
 		}
 
-		lbDnsName := aws.StringValue(lb.DNSName)
+		lbDnsName := aws.ToString(lb.DNSName)
 		lbDnsName = strings.TrimSuffix(lbDnsName, ".")
 		return lbDnsName == matchDnsName || "dualstack."+lbDnsName == matchDnsName
 	})
@@ -180,24 +184,24 @@ func findLoadBalancerByAlias(cloud awsup.AWSCloud, alias *route53.AliasTarget) (
 		return nil, fmt.Errorf("Found multiple ELBs with DNSName %q", dnsName)
 	}
 
-	return found[0], nil
+	return &found[0], nil
 }
 
-func describeLoadBalancers(cloud awsup.AWSCloud, request *elb.DescribeLoadBalancersInput, filter func(*elb.LoadBalancerDescription) bool) ([]*elb.LoadBalancerDescription, error) {
-	var found []*elb.LoadBalancerDescription
-	err := cloud.ELB().DescribeLoadBalancersPages(request, func(p *elb.DescribeLoadBalancersOutput, lastPage bool) (shouldContinue bool) {
-		for _, lb := range p.LoadBalancerDescriptions {
+func describeLoadBalancers(ctx context.Context, cloud awsup.AWSCloud, request *elb.DescribeLoadBalancersInput, filter func(elbtypes.LoadBalancerDescription) bool) ([]elbtypes.LoadBalancerDescription, error) {
+	var found []elbtypes.LoadBalancerDescription
+	paginator := elb.NewDescribeLoadBalancersPaginator(cloud.ELB(), request)
+	for paginator.HasMorePages() {
+		output, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("error listing ELBs: %w", err)
+		}
+
+		for _, lb := range output.LoadBalancerDescriptions {
 			if filter(lb) {
 				found = append(found, lb)
 			}
 		}
-
-		return true
-	})
-	if err != nil {
-		return nil, fmt.Errorf("error listing ELBs: %v", err)
 	}
-
 	return found, nil
 }
 
@@ -210,7 +214,8 @@ func (e *ClassicLoadBalancer) getHostedZoneId() *string {
 }
 
 func (e *ClassicLoadBalancer) Find(c *fi.CloudupContext) (*ClassicLoadBalancer, error) {
-	cloud := c.T.Cloud.(awsup.AWSCloud)
+	ctx := c.Context()
+	cloud := awsup.GetCloud(c)
 
 	lb, err := cloud.FindELBByNameTag(fi.ValueOf(e.Name))
 	if err != nil {
@@ -229,7 +234,7 @@ func (e *ClassicLoadBalancer) Find(c *fi.CloudupContext) (*ClassicLoadBalancer, 
 
 	// Ignore system fields
 	actual.Lifecycle = e.Lifecycle
-	actual.ForAPIServer = e.ForAPIServer
+	actual.WellKnownServices = e.WellKnownServices
 
 	tagMap, err := cloud.DescribeELBTags([]string{*lb.LoadBalancerName})
 	if err != nil {
@@ -237,29 +242,29 @@ func (e *ClassicLoadBalancer) Find(c *fi.CloudupContext) (*ClassicLoadBalancer, 
 	}
 	actual.Tags = make(map[string]string)
 	for _, tag := range tagMap[*e.LoadBalancerName] {
-		if strings.HasPrefix(aws.StringValue(tag.Key), "aws:cloudformation:") {
+		if strings.HasPrefix(aws.ToString(tag.Key), "aws:cloudformation:") {
 			continue
 		}
-		actual.Tags[aws.StringValue(tag.Key)] = aws.StringValue(tag.Value)
+		actual.Tags[aws.ToString(tag.Key)] = aws.ToString(tag.Value)
 	}
 
 	for _, subnet := range lb.Subnets {
-		actual.Subnets = append(actual.Subnets, &Subnet{ID: subnet})
+		actual.Subnets = append(actual.Subnets, &Subnet{ID: aws.String(subnet)})
 	}
 
 	for _, sg := range lb.SecurityGroups {
-		actual.SecurityGroups = append(actual.SecurityGroups, &SecurityGroup{ID: sg})
+		actual.SecurityGroups = append(actual.SecurityGroups, &SecurityGroup{ID: aws.String(sg)})
 	}
 
 	actual.Listeners = make(map[string]*ClassicLoadBalancerListener)
 
 	for _, ld := range lb.ListenerDescriptions {
 		l := ld.Listener
-		loadBalancerPort := strconv.FormatInt(aws.Int64Value(l.LoadBalancerPort), 10)
+		loadBalancerPort := strconv.FormatInt(int64(l.LoadBalancerPort), 10)
 
 		actualListener := &ClassicLoadBalancerListener{}
-		actualListener.InstancePort = int(aws.Int64Value(l.InstancePort))
-		actualListener.SSLCertificateID = aws.StringValue(l.SSLCertificateId)
+		actualListener.InstancePort = aws.ToInt32(l.InstancePort)
+		actualListener.SSLCertificateID = aws.ToString(l.SSLCertificateId)
 		actual.Listeners[loadBalancerPort] = actualListener
 	}
 
@@ -270,19 +275,18 @@ func (e *ClassicLoadBalancer) Find(c *fi.CloudupContext) (*ClassicLoadBalancer, 
 	actual.HealthCheck = healthcheck
 
 	// Extract attributes
-	lbAttributes, err := findELBAttributes(cloud, aws.StringValue(lb.LoadBalancerName))
+	lbAttributes, err := findELBAttributes(ctx, cloud, aws.ToString(lb.LoadBalancerName))
 	if err != nil {
 		return nil, err
 	}
 	klog.V(4).Infof("ELB attributes: %+v", lbAttributes)
 
 	if lbAttributes != nil {
-		actual.AccessLog = &ClassicLoadBalancerAccessLog{}
+		actual.AccessLog = &ClassicLoadBalancerAccessLog{
+			Enabled: aws.Bool(lbAttributes.AccessLog.Enabled),
+		}
 		if lbAttributes.AccessLog.EmitInterval != nil {
 			actual.AccessLog.EmitInterval = lbAttributes.AccessLog.EmitInterval
-		}
-		if lbAttributes.AccessLog.Enabled != nil {
-			actual.AccessLog.Enabled = lbAttributes.AccessLog.Enabled
 		}
 		if lbAttributes.AccessLog.S3BucketName != nil {
 			actual.AccessLog.S3BucketName = lbAttributes.AccessLog.S3BucketName
@@ -292,8 +296,8 @@ func (e *ClassicLoadBalancer) Find(c *fi.CloudupContext) (*ClassicLoadBalancer, 
 		}
 
 		actual.ConnectionDraining = &ClassicLoadBalancerConnectionDraining{}
-		if lbAttributes.ConnectionDraining.Enabled != nil {
-			actual.ConnectionDraining.Enabled = lbAttributes.ConnectionDraining.Enabled
+		if lbAttributes.ConnectionDraining.Enabled {
+			actual.ConnectionDraining.Enabled = aws.Bool(lbAttributes.ConnectionDraining.Enabled)
 		}
 		if lbAttributes.ConnectionDraining.Timeout != nil {
 			actual.ConnectionDraining.Timeout = lbAttributes.ConnectionDraining.Timeout
@@ -304,9 +308,8 @@ func (e *ClassicLoadBalancer) Find(c *fi.CloudupContext) (*ClassicLoadBalancer, 
 			actual.ConnectionSettings.IdleTimeout = lbAttributes.ConnectionSettings.IdleTimeout
 		}
 
-		actual.CrossZoneLoadBalancing = &ClassicLoadBalancerCrossZoneLoadBalancing{}
-		if lbAttributes.CrossZoneLoadBalancing.Enabled != nil {
-			actual.CrossZoneLoadBalancing.Enabled = lbAttributes.CrossZoneLoadBalancing.Enabled
+		actual.CrossZoneLoadBalancing = &ClassicLoadBalancerCrossZoneLoadBalancing{
+			Enabled: aws.Bool(lbAttributes.CrossZoneLoadBalancing.Enabled),
 		}
 	}
 
@@ -328,7 +331,7 @@ func (e *ClassicLoadBalancer) Find(c *fi.CloudupContext) (*ClassicLoadBalancer, 
 	// 1. We don't want to force a rename of the ELB, because that is a destructive operation
 	// 2. We were creating ELBs with insufficiently qualified names previously
 	if fi.ValueOf(e.LoadBalancerName) != fi.ValueOf(actual.LoadBalancerName) {
-		klog.V(2).Infof("Reusing existing load balancer with name: %q", aws.StringValue(actual.LoadBalancerName))
+		klog.V(2).Infof("Reusing existing load balancer with name: %q", aws.ToString(actual.LoadBalancerName))
 		e.LoadBalancerName = actual.LoadBalancerName
 	}
 
@@ -341,8 +344,10 @@ func (e *ClassicLoadBalancer) Find(c *fi.CloudupContext) (*ClassicLoadBalancer, 
 
 var _ fi.HasAddress = &ClassicLoadBalancer{}
 
-func (e *ClassicLoadBalancer) IsForAPIServer() bool {
-	return e.ForAPIServer
+// GetWellKnownServices implements fi.HasAddress::GetWellKnownServices.
+// It indicates which services we support with this address (likely attached to a load balancer).
+func (e *ClassicLoadBalancer) GetWellKnownServices() []wellknownservices.WellKnownService {
+	return e.WellKnownServices
 }
 
 func (e *ClassicLoadBalancer) FindAddresses(context *fi.CloudupContext) ([]string, error) {
@@ -428,6 +433,7 @@ func (_ *ClassicLoadBalancer) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *Cl
 	if shared {
 		return nil
 	}
+	ctx := context.TODO()
 
 	var loadBalancerName string
 	if a == nil {
@@ -441,27 +447,27 @@ func (_ *ClassicLoadBalancer) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *Cl
 		request.Scheme = e.Scheme
 
 		for _, subnet := range e.Subnets {
-			request.Subnets = append(request.Subnets, subnet.ID)
+			request.Subnets = append(request.Subnets, aws.ToString(subnet.ID))
 		}
 
 		for _, sg := range e.SecurityGroups {
-			request.SecurityGroups = append(request.SecurityGroups, sg.ID)
+			request.SecurityGroups = append(request.SecurityGroups, aws.ToString(sg.ID))
 		}
 
-		request.Listeners = []*elb.Listener{}
+		request.Listeners = []elbtypes.Listener{}
 
 		for loadBalancerPort, listener := range e.Listeners {
-			loadBalancerPortInt, err := strconv.ParseInt(loadBalancerPort, 10, 64)
+			loadBalancerPortInt, err := strconv.ParseInt(loadBalancerPort, 10, 32)
 			if err != nil {
 				return fmt.Errorf("error parsing load balancer listener port: %q", loadBalancerPort)
 			}
-			awsListener := listener.mapToAWS(loadBalancerPortInt)
+			awsListener := listener.mapToAWS(int32(loadBalancerPortInt))
 			request.Listeners = append(request.Listeners, awsListener)
 		}
 
 		klog.V(2).Infof("Creating ELB with Name:%q", loadBalancerName)
 
-		response, err := t.Cloud.ELB().CreateLoadBalancer(request)
+		response, err := t.Cloud.ELB().CreateLoadBalancer(ctx, request)
 		if err != nil {
 			return fmt.Errorf("error creating ELB: %v", err)
 		}
@@ -469,7 +475,7 @@ func (_ *ClassicLoadBalancer) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *Cl
 		e.DNSName = response.DNSName
 
 		// Requery to get the CanonicalHostedZoneNameID
-		lb, err := findLoadBalancerByLoadBalancerName(t.Cloud, loadBalancerName)
+		lb, err := findLoadBalancerByLoadBalancerName(ctx, t.Cloud, loadBalancerName)
 		if err != nil {
 			return err
 		}
@@ -495,11 +501,11 @@ func (_ *ClassicLoadBalancer) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *Cl
 			oldSubnetIDs := slice.GetUniqueStrings(expectedSubnets, actualSubnets)
 			if len(oldSubnetIDs) > 0 {
 				request := &elb.DetachLoadBalancerFromSubnetsInput{}
-				request.SetLoadBalancerName(loadBalancerName)
-				request.SetSubnets(aws.StringSlice(oldSubnetIDs))
+				request.LoadBalancerName = aws.String(loadBalancerName)
+				request.Subnets = oldSubnetIDs
 
 				klog.V(2).Infof("Detaching Load Balancer from old subnets")
-				if _, err := t.Cloud.ELB().DetachLoadBalancerFromSubnets(request); err != nil {
+				if _, err := t.Cloud.ELB().DetachLoadBalancerFromSubnets(ctx, request); err != nil {
 					return fmt.Errorf("Error detaching Load Balancer from old subnets: %v", err)
 				}
 			}
@@ -507,11 +513,11 @@ func (_ *ClassicLoadBalancer) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *Cl
 			newSubnetIDs := slice.GetUniqueStrings(actualSubnets, expectedSubnets)
 			if len(newSubnetIDs) > 0 {
 				request := &elb.AttachLoadBalancerToSubnetsInput{}
-				request.SetLoadBalancerName(loadBalancerName)
-				request.SetSubnets(aws.StringSlice(newSubnetIDs))
+				request.LoadBalancerName = aws.String(loadBalancerName)
+				request.Subnets = newSubnetIDs
 
 				klog.V(2).Infof("Attaching Load Balancer to new subnets")
-				if _, err := t.Cloud.ELB().AttachLoadBalancerToSubnets(request); err != nil {
+				if _, err := t.Cloud.ELB().AttachLoadBalancerToSubnets(ctx, request); err != nil {
 					return fmt.Errorf("Error attaching Load Balancer to new subnets: %v", err)
 				}
 			}
@@ -521,27 +527,27 @@ func (_ *ClassicLoadBalancer) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *Cl
 			request := &elb.ApplySecurityGroupsToLoadBalancerInput{}
 			request.LoadBalancerName = aws.String(loadBalancerName)
 			for _, sg := range e.SecurityGroups {
-				request.SecurityGroups = append(request.SecurityGroups, sg.ID)
+				request.SecurityGroups = append(request.SecurityGroups, aws.ToString(sg.ID))
 			}
 
 			klog.V(2).Infof("Updating Load Balancer Security Groups")
-			if _, err := t.Cloud.ELB().ApplySecurityGroupsToLoadBalancer(request); err != nil {
+			if _, err := t.Cloud.ELB().ApplySecurityGroupsToLoadBalancer(ctx, request); err != nil {
 				return fmt.Errorf("Error updating security groups on Load Balancer: %v", err)
 			}
 		}
 
 		if changes.Listeners != nil {
 
-			elbDescription, err := findLoadBalancerByLoadBalancerName(t.Cloud, loadBalancerName)
+			elbDescription, err := findLoadBalancerByLoadBalancerName(ctx, t.Cloud, loadBalancerName)
 			if err != nil {
 				return fmt.Errorf("error getting load balancer by name: %v", err)
 			}
 
 			if elbDescription != nil {
 				// deleting the listener before recreating it
-				t.Cloud.ELB().DeleteLoadBalancerListeners(&elb.DeleteLoadBalancerListenersInput{
+				t.Cloud.ELB().DeleteLoadBalancerListeners(ctx, &elb.DeleteLoadBalancerListenersInput{
 					LoadBalancerName:  aws.String(loadBalancerName),
-					LoadBalancerPorts: []*int64{aws.Int64(443)},
+					LoadBalancerPorts: []int32{443},
 				})
 			}
 
@@ -549,17 +555,17 @@ func (_ *ClassicLoadBalancer) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *Cl
 			request.LoadBalancerName = aws.String(loadBalancerName)
 
 			for loadBalancerPort, listener := range changes.Listeners {
-				loadBalancerPortInt, err := strconv.ParseInt(loadBalancerPort, 10, 64)
+				loadBalancerPortInt, err := strconv.ParseInt(loadBalancerPort, 10, 32)
 				if err != nil {
 					return fmt.Errorf("error parsing load balancer listener port: %q", loadBalancerPort)
 				}
-				awsListener := listener.mapToAWS(loadBalancerPortInt)
+				awsListener := listener.mapToAWS(int32(loadBalancerPortInt))
 				request.Listeners = append(request.Listeners, awsListener)
 			}
 
 			klog.V(2).Infof("Creating LoadBalancer listeners")
 
-			_, err = t.Cloud.ELB().CreateLoadBalancerListeners(request)
+			_, err = t.Cloud.ELB().CreateLoadBalancerListeners(ctx, request)
 			if err != nil {
 				return fmt.Errorf("error creating LoadBalancerListeners: %v", err)
 			}
@@ -577,7 +583,7 @@ func (_ *ClassicLoadBalancer) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *Cl
 	if changes.HealthCheck != nil && e.HealthCheck != nil {
 		request := &elb.ConfigureHealthCheckInput{}
 		request.LoadBalancerName = aws.String(loadBalancerName)
-		request.HealthCheck = &elb.HealthCheck{
+		request.HealthCheck = &elbtypes.HealthCheck{
 			Target:             e.HealthCheck.Target,
 			HealthyThreshold:   e.HealthCheck.HealthyThreshold,
 			UnhealthyThreshold: e.HealthCheck.UnhealthyThreshold,
@@ -587,7 +593,7 @@ func (_ *ClassicLoadBalancer) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *Cl
 
 		klog.V(2).Infof("Configuring health checks on ELB %q", loadBalancerName)
 
-		_, err := t.Cloud.ELB().ConfigureHealthCheck(request)
+		_, err := t.Cloud.ELB().ConfigureHealthCheck(ctx, request)
 		if err != nil {
 			return fmt.Errorf("error configuring health checks on ELB: %v", err)
 		}
@@ -621,29 +627,29 @@ type terraformLoadBalancer struct {
 	AccessLog   *terraformLoadBalancerAccessLog   `cty:"access_logs"`
 
 	ConnectionDraining        *bool  `cty:"connection_draining"`
-	ConnectionDrainingTimeout *int64 `cty:"connection_draining_timeout"`
+	ConnectionDrainingTimeout *int32 `cty:"connection_draining_timeout"`
 
 	CrossZoneLoadBalancing *bool `cty:"cross_zone_load_balancing"`
 
-	IdleTimeout *int64 `cty:"idle_timeout"`
+	IdleTimeout *int32 `cty:"idle_timeout"`
 
 	Tags map[string]string `cty:"tags"`
 }
 
 type terraformLoadBalancerListener struct {
-	InstancePort     int     `cty:"instance_port"`
+	InstancePort     int32   `cty:"instance_port"`
 	InstanceProtocol string  `cty:"instance_protocol"`
-	LBPort           int64   `cty:"lb_port"`
+	LBPort           int32   `cty:"lb_port"`
 	LBProtocol       string  `cty:"lb_protocol"`
 	SSLCertificateID *string `cty:"ssl_certificate_id"`
 }
 
 type terraformLoadBalancerHealthCheck struct {
 	Target             *string `cty:"target"`
-	HealthyThreshold   *int64  `cty:"healthy_threshold"`
-	UnhealthyThreshold *int64  `cty:"unhealthy_threshold"`
-	Interval           *int64  `cty:"interval"`
-	Timeout            *int64  `cty:"timeout"`
+	HealthyThreshold   *int32  `cty:"healthy_threshold"`
+	UnhealthyThreshold *int32  `cty:"unhealthy_threshold"`
+	Interval           *int32  `cty:"interval"`
+	Timeout            *int32  `cty:"timeout"`
 }
 
 func (_ *ClassicLoadBalancer) RenderTerraform(t *terraform.TerraformTarget, a, e, changes *ClassicLoadBalancer) error {
@@ -685,7 +691,7 @@ func (_ *ClassicLoadBalancer) RenderTerraform(t *terraform.TerraformTarget, a, e
 			tf.Listener = append(tf.Listener, &terraformLoadBalancerListener{
 				InstanceProtocol: "SSL",
 				InstancePort:     listener.InstancePort,
-				LBPort:           loadBalancerPortInt,
+				LBPort:           int32(loadBalancerPortInt),
 				LBProtocol:       "SSL",
 				SSLCertificateID: &listener.SSLCertificateID,
 			})
@@ -693,7 +699,7 @@ func (_ *ClassicLoadBalancer) RenderTerraform(t *terraform.TerraformTarget, a, e
 			tf.Listener = append(tf.Listener, &terraformLoadBalancerListener{
 				InstanceProtocol: "TCP",
 				InstancePort:     listener.InstancePort,
-				LBPort:           loadBalancerPortInt,
+				LBPort:           int32(loadBalancerPortInt),
 				LBProtocol:       "TCP",
 			})
 		}

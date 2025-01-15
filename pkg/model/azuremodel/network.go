@@ -17,9 +17,11 @@ limitations under the License.
 package azuremodel
 
 import (
-	"fmt"
+	"strconv"
 
-	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2022-05-01/network"
+	network "github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/network/armnetwork"
+	"k8s.io/kops/pkg/apis/kops"
+	"k8s.io/kops/pkg/wellknownports"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/azuretasks"
 	"k8s.io/utils/net"
@@ -51,118 +53,237 @@ func (b *NetworkModelBuilder) Build(c *fi.CloudupModelBuilderContext) error {
 		ResourceGroup: b.LinkToResourceGroup(),
 		Tags:          map[string]*string{},
 	}
-	var sshAccessIPv4, sshAccessIPv6 []string
-	for _, cidr := range b.Cluster.Spec.SSHAccess {
-		switch net.IPFamilyOfCIDRString(cidr) {
-		case net.IPv4:
-			sshAccessIPv4 = append(sshAccessIPv4, cidr)
-		case net.IPv6:
-			sshAccessIPv6 = append(sshAccessIPv6, cidr)
-		default:
-			return fmt.Errorf("unknown IP family for CIDR: %q", cidr)
-		}
-	}
+	sshAccessIPv4 := ipv4CIDRs(b.Cluster.Spec.SSHAccess)
 	if len(sshAccessIPv4) > 0 {
 		nsgTask.SecurityRules = append(nsgTask.SecurityRules, &azuretasks.NetworkSecurityRule{
-			Name:                     fi.PtrTo("AllowSSH"),
-			Priority:                 fi.PtrTo[int32](100),
-			Access:                   network.SecurityRuleAccessAllow,
-			Direction:                network.SecurityRuleDirectionInbound,
-			Protocol:                 network.SecurityRuleProtocolTCP,
-			SourceAddressPrefixes:    &sshAccessIPv4,
-			SourcePortRange:          fi.PtrTo("*"),
-			DestinationAddressPrefix: fi.PtrTo("*"),
-			DestinationPortRange:     fi.PtrTo("22"),
+			Name:                  fi.PtrTo("AllowSSH"),
+			Priority:              fi.PtrTo[int32](100),
+			Access:                network.SecurityRuleAccessAllow,
+			Direction:             network.SecurityRuleDirectionInbound,
+			Protocol:              network.SecurityRuleProtocolTCP,
+			SourceAddressPrefixes: sshAccessIPv4,
+			SourcePortRange:       fi.PtrTo("*"),
+			DestinationApplicationSecurityGroupNames: []*string{
+				fi.PtrTo(b.NameForApplicationSecurityGroupControlPlane()),
+				fi.PtrTo(b.NameForApplicationSecurityGroupNodes()),
+			},
+			DestinationPortRange: fi.PtrTo("22"),
 		})
 	}
+	sshAccessIPv6 := ipv6CIDRs(b.Cluster.Spec.SSHAccess)
 	if len(sshAccessIPv6) > 0 {
 		nsgTask.SecurityRules = append(nsgTask.SecurityRules, &azuretasks.NetworkSecurityRule{
-			Name:                     fi.PtrTo("AllowSSH_v6"),
-			Priority:                 fi.PtrTo[int32](101),
-			Access:                   network.SecurityRuleAccessAllow,
-			Direction:                network.SecurityRuleDirectionInbound,
-			Protocol:                 network.SecurityRuleProtocolTCP,
-			SourceAddressPrefixes:    &sshAccessIPv6,
-			SourcePortRange:          fi.PtrTo("*"),
-			DestinationAddressPrefix: fi.PtrTo("*"),
-			DestinationPortRange:     fi.PtrTo("22"),
+			Name:                  fi.PtrTo("AllowSSH_v6"),
+			Priority:              fi.PtrTo[int32](101),
+			Access:                network.SecurityRuleAccessAllow,
+			Direction:             network.SecurityRuleDirectionInbound,
+			Protocol:              network.SecurityRuleProtocolTCP,
+			SourceAddressPrefixes: sshAccessIPv6,
+			SourcePortRange:       fi.PtrTo("*"),
+			DestinationApplicationSecurityGroupNames: []*string{
+				fi.PtrTo(b.NameForApplicationSecurityGroupControlPlane()),
+				fi.PtrTo(b.NameForApplicationSecurityGroupNodes()),
+			},
+			DestinationPortRange: fi.PtrTo("22"),
 		})
 	}
-	var k8sAccessIPv4, k8sAccessIPv6 []string
-	for _, cidr := range b.Cluster.Spec.API.Access {
-		switch net.IPFamilyOfCIDRString(cidr) {
-		case net.IPv4:
-			k8sAccessIPv4 = append(k8sAccessIPv4, cidr)
-		case net.IPv6:
-			k8sAccessIPv6 = append(k8sAccessIPv6, cidr)
-		default:
-			return fmt.Errorf("unknown IP family for CIDR: %q", cidr)
-		}
-	}
+	k8sAccessIPv4 := ipv4CIDRs(b.Cluster.Spec.API.Access)
 	if len(k8sAccessIPv4) > 0 {
 		nsgTask.SecurityRules = append(nsgTask.SecurityRules, &azuretasks.NetworkSecurityRule{
-			Name:                     fi.PtrTo("AllowKubernetesAPI"),
-			Priority:                 fi.PtrTo[int32](200),
-			Access:                   network.SecurityRuleAccessAllow,
-			Direction:                network.SecurityRuleDirectionInbound,
-			Protocol:                 network.SecurityRuleProtocolTCP,
-			SourceAddressPrefixes:    &k8sAccessIPv4,
-			SourcePortRange:          fi.PtrTo("*"),
-			DestinationAddressPrefix: fi.PtrTo("*"),
-			DestinationPortRange:     fi.PtrTo("443"),
+			Name:                                     fi.PtrTo("AllowKubernetesAPI"),
+			Priority:                                 fi.PtrTo[int32](200),
+			Access:                                   network.SecurityRuleAccessAllow,
+			Direction:                                network.SecurityRuleDirectionInbound,
+			Protocol:                                 network.SecurityRuleProtocolTCP,
+			SourceAddressPrefixes:                    k8sAccessIPv4,
+			SourcePortRange:                          fi.PtrTo("*"),
+			DestinationApplicationSecurityGroupNames: []*string{fi.PtrTo(b.NameForApplicationSecurityGroupControlPlane())},
+			DestinationPortRange:                     fi.PtrTo(strconv.Itoa(wellknownports.KubeAPIServer)),
 		})
 	}
+	k8sAccessIPv6 := ipv6CIDRs(b.Cluster.Spec.API.Access)
 	if len(k8sAccessIPv6) > 0 {
 		nsgTask.SecurityRules = append(nsgTask.SecurityRules, &azuretasks.NetworkSecurityRule{
-			Name:                     fi.PtrTo("AllowKubernetesAPI_v6"),
-			Priority:                 fi.PtrTo[int32](201),
-			Access:                   network.SecurityRuleAccessAllow,
-			Direction:                network.SecurityRuleDirectionInbound,
-			Protocol:                 network.SecurityRuleProtocolTCP,
-			SourceAddressPrefixes:    &k8sAccessIPv6,
-			SourcePortRange:          fi.PtrTo("*"),
-			DestinationAddressPrefix: fi.PtrTo("*"),
-			DestinationPortRange:     fi.PtrTo("443"),
+			Name:                                     fi.PtrTo("AllowKubernetesAPI_v6"),
+			Priority:                                 fi.PtrTo[int32](201),
+			Access:                                   network.SecurityRuleAccessAllow,
+			Direction:                                network.SecurityRuleDirectionInbound,
+			Protocol:                                 network.SecurityRuleProtocolTCP,
+			SourceAddressPrefixes:                    k8sAccessIPv6,
+			SourcePortRange:                          fi.PtrTo("*"),
+			DestinationApplicationSecurityGroupNames: []*string{fi.PtrTo(b.NameForApplicationSecurityGroupControlPlane())},
+			DestinationPortRange:                     fi.PtrTo(strconv.Itoa(wellknownports.KubeAPIServer)),
 		})
 	}
-	var nodePortAccessIPv4, nodePortAccessIPv6 []string
-	for _, cidr := range b.Cluster.Spec.NodePortAccess {
-		switch net.IPFamilyOfCIDRString(cidr) {
-		case net.IPv4:
-			nodePortAccessIPv4 = append(nodePortAccessIPv4, cidr)
-		case net.IPv6:
-			nodePortAccessIPv6 = append(nodePortAccessIPv6, cidr)
-		default:
-			return fmt.Errorf("unknown IP family for CIDR: %q", cidr)
-		}
-	}
+	nodePortAccessIPv4 := ipv4CIDRs(b.Cluster.Spec.NodePortAccess)
 	if len(nodePortAccessIPv4) > 0 {
 		nsgTask.SecurityRules = append(nsgTask.SecurityRules, &azuretasks.NetworkSecurityRule{
-			Name:                     fi.PtrTo("AllowNodePort"),
-			Priority:                 fi.PtrTo[int32](300),
-			Access:                   network.SecurityRuleAccessAllow,
-			Direction:                network.SecurityRuleDirectionInbound,
-			Protocol:                 network.SecurityRuleProtocolTCP,
-			SourceAddressPrefixes:    &nodePortAccessIPv4,
-			SourcePortRange:          fi.PtrTo("*"),
-			DestinationAddressPrefix: fi.PtrTo("*"),
-			DestinationPortRange:     fi.PtrTo("443"),
+			Name:                                     fi.PtrTo("AllowNodePortTCP"),
+			Priority:                                 fi.PtrTo[int32](300),
+			Access:                                   network.SecurityRuleAccessAllow,
+			Direction:                                network.SecurityRuleDirectionInbound,
+			Protocol:                                 network.SecurityRuleProtocolAsterisk,
+			SourceAddressPrefixes:                    nodePortAccessIPv4,
+			SourcePortRange:                          fi.PtrTo("*"),
+			DestinationApplicationSecurityGroupNames: []*string{fi.PtrTo(b.NameForApplicationSecurityGroupNodes())},
+			DestinationPortRange:                     fi.PtrTo("30000-32767"),
 		})
 	}
+	nodePortAccessIPv6 := ipv6CIDRs(b.Cluster.Spec.NodePortAccess)
 	if len(nodePortAccessIPv6) > 0 {
 		nsgTask.SecurityRules = append(nsgTask.SecurityRules, &azuretasks.NetworkSecurityRule{
-			Name:                     fi.PtrTo("AllowNodePort_v6"),
-			Priority:                 fi.PtrTo[int32](301),
-			Access:                   network.SecurityRuleAccessAllow,
-			Direction:                network.SecurityRuleDirectionInbound,
-			Protocol:                 network.SecurityRuleProtocolTCP,
-			SourceAddressPrefixes:    &nodePortAccessIPv6,
-			SourcePortRange:          fi.PtrTo("*"),
-			DestinationAddressPrefix: fi.PtrTo("*"),
-			DestinationPortRange:     fi.PtrTo("443"),
+			Name:                                     fi.PtrTo("AllowNodePortTCP_v6"),
+			Priority:                                 fi.PtrTo[int32](301),
+			Access:                                   network.SecurityRuleAccessAllow,
+			Direction:                                network.SecurityRuleDirectionInbound,
+			Protocol:                                 network.SecurityRuleProtocolAsterisk,
+			SourceAddressPrefixes:                    nodePortAccessIPv6,
+			SourcePortRange:                          fi.PtrTo("*"),
+			DestinationApplicationSecurityGroupNames: []*string{fi.PtrTo(b.NameForApplicationSecurityGroupNodes())},
+			DestinationPortRange:                     fi.PtrTo("30000-32767"),
 		})
 	}
+	nsgTask.SecurityRules = append(nsgTask.SecurityRules, &azuretasks.NetworkSecurityRule{
+		Name:                                     fi.PtrTo("AllowControlPlaneToControlPlane"),
+		Priority:                                 fi.PtrTo[int32](1000),
+		Access:                                   network.SecurityRuleAccessAllow,
+		Direction:                                network.SecurityRuleDirectionInbound,
+		Protocol:                                 network.SecurityRuleProtocolAsterisk,
+		SourceApplicationSecurityGroupNames:      []*string{fi.PtrTo(b.NameForApplicationSecurityGroupControlPlane())},
+		SourcePortRange:                          fi.PtrTo("*"),
+		DestinationApplicationSecurityGroupNames: []*string{fi.PtrTo(b.NameForApplicationSecurityGroupControlPlane())},
+		DestinationPortRange:                     fi.PtrTo("*"),
+	})
+	nsgTask.SecurityRules = append(nsgTask.SecurityRules, &azuretasks.NetworkSecurityRule{
+		Name:                                     fi.PtrTo("AllowControlPlaneToNodes"),
+		Priority:                                 fi.PtrTo[int32](1001),
+		Access:                                   network.SecurityRuleAccessAllow,
+		Direction:                                network.SecurityRuleDirectionInbound,
+		Protocol:                                 network.SecurityRuleProtocolAsterisk,
+		SourceApplicationSecurityGroupNames:      []*string{fi.PtrTo(b.NameForApplicationSecurityGroupControlPlane())},
+		SourcePortRange:                          fi.PtrTo("*"),
+		DestinationApplicationSecurityGroupNames: []*string{fi.PtrTo(b.NameForApplicationSecurityGroupNodes())},
+		DestinationPortRange:                     fi.PtrTo("*"),
+	})
+	nsgTask.SecurityRules = append(nsgTask.SecurityRules, &azuretasks.NetworkSecurityRule{
+		Name:                                     fi.PtrTo("AllowNodesToNodes"),
+		Priority:                                 fi.PtrTo[int32](1002),
+		Access:                                   network.SecurityRuleAccessAllow,
+		Direction:                                network.SecurityRuleDirectionInbound,
+		Protocol:                                 network.SecurityRuleProtocolAsterisk,
+		SourceApplicationSecurityGroupNames:      []*string{fi.PtrTo(b.NameForApplicationSecurityGroupNodes())},
+		SourcePortRange:                          fi.PtrTo("*"),
+		DestinationApplicationSecurityGroupNames: []*string{fi.PtrTo(b.NameForApplicationSecurityGroupNodes())},
+		DestinationPortRange:                     fi.PtrTo("*"),
+	})
+	nsgTask.SecurityRules = append(nsgTask.SecurityRules, &azuretasks.NetworkSecurityRule{
+		Name:                                     fi.PtrTo("DenyNodesToEtcdManager"),
+		Priority:                                 fi.PtrTo[int32](1003),
+		Access:                                   network.SecurityRuleAccessDeny,
+		Direction:                                network.SecurityRuleDirectionInbound,
+		Protocol:                                 network.SecurityRuleProtocolTCP,
+		SourceApplicationSecurityGroupNames:      []*string{fi.PtrTo(b.NameForApplicationSecurityGroupNodes())},
+		SourcePortRange:                          fi.PtrTo("*"),
+		DestinationApplicationSecurityGroupNames: []*string{fi.PtrTo(b.NameForApplicationSecurityGroupControlPlane())},
+		DestinationPortRange:                     fi.PtrTo("2380-2381"),
+	})
+	nsgTask.SecurityRules = append(nsgTask.SecurityRules, &azuretasks.NetworkSecurityRule{
+		Name:                                     fi.PtrTo("DenyNodesToEtcd"),
+		Priority:                                 fi.PtrTo[int32](1004),
+		Access:                                   network.SecurityRuleAccessDeny,
+		Direction:                                network.SecurityRuleDirectionInbound,
+		Protocol:                                 network.SecurityRuleProtocolTCP,
+		SourceApplicationSecurityGroupNames:      []*string{fi.PtrTo(b.NameForApplicationSecurityGroupNodes())},
+		SourcePortRange:                          fi.PtrTo("*"),
+		DestinationApplicationSecurityGroupNames: []*string{fi.PtrTo(b.NameForApplicationSecurityGroupControlPlane())},
+		DestinationPortRange:                     fi.PtrTo("4000-4001"),
+	})
+	nsgTask.SecurityRules = append(nsgTask.SecurityRules, &azuretasks.NetworkSecurityRule{
+		Name:                                     fi.PtrTo("AllowNodesToControlPlane"),
+		Priority:                                 fi.PtrTo[int32](1005),
+		Access:                                   network.SecurityRuleAccessAllow,
+		Direction:                                network.SecurityRuleDirectionInbound,
+		Protocol:                                 network.SecurityRuleProtocolAsterisk,
+		SourceApplicationSecurityGroupNames:      []*string{fi.PtrTo(b.NameForApplicationSecurityGroupNodes())},
+		SourcePortRange:                          fi.PtrTo("*"),
+		DestinationApplicationSecurityGroupNames: []*string{fi.PtrTo(b.NameForApplicationSecurityGroupControlPlane())},
+		DestinationPortRange:                     fi.PtrTo("*"),
+	})
+	if b.Cluster.UsesNoneDNS() && b.Cluster.Spec.API.LoadBalancer != nil && b.Cluster.Spec.API.LoadBalancer.Type == kops.LoadBalancerTypePublic {
+		// TODO: Limit access to necessary source address prefixes instead of "0.0.0.0/0" and "::/0"
+		nsgTask.SecurityRules = append(nsgTask.SecurityRules, &azuretasks.NetworkSecurityRule{
+			Name:                                     fi.PtrTo("AllowNodesToKubernetesAPI"),
+			Priority:                                 fi.PtrTo[int32](2000),
+			Access:                                   network.SecurityRuleAccessAllow,
+			Direction:                                network.SecurityRuleDirectionInbound,
+			Protocol:                                 network.SecurityRuleProtocolTCP,
+			SourceAddressPrefix:                      fi.PtrTo("*"),
+			SourcePortRange:                          fi.PtrTo("*"),
+			DestinationApplicationSecurityGroupNames: []*string{fi.PtrTo(b.NameForApplicationSecurityGroupControlPlane())},
+			DestinationPortRange:                     fi.PtrTo(strconv.Itoa(wellknownports.KubeAPIServer)),
+		})
+		nsgTask.SecurityRules = append(nsgTask.SecurityRules, &azuretasks.NetworkSecurityRule{
+			Name:                                     fi.PtrTo("AllowNodesToKopsController"),
+			Priority:                                 fi.PtrTo[int32](2001),
+			Access:                                   network.SecurityRuleAccessAllow,
+			Direction:                                network.SecurityRuleDirectionInbound,
+			Protocol:                                 network.SecurityRuleProtocolTCP,
+			SourceAddressPrefix:                      fi.PtrTo("*"),
+			SourcePortRange:                          fi.PtrTo("*"),
+			DestinationApplicationSecurityGroupNames: []*string{fi.PtrTo(b.NameForApplicationSecurityGroupControlPlane())},
+			DestinationPortRange:                     fi.PtrTo(strconv.Itoa(wellknownports.KopsControllerPort)),
+		})
+	}
+	nsgTask.SecurityRules = append(nsgTask.SecurityRules, &azuretasks.NetworkSecurityRule{
+		Name:                     fi.PtrTo("AllowAzureLoadBalancer"),
+		Priority:                 fi.PtrTo[int32](4000),
+		Access:                   network.SecurityRuleAccessAllow,
+		Direction:                network.SecurityRuleDirectionInbound,
+		Protocol:                 network.SecurityRuleProtocolAsterisk,
+		SourceAddressPrefix:      fi.PtrTo("AzureLoadBalancer"),
+		SourcePortRange:          fi.PtrTo("*"),
+		DestinationAddressPrefix: fi.PtrTo("VirtualNetwork"),
+		DestinationPortRange:     fi.PtrTo("*"),
+	})
+	nsgTask.SecurityRules = append(nsgTask.SecurityRules, &azuretasks.NetworkSecurityRule{
+		Name:                                     fi.PtrTo("DenyAllToControlPlane"),
+		Priority:                                 fi.PtrTo[int32](4001),
+		Access:                                   network.SecurityRuleAccessDeny,
+		Direction:                                network.SecurityRuleDirectionInbound,
+		Protocol:                                 network.SecurityRuleProtocolAsterisk,
+		SourceAddressPrefix:                      fi.PtrTo("*"),
+		SourcePortRange:                          fi.PtrTo("*"),
+		DestinationApplicationSecurityGroupNames: []*string{fi.PtrTo(b.NameForApplicationSecurityGroupControlPlane())},
+		DestinationPortRange:                     fi.PtrTo("*"),
+	})
+	nsgTask.SecurityRules = append(nsgTask.SecurityRules, &azuretasks.NetworkSecurityRule{
+		Name:                                     fi.PtrTo("DenyAllToNodes"),
+		Priority:                                 fi.PtrTo[int32](4002),
+		Access:                                   network.SecurityRuleAccessDeny,
+		Direction:                                network.SecurityRuleDirectionInbound,
+		Protocol:                                 network.SecurityRuleProtocolAsterisk,
+		SourceAddressPrefix:                      fi.PtrTo("*"),
+		SourcePortRange:                          fi.PtrTo("*"),
+		DestinationApplicationSecurityGroupNames: []*string{fi.PtrTo(b.NameForApplicationSecurityGroupNodes())},
+		DestinationPortRange:                     fi.PtrTo("*"),
+	})
 	c.AddTask(nsgTask)
+
+	ngwPipTask := &azuretasks.PublicIPAddress{
+		Name:          fi.PtrTo(b.NameForVirtualNetwork()),
+		Lifecycle:     b.Lifecycle,
+		ResourceGroup: b.LinkToResourceGroup(),
+		Tags:          map[string]*string{},
+	}
+	c.AddTask(ngwPipTask)
+	ngwTask := &azuretasks.NatGateway{
+		Name:              fi.PtrTo(b.NameForVirtualNetwork()),
+		Lifecycle:         b.Lifecycle,
+		PublicIPAddresses: []*azuretasks.PublicIPAddress{ngwPipTask},
+		ResourceGroup:     b.LinkToResourceGroup(),
+		Tags:              map[string]*string{},
+	}
+	c.AddTask(ngwTask)
 
 	for _, subnetSpec := range b.Cluster.Spec.Networking.Subnets {
 		subnetTask := &azuretasks.Subnet{
@@ -170,6 +291,7 @@ func (b *NetworkModelBuilder) Build(c *fi.CloudupModelBuilderContext) error {
 			Lifecycle:            b.Lifecycle,
 			ResourceGroup:        b.LinkToResourceGroup(),
 			VirtualNetwork:       b.LinkToVirtualNetwork(),
+			NatGateway:           ngwTask,
 			NetworkSecurityGroup: nsgTask,
 			CIDR:                 fi.PtrTo(subnetSpec.CIDR),
 			Shared:               fi.PtrTo(b.Cluster.SharedVPC()),
@@ -187,4 +309,26 @@ func (b *NetworkModelBuilder) Build(c *fi.CloudupModelBuilderContext) error {
 	c.AddTask(rtTask)
 
 	return nil
+}
+
+func ipv4CIDRs(mixedCIDRs []string) []*string {
+	var cidrs []*string
+	for i := range mixedCIDRs {
+		cidr := mixedCIDRs[i]
+		if net.IPFamilyOfCIDRString(cidr) == net.IPv4 {
+			cidrs = append(cidrs, &cidr)
+		}
+	}
+	return cidrs
+}
+
+func ipv6CIDRs(mixedCIDRs []string) []*string {
+	var cidrs []*string
+	for i := range mixedCIDRs {
+		cidr := mixedCIDRs[i]
+		if net.IPFamilyOfCIDRString(cidr) == net.IPv6 {
+			cidrs = append(cidrs, &cidr)
+		}
+	}
+	return cidrs
 }

@@ -19,8 +19,8 @@ package azuretasks
 import (
 	"context"
 
-	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2022-05-01/network"
-	"github.com/Azure/go-autorest/autorest/to"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
+	network "github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/network/armnetwork"
 	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/azure"
@@ -60,7 +60,7 @@ func (nsg *NetworkSecurityGroup) Find(c *fi.CloudupContext) (*NetworkSecurityGro
 	var found *network.SecurityGroup
 	for _, v := range l {
 		if *v.Name == *nsg.Name {
-			found = &v
+			found = v
 			break
 		}
 	}
@@ -77,19 +77,49 @@ func (nsg *NetworkSecurityGroup) Find(c *fi.CloudupContext) (*NetworkSecurityGro
 		ID:   found.ID,
 		Tags: found.Tags,
 	}
-	for _, rule := range *found.SecurityRules {
+	for _, rule := range found.Properties.SecurityRules {
 		nsr := &NetworkSecurityRule{
-			Name:                       rule.Name,
-			Priority:                   rule.Priority,
-			Access:                     rule.Access,
-			Direction:                  rule.Direction,
-			Protocol:                   rule.Protocol,
-			SourceAddressPrefix:        rule.SourceAddressPrefix,
-			SourceAddressPrefixes:      rule.SourceAddressPrefixes,
-			SourcePortRange:            rule.SourcePortRange,
-			DestinationAddressPrefix:   rule.DestinationAddressPrefix,
-			DestinationAddressPrefixes: rule.DestinationAddressPrefixes,
-			DestinationPortRange:       rule.DestinationPortRange,
+			Name:                     rule.Name,
+			Priority:                 rule.Properties.Priority,
+			Access:                   *rule.Properties.Access,
+			Direction:                *rule.Properties.Direction,
+			Protocol:                 *rule.Properties.Protocol,
+			SourceAddressPrefix:      rule.Properties.SourceAddressPrefix,
+			SourcePortRange:          rule.Properties.SourcePortRange,
+			DestinationAddressPrefix: rule.Properties.DestinationAddressPrefix,
+			DestinationPortRange:     rule.Properties.DestinationPortRange,
+		}
+		if rule.Properties.SourceAddressPrefixes != nil && len(rule.Properties.SourceAddressPrefixes) > 0 {
+			nsr.SourceAddressPrefixes = rule.Properties.SourceAddressPrefixes
+		}
+		if rule.Properties.SourceApplicationSecurityGroups != nil && len(rule.Properties.SourceApplicationSecurityGroups) > 0 {
+			var sasgs []*string
+			for _, sasg := range rule.Properties.SourceApplicationSecurityGroups {
+				asg, err := azure.ParseApplicationSecurityGroupID(*sasg.ID)
+				if err != nil {
+					if err != nil {
+						return nil, err
+					}
+				}
+				sasgs = append(sasgs, &asg.ApplicationSecurityGroupName)
+			}
+			nsr.SourceApplicationSecurityGroupNames = sasgs
+		}
+		if rule.Properties.DestinationAddressPrefixes != nil && len(rule.Properties.DestinationAddressPrefixes) > 0 {
+			nsr.DestinationAddressPrefixes = rule.Properties.DestinationAddressPrefixes
+		}
+		if rule.Properties.DestinationApplicationSecurityGroups != nil && len(rule.Properties.DestinationApplicationSecurityGroups) > 0 {
+			var dasgs []*string
+			for _, dasg := range rule.Properties.DestinationApplicationSecurityGroups {
+				asg, err := azure.ParseApplicationSecurityGroupID(*dasg.ID)
+				if err != nil {
+					if err != nil {
+						return nil, err
+					}
+				}
+				dasgs = append(dasgs, &asg.ApplicationSecurityGroupName)
+			}
+			nsr.DestinationApplicationSecurityGroupNames = dasgs
 		}
 		actual.SecurityRules = append(actual.SecurityRules, nsr)
 	}
@@ -135,21 +165,21 @@ func (*NetworkSecurityGroup) RenderAzure(t *azure.AzureAPITarget, a, e, changes 
 	}
 
 	p := network.SecurityGroup{
-		SecurityGroupPropertiesFormat: &network.SecurityGroupPropertiesFormat{
-			SecurityRules: &[]network.SecurityRule{},
+		Properties: &network.SecurityGroupPropertiesFormat{
+			SecurityRules: []*network.SecurityRule{},
 		},
-		Location: to.StringPtr(t.Cloud.Region()),
-		Name:     to.StringPtr(*e.Name),
+		Location: to.Ptr(t.Cloud.Region()),
+		Name:     to.Ptr(*e.Name),
 		Tags:     e.Tags,
 	}
 	for _, nsr := range e.SecurityRules {
 		securityRule := network.SecurityRule{
 			Name: nsr.Name,
-			SecurityRulePropertiesFormat: &network.SecurityRulePropertiesFormat{
+			Properties: &network.SecurityRulePropertiesFormat{
 				Priority:                   nsr.Priority,
-				Access:                     nsr.Access,
-				Direction:                  nsr.Direction,
-				Protocol:                   nsr.Protocol,
+				Access:                     &nsr.Access,
+				Direction:                  &nsr.Direction,
+				Protocol:                   &nsr.Protocol,
 				SourceAddressPrefix:        nsr.SourceAddressPrefix,
 				SourceAddressPrefixes:      nsr.SourceAddressPrefixes,
 				SourcePortRange:            nsr.SourcePortRange,
@@ -158,7 +188,33 @@ func (*NetworkSecurityGroup) RenderAzure(t *azure.AzureAPITarget, a, e, changes 
 				DestinationPortRange:       nsr.DestinationPortRange,
 			},
 		}
-		*p.SecurityRules = append(*p.SecurityRules, securityRule)
+		if nsr.SourceApplicationSecurityGroupNames != nil {
+			var sasgs []*network.ApplicationSecurityGroup
+			for _, name := range nsr.SourceApplicationSecurityGroupNames {
+				id := azure.ApplicationSecurityGroupID{
+					SubscriptionID:               t.Cloud.SubscriptionID(),
+					ResourceGroupName:            *e.ResourceGroup.Name,
+					ApplicationSecurityGroupName: *name,
+				}
+				idStr := id.String()
+				sasgs = append(sasgs, &network.ApplicationSecurityGroup{ID: &idStr})
+			}
+			securityRule.Properties.SourceApplicationSecurityGroups = sasgs
+		}
+		if nsr.DestinationApplicationSecurityGroupNames != nil {
+			var dasgs []*network.ApplicationSecurityGroup
+			for _, name := range nsr.DestinationApplicationSecurityGroupNames {
+				id := azure.ApplicationSecurityGroupID{
+					SubscriptionID:               t.Cloud.SubscriptionID(),
+					ResourceGroupName:            *e.ResourceGroup.Name,
+					ApplicationSecurityGroupName: *name,
+				}
+				idStr := id.String()
+				dasgs = append(dasgs, &network.ApplicationSecurityGroup{ID: &idStr})
+			}
+			securityRule.Properties.DestinationApplicationSecurityGroups = dasgs
+		}
+		p.Properties.SecurityRules = append(p.Properties.SecurityRules, &securityRule)
 	}
 
 	nsg, err := t.Cloud.NetworkSecurityGroup().CreateOrUpdate(
@@ -177,17 +233,19 @@ func (*NetworkSecurityGroup) RenderAzure(t *azure.AzureAPITarget, a, e, changes 
 
 // NetworkSecurityRule represents a NetworkSecurityGroup rule.
 type NetworkSecurityRule struct {
-	Name                       *string
-	Priority                   *int32
-	Access                     network.SecurityRuleAccess
-	Direction                  network.SecurityRuleDirection
-	Protocol                   network.SecurityRuleProtocol
-	SourceAddressPrefix        *string
-	SourceAddressPrefixes      *[]string
-	SourcePortRange            *string
-	DestinationAddressPrefixes *[]string
-	DestinationAddressPrefix   *string
-	DestinationPortRange       *string
+	Name                                     *string
+	Priority                                 *int32
+	Access                                   network.SecurityRuleAccess
+	Direction                                network.SecurityRuleDirection
+	Protocol                                 network.SecurityRuleProtocol
+	SourceAddressPrefix                      *string
+	SourceAddressPrefixes                    []*string
+	SourceApplicationSecurityGroupNames      []*string
+	SourcePortRange                          *string
+	DestinationAddressPrefixes               []*string
+	DestinationAddressPrefix                 *string
+	DestinationApplicationSecurityGroupNames []*string
+	DestinationPortRange                     *string
 }
 
 var _ fi.CloudupHasDependencies = &NetworkSecurityRule{}

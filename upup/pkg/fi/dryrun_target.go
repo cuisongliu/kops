@@ -92,11 +92,6 @@ func NewNodeupDryRunTarget(assetBuilder *assets.AssetBuilder, out io.Writer) *No
 	return newDryRunTarget[NodeupSubContext](assetBuilder, out)
 }
 
-func (t *DryRunTarget[T]) ProcessDeletions() bool {
-	// We display deletions
-	return true
-}
-
 func (t *DryRunTarget[T]) DefaultCheckExisting() bool {
 	return true
 }
@@ -117,7 +112,7 @@ func (t *DryRunTarget[T]) Render(a, e, changes Task[T]) error {
 	return nil
 }
 
-func (t *DryRunTarget[T]) Delete(deletion Deletion[T]) error {
+func (t *DryRunTarget[T]) RecordDeletion(deletion Deletion[T]) error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
@@ -261,9 +256,30 @@ func (t *DryRunTarget[T]) PrintReport(taskMap map[string]Task[T], out io.Writer)
 		// Give everything a consistent ordering
 		sort.Sort(DeletionByTaskName[T](t.deletions))
 
-		fmt.Fprintf(b, "Will delete items:\n")
+		var deferred []Deletion[T]
+		var immediate []Deletion[T]
+
 		for _, d := range t.deletions {
-			fmt.Fprintf(b, "  %-20s %s\n", d.TaskName(), d.Item())
+			if d.DeferDeletion() {
+				deferred = append(deferred, d)
+			} else {
+				immediate = append(immediate, d)
+			}
+		}
+
+		if len(deferred) != 0 {
+			fmt.Fprintf(b, "Items will be deleted only when the --prune flag is specified:\n")
+			for _, d := range deferred {
+				fmt.Fprintf(b, "  %-20s %s\n", d.TaskName(), d.Item())
+			}
+			fmt.Fprintf(b, "\n")
+		}
+		if len(immediate) != 0 {
+			fmt.Fprintf(b, "Items will be deleted during update:\n")
+			for _, d := range immediate {
+				fmt.Fprintf(b, "  %-20s %s\n", d.TaskName(), d.Item())
+			}
+			fmt.Fprintf(b, "\n")
 		}
 	}
 
@@ -328,6 +344,9 @@ func buildChangeList[T SubContext](a, e, changes Task[T]) ([]change, error) {
 
 			case reflect.String:
 				changed = fieldValC.Convert(reflect.TypeOf("")).Interface() != ""
+
+			case reflect.Int:
+				changed = fieldValA.Int() != fieldValE.Int()
 			}
 			if !changed {
 				continue

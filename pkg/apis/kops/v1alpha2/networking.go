@@ -18,6 +18,9 @@ package v1alpha2
 
 import (
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/klog/v2"
+	"k8s.io/kops/util/pkg/reflectutils"
 )
 
 // NetworkingSpec allows selection and configuration of a networking plugin
@@ -49,12 +52,21 @@ type NetworkingSpec struct {
 	Cilium     *CiliumNetworkingSpec     `json:"cilium,omitempty"`
 	LyftVPC    *LyftVPCNetworkingSpec    `json:"lyftvpc,omitempty"`
 	GCP        *GCPNetworkingSpec        `json:"gce,omitempty"`
+	Kindnet    *KindnetNetworkingSpec    `json:"kindnet,omitempty"`
 }
 
 func (s *NetworkingSpec) IsEmpty() bool {
-	return s.Classic == nil && s.Kubenet == nil && s.External == nil && s.CNI == nil && s.Kopeio == nil &&
-		s.Weave == nil && s.Flannel == nil && s.Calico == nil && s.Canal == nil && s.KubeRouter == nil &&
-		s.Romana == nil && s.AmazonVPC == nil && s.Cilium == nil && s.LyftVPC == nil && s.GCP == nil
+	return s.ConfiguredOptions().Len() == 0
+}
+
+// ConfiguredOptions returns the set of networking options that are configured (non-nil)
+// in the struct.  We only expect a single option to be configured.
+func (s *NetworkingSpec) ConfiguredOptions() sets.Set[string] {
+	options, err := reflectutils.FindSetFields(s, "classic", "kubenet", "external", "cni", "kopeio", "weave", "flannel", "calico", "canal", "kuberouter", "romana", "amazonvpc", "cilium", "lyftvpc", "gce", "kindnet")
+	if err != nil {
+		klog.Fatalf("error getting configured options: %v", err)
+	}
+	return options
 }
 
 // ClassicNetworkingSpec is the specification of classic networking mode, integrated into kubernetes.
@@ -281,6 +293,8 @@ type AmazonVPCNetworkingSpec struct {
 	Image string `json:"imageName,omitempty"`
 	// InitImageName is the init container image name to use.
 	InitImage string `json:"initImageName,omitempty"`
+	// NetworkPolicyAgentImage is the container image to use for the network policy agent
+	NetworkPolicyAgentImage string `json:"networkPolicyAgentImage,omitempty"`
 	// Env is a list of environment variables to set in the container.
 	Env []EnvVar `json:"env,omitempty"`
 }
@@ -296,6 +310,9 @@ const (
 
 // CiliumNetworkingSpec declares that we want Cilium networking
 type CiliumNetworkingSpec struct {
+	// Registry overrides the default Cilium container registry (quay.io)
+	Registry string `json:"registry,omitempty"`
+
 	// Version is the version of the Cilium agent and the Cilium Operator.
 	Version string `json:"version,omitempty"`
 
@@ -367,6 +384,11 @@ type CiliumNetworkingSpec struct {
 	// EnableL7Proxy enables L7 proxy for L7 policy enforcement.
 	// Default: true
 	EnableL7Proxy *bool `json:"enableL7Proxy,omitempty"`
+	// EnableLocalRedirectPolicy that enables pod traffic destined to an IP address and port/protocol
+	// tuple or Kubernetes service to be redirected locally to backend pod(s) within a node, using eBPF.
+	// https://docs.cilium.io/en/stable/network/kubernetes/local-redirect-policy/
+	// Default: false
+	EnableLocalRedirectPolicy *bool `json:"enableLocalRedirectPolicy,omitempty"`
 	// EnableBPFMasquerade enables masquerading packets from endpoints leaving the host with BPF instead of iptables.
 	// Default: false
 	EnableBPFMasquerade *bool `json:"enableBPFMasquerade,omitempty"`
@@ -384,6 +406,9 @@ type CiliumNetworkingSpec struct {
 	// EncryptionType specifies Cilium Encryption method ("ipsec", "wireguard").
 	// Default: ipsec
 	EncryptionType CiliumEncryptionType `json:"encryptionType,omitempty"`
+	// NodeEncryption enables encryption for pure node to node traffic.
+	// Default: false
+	NodeEncryption bool `json:"nodeEncryption,omitempty"`
 	// EnvoyLog is unused.
 	// +k8s:conversion-gen=false
 	EnvoyLog string `json:"envoyLog,omitempty"`
@@ -541,6 +566,9 @@ type CiliumNetworkingSpec struct {
 	SidecarIstioProxyImage string `json:"sidecarIstioProxyImage,omitempty"`
 	// ClusterName is the name of the cluster. It is only relevant when building a mesh of clusters.
 	ClusterName string `json:"clusterName,omitempty"`
+	// ClusterID is the ID of the cluster. It is only relevant when building a mesh of clusters.
+	// Must be a number between 1 and 255.
+	ClusterID uint8 `json:"clusterID,omitempty"`
 	// ToFQDNsDNSRejectResponseCode sets the DNS response code for rejecting DNS requests.
 	// Possible values are "nameError" or "refused".
 	// Default: refused
@@ -608,6 +636,36 @@ type CiliumNetworkingSpec struct {
 
 	// EnableServiceTopology determine if cilium should use topology aware hints.
 	EnableServiceTopology bool `json:"enableServiceTopology,omitempty"`
+
+	// Ingress specifies the configuration for Cilium Ingress settings.
+	Ingress *CiliumIngressSpec `json:"ingress,omitempty"`
+}
+
+// CiliumIngressSpec configures Cilium Ingress settings.
+type CiliumIngressSpec struct {
+	// Enabled specifies whether Cilium Ingress is enabled.
+	Enabled *bool `json:"enabled,omitempty"`
+
+	// EnforceHttps specifies whether HTTPS enforcement is enabled for Ingress traffic.
+	// Default: true
+	EnforceHttps *bool `json:"enforceHttps,omitempty"`
+
+	// EnableSecretsSync specifies whether synchronization of secrets is enabled.
+	// Default: true
+	EnableSecretsSync *bool `json:"enableSecretsSync,omitempty"`
+
+	// LoadBalancerAnnotationPrefixes specifies annotation prefixes for Load Balancer configuration.
+	// Default: "service.beta.kubernetes.io service.kubernetes.io cloud.google.com"
+	LoadBalancerAnnotationPrefixes string `json:"loadBalancerAnnotationPrefixes,omitempty"`
+
+	// DefaultLoadBalancerMode specifies the default load balancer mode.
+	// Possible values: 'shared' or 'dedicated'
+	// Default: dedicated
+	DefaultLoadBalancerMode string `json:"defaultLoadBalancerMode,omitempty"`
+
+	// SharedLoadBalancerServiceName specifies the name of the shared load balancer service.
+	// Default: cilium-ingress
+	SharedLoadBalancerServiceName string `json:"sharedLoadBalancerServiceName,omitempty"`
 }
 
 // HubbleSpec configures the Hubble service on the Cilium agent.
@@ -616,7 +674,7 @@ type HubbleSpec struct {
 	Enabled *bool `json:"enabled,omitempty"`
 
 	// Metrics is a list of metrics to collect. If empty or null, metrics are disabled.
-	// See https://docs.cilium.io/en/stable/configuration/metrics/#hubble-exported-metrics
+	// See https://docs.cilium.io/en/stable/observability/metrics/#hubble-exported-metrics
 	Metrics []string `json:"metrics,omitempty"`
 }
 
@@ -628,3 +686,22 @@ type LyftVPCNetworkingSpec struct {
 
 // GCPNetworkingSpec is the specification of GCP's native networking mode, using IP aliases.
 type GCPNetworkingSpec struct{}
+
+// KindnetNetworkingSpec configures Kindnet settings.
+type KindnetNetworkingSpec struct {
+	Version                      string                 `json:"version,omitempty"`
+	NetworkPolicies              *bool                  `json:"networkPolicies,omitempty"`
+	AdminNetworkPolicies         *bool                  `json:"adminNetworkPolicies,omitempty"`
+	BaselineAdminNetworkPolicies *bool                  `json:"baselineAdminNetworkPolicies,omitempty"`
+	DNSCaching                   *bool                  `json:"dnsCaching,omitempty"`
+	NAT64                        *bool                  `json:"nat64,omitempty"`
+	FastPathThreshold            *int32                 `json:"fastPathThreshold,omitempty"`
+	Masquerade                   *KindnetMasqueradeSpec `json:"masquerade,omitempty"`
+	LogLevel                     *int32                 `json:"logLevel,omitempty"`
+}
+
+// KindnetMasqueradeSpec configures Kindnet masquerading settings.
+type KindnetMasqueradeSpec struct {
+	Enabled            *bool    `json:"enabled,omitempty"`
+	NonMasqueradeCIDRs []string `json:"nonMasqueradeCIDRs,omitempty"`
+}

@@ -19,9 +19,10 @@ type NetworkZone string
 
 // List of available Network Zones.
 const (
-	NetworkZoneEUCentral NetworkZone = "eu-central"
-	NetworkZoneUSEast    NetworkZone = "us-east"
-	NetworkZoneUSWest    NetworkZone = "us-west"
+	NetworkZoneEUCentral   NetworkZone = "eu-central"
+	NetworkZoneUSEast      NetworkZone = "us-east"
+	NetworkZoneUSWest      NetworkZone = "us-west"
+	NetworkZoneAPSouthEast NetworkZone = "ap-southeast"
 )
 
 // NetworkSubnetType specifies a type of a subnet.
@@ -73,6 +74,7 @@ type NetworkProtection struct {
 // NetworkClient is a client for the network API.
 type NetworkClient struct {
 	client *Client
+	Action *ResourceActionClient
 }
 
 // GetByID retrieves a network by its ID. If the network does not exist, nil is returned.
@@ -122,7 +124,7 @@ type NetworkListOpts struct {
 }
 
 func (l NetworkListOpts) values() url.Values {
-	vals := l.ListOpts.values()
+	vals := l.ListOpts.Values()
 	if l.Name != "" {
 		vals.Add("name", l.Name)
 	}
@@ -162,7 +164,7 @@ func (c *NetworkClient) All(ctx context.Context) ([]*Network, error) {
 
 // AllWithOpts returns all networks for the given options.
 func (c *NetworkClient) AllWithOpts(ctx context.Context, opts NetworkListOpts) ([]*Network, error) {
-	var allNetworks []*Network
+	allNetworks := []*Network{}
 
 	err := c.client.all(func(page int) (*Response, error) {
 		opts.Page = page

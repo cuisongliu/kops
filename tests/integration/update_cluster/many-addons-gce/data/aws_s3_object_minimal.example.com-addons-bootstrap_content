@@ -6,7 +6,7 @@ spec:
   addons:
   - id: k8s-1.16
     manifest: kops-controller.addons.k8s.io/k8s-1.16.yaml
-    manifestHash: ee63c8992619cd8f5a8cddb827d7df67556705ddfd658f43e68300fa95945020
+    manifestHash: 78a46cc08d3e8da40fed92cdcaebb4993652fd0fb65e4a384a7e440cec0b61b5
     name: kops-controller.addons.k8s.io
     needsRollingUpdate: control-plane
     selector:
@@ -14,7 +14,7 @@ spec:
     version: 9.99.0
   - id: k8s-1.12
     manifest: coredns.addons.k8s.io/k8s-1.12.yaml
-    manifestHash: d2bbb7cbee5835c3891fe80fbacf8963508359ef9159f8480325ce9a7174f14a
+    manifestHash: 591e3b40d00949575616698ce1c9230db8cb00bdab4f8a0d5ef14080a1d7a93c
     name: coredns.addons.k8s.io
     selector:
       k8s-addon: coredns.addons.k8s.io
@@ -34,21 +34,21 @@ spec:
     version: 9.99.0
   - id: k8s-1.12
     manifest: dns-controller.addons.k8s.io/k8s-1.12.yaml
-    manifestHash: f68563e2a3c71093835017684429952ce5136c04309e6dbb90fec0c5496e4938
+    manifestHash: 45e2e7a55dec8857a12e258aeb0d08b5c0e987ed258f503ef90a2c0fa1de6237
     name: dns-controller.addons.k8s.io
     selector:
       k8s-addon: dns-controller.addons.k8s.io
     version: 9.99.0
   - id: k8s-1.15
     manifest: cluster-autoscaler.addons.k8s.io/k8s-1.15.yaml
-    manifestHash: ff5b90b8081567456315dacd3a1796048f3277529ca9f1a6e31ea80a5c47ed30
+    manifestHash: 7aaa72ea23224ce59b6009ea711f2cc50f20279aa586e7aa1f75961f990f103b
     name: cluster-autoscaler.addons.k8s.io
     selector:
       k8s-addon: cluster-autoscaler.addons.k8s.io
     version: 9.99.0
   - id: k8s-1.11
     manifest: metrics-server.addons.k8s.io/k8s-1.11.yaml
-    manifestHash: 1d5b0034bc9bda796cedeb26e0b4892939562a7919e17fa319f38a5069a6f9fb
+    manifestHash: f5a15bd72ed37b6a3e36df1bddd77c6440f6b067c3b97f3d216e24d2ed014826
     name: metrics-server.addons.k8s.io
     needsPKI: true
     selector:
@@ -56,7 +56,7 @@ spec:
     version: 9.99.0
   - id: k8s-1.16
     manifest: certmanager.io/k8s-1.16.yaml
-    manifestHash: 1d9ddc6d025438aa22182e434f9534e983ddefa857913ef0a456d9cf9cea360b
+    manifestHash: e9a1f65a8e57904e77e1b5e9f429ca56e154eb73ed2a536e1fb39746573dba21
     name: certmanager.io
     prune:
       kinds:
@@ -119,21 +119,14 @@ spec:
     version: 9.99.0
   - id: k8s-1.23
     manifest: gcp-pd-csi-driver.addons.k8s.io/k8s-1.23.yaml
-    manifestHash: 43460694a38baf16384220585cca377c2f9387e4941a673ed75583747b628901
+    manifestHash: 07463edd469b304d500d8f7e263e495797e10d78a3e990edeed94756160a67a4
     name: gcp-pd-csi-driver.addons.k8s.io
     selector:
       k8s-addon: gcp-pd-csi-driver.addons.k8s.io
     version: 9.99.0
-  - id: v0.1.12
-    manifest: metadata-proxy.addons.k8s.io/v0.1.12.yaml
-    manifestHash: 5b18a0e4a56168a792e1366d4bd57fe7c232a0e78baf91241ba61ffcbeb79bf5
-    name: metadata-proxy.addons.k8s.io
-    selector:
-      k8s-addon: metadata-proxy.addons.k8s.io
-    version: 9.99.0
   - id: k8s-1.23
     manifest: gcp-cloud-controller.addons.k8s.io/k8s-1.23.yaml
-    manifestHash: 49730987c3f5dba8914954740cc96dbb08c090c0ac9c943a160a32cb94b53764
+    manifestHash: 3c55d971edba1793b82df1a202b0f429a778f2f4f8294c010d7a4fb7aca70c8b
     name: gcp-cloud-controller.addons.k8s.io
     prune:
       kinds:

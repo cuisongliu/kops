@@ -66,7 +66,7 @@ func (o *LifecycleTestOptions) AddDefaults() {
 func TestLifecycleMinimalAWS(t *testing.T) {
 	runLifecycleTestAWS(&LifecycleTestOptions{
 		t:      t,
-		SrcDir: "minimal",
+		SrcDir: "minimal-aws",
 	})
 }
 
@@ -135,7 +135,7 @@ func TestLifecycleComplex(t *testing.T) {
 	})
 }
 
-// TestLifecycleExternlLB runs the test on a cluster with external load balancers and target groups attached
+// TestLifecycleExternalLB runs the test on a cluster with external load balancers and target groups attached
 func TestLifecycleExternalLB(t *testing.T) {
 	runLifecycleTestAWS(&LifecycleTestOptions{
 		t:      t,
@@ -173,9 +173,8 @@ func TestLifecyclePrivateSharedIP(t *testing.T) {
 // TestLifecycleManyAddons runs the test on a cluster with requisite resources for NTH Queue Processor and other addons.
 func TestLifecycleManyAddons(t *testing.T) {
 	runLifecycleTestAWS(&LifecycleTestOptions{
-		t:           t,
-		SrcDir:      "many-addons",
-		ClusterName: "minimal.example.com",
+		t:      t,
+		SrcDir: "many-addons",
 	})
 }
 
@@ -372,6 +371,7 @@ func runLifecycleTestAWS(o *LifecycleTestOptions) {
 	o.AddDefaults()
 
 	t := o.t
+	t.Setenv("KOPS_RUN_TOO_NEW_VERSION", "1")
 
 	h := testutils.NewIntegrationTestHarness(o.t)
 	defer h.Close()
@@ -402,15 +402,11 @@ func runLifecycleTestOpenstack(o *LifecycleTestOptions) {
 	o.AddDefaults()
 
 	t := o.t
+	t.Setenv("KOPS_RUN_TOO_NEW_VERSION", "1")
+	t.Setenv("OS_REGION_NAME", "us-test1")
 
 	h := testutils.NewIntegrationTestHarness(o.t)
 	defer h.Close()
-
-	origRegion := os.Getenv("OS_REGION_NAME")
-	os.Setenv("OS_REGION_NAME", "us-test1")
-	defer func() {
-		os.Setenv("OS_REGION_NAME", origRegion)
-	}()
 
 	h.MockKopsVersion("1.21.0-alpha.1")
 	cloud := testutils.SetupMockOpenstack()
@@ -460,6 +456,7 @@ func runLifecycleTestGCE(o *LifecycleTestOptions) {
 	o.AddDefaults()
 
 	t := o.t
+	t.Setenv("KOPS_RUN_TOO_NEW_VERSION", "1")
 
 	h := testutils.NewIntegrationTestHarness(o.t)
 	defer h.Close()

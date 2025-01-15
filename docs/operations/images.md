@@ -1,10 +1,11 @@
 # Images
 
-As of Kubernetes 1.18 the default images used by kOps are the **[official Ubuntu 20.04](#ubuntu-2004-focal)** images.
+As of Kubernetes 1.27 the default images used by kOps are the **[official Ubuntu 22.04](#ubuntu-2204-jammy)** images.
 
 You can choose a different image for an instance group by editing it with `kops edit ig nodes`.
 
 For AWS, you should set the `image` field in one of the following formats:
+
 * `ami-abcdef` - specifies an image by id directly (image id is precise, but ids vary by region)
 * `<owner>/<name>` specifies an image by its owner's account ID  and name properties
 * `<alias>/<name>` specifies an image by its [owner's alias](#owner-aliases) and name properties
@@ -48,10 +49,12 @@ The following table provides the support status for various distros with regards
 | [RHEL 8](#rhel-8)                       |         1.15 |   1.18 |          - |       - |
 | [RHEL 9](#rhel-9)                       |         1.27 |      - |          - |       - |
 | [Rocky 8](#rocky-8)                     |       1.23.2 |   1.24 |          - |       - |
+| [Rocky 9](#rocky-9)                     |         1.30 |      - |          - |       - |
 | Ubuntu 16.04                            |          1.5 |   1.10 |       1.17 |    1.20 |
 | Ubuntu 18.04                            |         1.10 |   1.16 |       1.26 |    1.28 |
 | [Ubuntu 20.04](#ubuntu-2004-focal)      |       1.16.2 |   1.18 |          - |       - |
 | [Ubuntu 22.04](#ubuntu-2204-jammy)      |         1.23 |   1.24 |          - |       - |
+| [Ubuntu 24.04](#ubuntu-2404-noble)      |         1.29 |      - |          - |       - |
 
 ## Supported Distros
 
@@ -67,7 +70,7 @@ Available images can be listed using:
 aws ec2 describe-images --region us-east-1 --output table \
   --filters "Name=owner-alias,Values=amazon" \
   --query "sort_by(Images, &CreationDate)[*].[CreationDate,Name,ImageId]" \
-  --filters "Name=name,Values=amzn2-ami-kernel-5.10-hvm-2*-x86_64-gp2"
+  --filters "Name=name,Values=amzn2-ami-kernel-5.10-hvm-2*-*-gp2"
 ```
 
 ### Amazon Linux 2023
@@ -80,7 +83,7 @@ Available images can be listed using:
 aws ec2 describe-images --region us-east-1 --output table \
   --filters "Name=owner-alias,Values=amazon" \
   --query "sort_by(Images, &CreationDate)[*].[CreationDate,Name,ImageId]" \
-  --filters "Name=name,Values=al2023-ami-2*-kernel-6.1-x86_64"
+  --filters "Name=name,Values=al2023-ami-2*-kernel-6.1-*"
 ```
 
 ### Debian 10 (Buster)
@@ -108,7 +111,7 @@ Available images can be listed using:
 aws ec2 describe-images --region us-east-1 --output table \
   --owners 136693071363 \
   --query "sort_by(Images, &CreationDate)[*].[CreationDate,Name,ImageId]" \
-  --filters "Name=name,Values=debian-10-amd64-*"
+  --filters "Name=name,Values=debian-10-*-*"
 
 # Google Cloud Platform (GCP)
 gcloud compute images list --filter debian-10-buster-v
@@ -129,7 +132,7 @@ Available images can be listed using:
 aws ec2 describe-images --region us-east-1 --output table \
   --owners 136693071363 \
   --query "sort_by(Images, &CreationDate)[*].[CreationDate,Name,ImageId]" \
-  --filters "Name=name,Values=debian-11-amd64-*"
+  --filters "Name=name,Values=debian-11-*-*"
 
 # Google Cloud Platform (GCP)
 gcloud compute images list --filter debian-11-bullseye-v
@@ -143,7 +146,15 @@ az vm image list --all --output table \
 
 Debian 12 is based on Kernel version **6.1** which has no known major Kernel bugs and fully supports all Cilium features.
 
-At the moment there is no official image published.
+Available images can be listed using:
+
+```bash
+# Amazon Web Services (AWS)
+aws ec2 describe-images --region us-east-1 --output table \
+  --owners 136693071363 \
+  --query "sort_by(Images, &CreationDate)[*].[CreationDate,Name,ImageId]" \
+  --filters "Name=name,Values=debian-12-*-*"
+```
 
 ### Flatcar
 
@@ -170,7 +181,7 @@ Available images can be listed using:
 aws ec2 describe-images --region us-east-1 --output table \
   --owners 309956199498 \
   --query "sort_by(Images, &CreationDate)[*].[CreationDate,Name,ImageId]" \
-  --filters "Name=name,Values=RHEL-8.*x86_64*"
+  --filters "Name=name,Values=RHEL-8.*"
 ```
 
 ### RHEL 9
@@ -183,7 +194,7 @@ Available images can be listed using:
 aws ec2 describe-images --region us-east-1 --output table \
   --owners 309956199498 \
   --query "sort_by(Images, &CreationDate)[*].[CreationDate,Name,ImageId]" \
-  --filters "Name=name,Values=RHEL-9.*x86_64*"
+  --filters "Name=name,Values=RHEL-9.*"
 ```
 
 ### Rocky 8
@@ -196,8 +207,22 @@ Available images can be listed using:
 aws ec2 describe-images --region us-east-1 --output table \
   --owners 792107900819 \
   --query "sort_by(Images, &CreationDate)[*].[CreationDate,Name,ImageId]" \
-  --filters "Name=name,Values=Rocky-8-ec2-8.*.x86_64"
+  --filters "Name=name,Values=Rocky-8-ec2-8.*.*"
 ```
+
+### Rocky 9
+
+Rocky Linux 9 is based on Kernel version **5.14**.
+
+Available images can be listed using:
+
+```bash
+aws ec2 describe-images --region us-east-1 --output table \
+  --owners 792107900819 \
+  --query "sort_by(Images, &CreationDate)[*].[CreationDate,Name,ImageId]" \
+  --filters "Name=name,Values=Rocky-9-EC2-Base-9.*.*"
+```
+
 
 ### Ubuntu 20.04 (Focal)
 
@@ -210,7 +235,7 @@ Available images can be listed using:
 aws ec2 describe-images --region us-east-1 --output table \
   --owners 099720109477 \
   --query "sort_by(Images, &CreationDate)[*].[CreationDate,Name,ImageId]" \
-  --filters "Name=name,Values=ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-*"
+  --filters "Name=name,Values=ubuntu/images/hvm-ssd/ubuntu-focal-20.04-*-*"
   
 # Google Cloud Platform (GCP)
 gcloud compute images list --filter ubuntu-2004-focal-v
@@ -231,7 +256,7 @@ Available images can be listed using:
 aws ec2 describe-images --region us-east-1 --output table \
   --owners 099720109477 \
   --query "sort_by(Images, &CreationDate)[*].[CreationDate,Name,ImageId]" \
-  --filters "Name=name,Values=ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-*"
+  --filters "Name=name,Values=ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-*-*"
 
 # Google Cloud Platform (GCP)
 gcloud compute images list --filter ubuntu-2204-jammy-v
@@ -239,6 +264,18 @@ gcloud compute images list --filter ubuntu-2204-jammy-v
 # Microsoft Azure
 az vm image list --all --output table \
   --publisher Canonical --offer 0001-com-ubuntu-server-jammy --sku 22_04-lts-gen2
+```
+
+### Ubuntu 24.04 (Noble)
+
+Support for Ubuntu 24.04 is **experimental**.
+
+```bash
+# Amazon Web Services (AWS)
+aws ec2 describe-images --region us-east-1 --output table \
+  --owners 099720109477 \
+  --query "sort_by(Images, &CreationDate)[*].[CreationDate,Name,ImageId]" \
+  --filters "Name=name,Values=ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-*-*"
 ```
 
 ## Owner aliases

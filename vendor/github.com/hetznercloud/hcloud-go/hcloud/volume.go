@@ -21,11 +21,17 @@ type Volume struct {
 	Server      *Server
 	Location    *Location
 	Size        int
+	Format      *string
 	Protection  VolumeProtection
 	Labels      map[string]string
 	LinuxDevice string
 	Created     time.Time
 }
+
+const (
+	VolumeFormatExt4 = "ext4"
+	VolumeFormatXFS  = "xfs"
+)
 
 // VolumeProtection represents the protection level of a volume.
 type VolumeProtection struct {
@@ -35,6 +41,7 @@ type VolumeProtection struct {
 // VolumeClient is a client for the volume API.
 type VolumeClient struct {
 	client *Client
+	Action *ResourceActionClient
 }
 
 // VolumeStatus specifies a volume's status.
@@ -96,7 +103,7 @@ type VolumeListOpts struct {
 }
 
 func (l VolumeListOpts) values() url.Values {
-	vals := l.ListOpts.values()
+	vals := l.ListOpts.Values()
 	if l.Name != "" {
 		vals.Add("name", l.Name)
 	}

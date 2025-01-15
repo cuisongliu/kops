@@ -87,6 +87,7 @@ func Convert_v1alpha2_ClusterSpec_To_kops_ClusterSpec(in *ClusterSpec, out *kops
 			out.AdditionalPolicies[k] = v
 		}
 	}
+	out.ConfigStore.Base = in.ConfigBase
 	if in.ExternalPolicies != nil {
 		policies := make(map[string][]string, len(in.ExternalPolicies))
 		for k, v := range in.ExternalPolicies {
@@ -97,6 +98,8 @@ func Convert_v1alpha2_ClusterSpec_To_kops_ClusterSpec(in *ClusterSpec, out *kops
 		}
 		out.ExternalPolicies = policies
 	}
+	out.ConfigStore.Secrets = in.SecretStore
+	out.ConfigStore.Keypairs = in.KeyStore
 	if in.KubeAPIServer != nil {
 		kube := in.KubeAPIServer
 		if kube.OIDCClientID != nil ||
@@ -195,6 +198,12 @@ func Convert_v1alpha2_ClusterSpec_To_kops_ClusterSpec(in *ClusterSpec, out *kops
 				return field.Forbidden(field.NewPath("spec").Child("cloudConfig", "gceServiceAccount"), "GCE Service Account supports only GCE")
 			}
 			out.CloudProvider.GCE.ServiceAccount = in.CloudConfig.GCEServiceAccount
+		}
+		if in.CloudConfig.GCEUseStartupScript != nil {
+			if out.CloudProvider.GCE == nil {
+				return field.Forbidden(field.NewPath("spec").Child("cloudConfig", "gceStartupScript"), "GCE Startup Script supports only GCE")
+			}
+			out.CloudProvider.GCE.UseStartupScript = in.CloudConfig.GCEUseStartupScript
 		}
 		if in.CloudConfig.DisableSecurityGroupIngress != nil {
 			if out.CloudProvider.AWS == nil {
@@ -384,6 +393,9 @@ func Convert_kops_ClusterSpec_To_v1alpha2_ClusterSpec(in *kops.ClusterSpec, out 
 		kube.OIDCUsernameClaim = oidc.UsernameClaim
 		kube.OIDCUsernamePrefix = oidc.UsernamePrefix
 	}
+	out.ConfigBase = in.ConfigStore.Base
+	out.KeyStore = in.ConfigStore.Keypairs
+	out.SecretStore = in.ConfigStore.Secrets
 	if in.ExternalPolicies != nil {
 		out.ExternalPolicies = make(map[string][]string, len(in.ExternalPolicies))
 		for k, v := range in.ExternalPolicies {
@@ -407,7 +419,27 @@ func Convert_kops_ClusterSpec_To_v1alpha2_ClusterSpec(in *kops.ClusterSpec, out 
 	if out.API.IsEmpty() {
 		out.LegacyAPI = nil
 	}
-	out.LegacyCloudProvider = string(in.GetCloudProvider())
+	if in.CloudProvider.AWS != nil {
+		out.LegacyCloudProvider = string(kops.CloudProviderAWS)
+	}
+	if in.CloudProvider.Azure != nil {
+		out.LegacyCloudProvider = string(kops.CloudProviderAzure)
+	}
+	if in.CloudProvider.DO != nil {
+		out.LegacyCloudProvider = string(kops.CloudProviderDO)
+	}
+	if in.CloudProvider.GCE != nil {
+		out.LegacyCloudProvider = string(kops.CloudProviderGCE)
+	}
+	if in.CloudProvider.Hetzner != nil {
+		out.LegacyCloudProvider = string(kops.CloudProviderHetzner)
+	}
+	if in.CloudProvider.Openstack != nil {
+		out.LegacyCloudProvider = string(kops.CloudProviderOpenstack)
+	}
+	if in.CloudProvider.Scaleway != nil {
+		out.LegacyCloudProvider = string(kops.CloudProviderScaleway)
+	}
 	switch kops.CloudProviderID(out.LegacyCloudProvider) {
 	case kops.CloudProviderAWS:
 		aws := in.CloudProvider.AWS
@@ -514,6 +546,12 @@ func Convert_kops_ClusterSpec_To_v1alpha2_ClusterSpec(in *kops.ClusterSpec, out 
 				out.CloudConfig = &CloudConfiguration{}
 			}
 			out.CloudConfig.GCEServiceAccount = gce.ServiceAccount
+		}
+		if gce.UseStartupScript != nil {
+			if out.CloudConfig == nil {
+				out.CloudConfig = &CloudConfiguration{}
+			}
+			out.CloudConfig.GCEUseStartupScript = gce.UseStartupScript
 		}
 		if gce.PDCSIDriver != nil {
 			if out.CloudConfig == nil {

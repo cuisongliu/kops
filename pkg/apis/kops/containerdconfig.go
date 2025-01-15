@@ -16,13 +16,20 @@ limitations under the License.
 
 package kops
 
+import (
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
+)
+
 // NvidiaDefaultDriverPackage is the nvidia driver default version
-const NvidiaDefaultDriverPackage = "nvidia-headless-515-server"
+const NvidiaDefaultDriverPackage = "nvidia-driver-535-server"
 
 // ContainerdConfig is the configuration for containerd
 type ContainerdConfig struct {
 	// Address of containerd's GRPC server (default "/run/containerd/containerd.sock").
 	Address *string `json:"address,omitempty" flag:"address"`
+	// ConfigAdditions adds additional config entries to the generated config file.
+	ConfigAdditions map[string]intstr.IntOrString `json:"configAdditions,omitempty"`
 	// ConfigOverride is the complete containerd config file provided by the user.
 	ConfigOverride *string `json:"configOverride,omitempty"`
 	// LogLevel controls the logging details [trace, debug, info, warn, error, fatal, panic] (default "info").
@@ -45,6 +52,17 @@ type ContainerdConfig struct {
 	Runc *Runc `json:"runc,omitempty"`
 	// SelinuxEnabled enables SELinux support
 	SeLinuxEnabled bool `json:"selinuxEnabled,omitempty"`
+	// NRI configures the Node Resource Interface.
+	NRI *NRIConfig `json:"nri,omitempty"`
+}
+
+type NRIConfig struct {
+	// Enable NRI support in containerd
+	Enabled *bool `json:"enabled,omitempty"`
+	// PluginRegistrationTimeout is the timeout for plugin registration
+	PluginRegistrationTimeout *metav1.Duration `json:"pluginRegistrationTimeout,omitempty"`
+	// PluginRequestTimeout is the timeout for a plugin to handle a request
+	PluginRequestTimeout *metav1.Duration `json:"pluginRequestTimeout,omitempty"`
 }
 
 type NvidiaGPUConfig struct {

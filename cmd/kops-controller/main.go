@@ -32,30 +32,35 @@ import (
 	"k8s.io/kops/cmd/kops-controller/controllers"
 	"k8s.io/kops/cmd/kops-controller/pkg/config"
 	"k8s.io/kops/cmd/kops-controller/pkg/server"
+	"k8s.io/kops/pkg/apis/kops/v1alpha2"
 	"k8s.io/kops/pkg/bootstrap"
+	"k8s.io/kops/pkg/bootstrap/pkibootstrap"
 	"k8s.io/kops/pkg/nodeidentity"
 	nodeidentityaws "k8s.io/kops/pkg/nodeidentity/aws"
 	nodeidentityazure "k8s.io/kops/pkg/nodeidentity/azure"
 	nodeidentitydo "k8s.io/kops/pkg/nodeidentity/do"
 	nodeidentitygce "k8s.io/kops/pkg/nodeidentity/gce"
 	nodeidentityhetzner "k8s.io/kops/pkg/nodeidentity/hetzner"
+	nodeidentitymetal "k8s.io/kops/pkg/nodeidentity/metal"
 	nodeidentityos "k8s.io/kops/pkg/nodeidentity/openstack"
 	nodeidentityscw "k8s.io/kops/pkg/nodeidentity/scaleway"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awsup"
+	"k8s.io/kops/upup/pkg/fi/cloudup/azure"
 	"k8s.io/kops/upup/pkg/fi/cloudup/do"
 	"k8s.io/kops/upup/pkg/fi/cloudup/gce/tpm/gcetpmverifier"
 	"k8s.io/kops/upup/pkg/fi/cloudup/hetzner"
 	"k8s.io/kops/upup/pkg/fi/cloudup/openstack"
 	"k8s.io/kops/upup/pkg/fi/cloudup/scaleway"
+	"k8s.io/kops/util/pkg/vfs"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/yaml"
 	// +kubebuilder:scaffold:imports
 )
 
 var (
-	scheme   = runtime.NewScheme()
 	setupLog = ctrl.Log.WithName("setup")
 )
 
@@ -97,64 +102,102 @@ func main() {
 
 	ctrl.SetLogger(klogr.New())
 
-	if err := buildScheme(); err != nil {
+	scheme, err := buildScheme()
+	if err != nil {
 		setupLog.Error(err, "error building scheme")
 		os.Exit(1)
 	}
 
 	kubeConfig := ctrl.GetConfigOrDie()
+	kubeConfig.Burst = 200
+	kubeConfig.QPS = 100
+
 	mgr, err := ctrl.NewManager(kubeConfig, ctrl.Options{
-		Scheme:             scheme,
-		MetricsBindAddress: metricsAddress,
-		LeaderElection:     true,
-		LeaderElectionID:   "kops-controller-leader",
+		Scheme: scheme,
+		Metrics: metricsserver.Options{
+			BindAddress: metricsAddress,
+		},
+		LeaderElection:   true,
+		LeaderElectionID: "kops-controller-leader",
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
 		os.Exit(1)
 	}
 
+	vfsContext := vfs.NewVFSContext()
+
 	if opt.Server != nil {
-		var verifier bootstrap.Verifier
+		var verifiers []bootstrap.Verifier
 		var err error
 		if opt.Server.Provider.AWS != nil {
-			verifier, err = awsup.NewAWSVerifier(opt.Server.Provider.AWS)
+			verifier, err := awsup.NewAWSVerifier(ctx, opt.Server.Provider.AWS)
 			if err != nil {
 				setupLog.Error(err, "unable to create verifier")
 				os.Exit(1)
 			}
-		} else if opt.Server.Provider.GCE != nil {
-			verifier, err = gcetpmverifier.NewTPMVerifier(opt.Server.Provider.GCE)
+			verifiers = append(verifiers, verifier)
+		}
+		if opt.Server.Provider.GCE != nil {
+			verifier, err := gcetpmverifier.NewTPMVerifier(opt.Server.Provider.GCE)
 			if err != nil {
 				setupLog.Error(err, "unable to create verifier")
 				os.Exit(1)
 			}
-		} else if opt.Server.Provider.Hetzner != nil {
-			verifier, err = hetzner.NewHetznerVerifier(opt.Server.Provider.Hetzner)
+			verifiers = append(verifiers, verifier)
+		}
+		if opt.Server.Provider.Hetzner != nil {
+			verifier, err := hetzner.NewHetznerVerifier(opt.Server.Provider.Hetzner)
 			if err != nil {
 				setupLog.Error(err, "unable to create verifier")
 				os.Exit(1)
 			}
-		} else if opt.Server.Provider.OpenStack != nil {
-			verifier, err = openstack.NewOpenstackVerifier(opt.Server.Provider.OpenStack)
+			verifiers = append(verifiers, verifier)
+		}
+		if opt.Server.Provider.OpenStack != nil {
+			verifier, err := openstack.NewOpenstackVerifier(opt.Server.Provider.OpenStack)
 			if err != nil {
 				setupLog.Error(err, "unable to create verifier")
 				os.Exit(1)
 			}
-		} else if opt.Server.Provider.DigitalOcean != nil {
-			verifier, err = do.NewVerifier(ctx, opt.Server.Provider.DigitalOcean)
+			verifiers = append(verifiers, verifier)
+		}
+		if opt.Server.Provider.DigitalOcean != nil {
+			verifier, err := do.NewVerifier(ctx, opt.Server.Provider.DigitalOcean)
 			if err != nil {
 				setupLog.Error(err, "unable to create verifier")
 				os.Exit(1)
 			}
-		} else if opt.Server.Provider.Scaleway != nil {
-			verifier, err = scaleway.NewScalewayVerifier(ctx, opt.Server.Provider.Scaleway)
+			verifiers = append(verifiers, verifier)
+		}
+		if opt.Server.Provider.Scaleway != nil {
+			verifier, err := scaleway.NewScalewayVerifier(ctx, opt.Server.Provider.Scaleway)
 			if err != nil {
 				setupLog.Error(err, "unable to create verifier")
 				os.Exit(1)
 			}
-		} else {
-			klog.Fatalf("server cloud provider config not provided")
+			verifiers = append(verifiers, verifier)
+		}
+		if opt.Server.Provider.Azure != nil {
+			verifier, err := azure.NewAzureVerifier(ctx, opt.Server.Provider.Azure)
+			if err != nil {
+				setupLog.Error(err, "unable to create verifier")
+				os.Exit(1)
+			}
+			verifiers = append(verifiers, verifier)
+		}
+
+		if opt.Server.PKI != nil {
+			verifier, err := pkibootstrap.NewVerifier(opt.Server.PKI, mgr.GetClient())
+			if err != nil {
+				setupLog.Error(err, "unable to create verifier")
+				os.Exit(1)
+			}
+			verifiers = append(verifiers, verifier)
+		}
+
+		if len(verifiers) == 0 {
+			klog.Fatalf("server verifiers not provided")
 		}
 
 		uncachedClient, err := client.New(mgr.GetConfig(), client.Options{
@@ -166,7 +209,9 @@ func main() {
 			os.Exit(1)
 		}
 
-		srv, err := server.NewServer(&opt, verifier, uncachedClient)
+		verifier := bootstrap.NewChainVerifier(verifiers...)
+
+		srv, err := server.NewServer(vfsContext, &opt, verifier, uncachedClient)
 		if err != nil {
 			setupLog.Error(err, "unable to create server")
 			os.Exit(1)
@@ -175,14 +220,14 @@ func main() {
 	}
 
 	if opt.EnableCloudIPAM {
-		if err := setupCloudIPAM(mgr, &opt); err != nil {
+		if err := setupCloudIPAM(ctx, mgr, &opt); err != nil {
 			setupLog.Error(err, "unable to setup cloud IPAM")
 			os.Exit(1)
 
 		}
 	}
 
-	if err := addNodeController(mgr, &opt); err != nil {
+	if err := addNodeController(ctx, mgr, vfsContext, &opt); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "NodeController")
 		os.Exit(1)
 	}
@@ -201,24 +246,28 @@ func main() {
 	}
 }
 
-func buildScheme() error {
+func buildScheme() (*runtime.Scheme, error) {
+	scheme := runtime.NewScheme()
 	if err := corev1.AddToScheme(scheme); err != nil {
-		return fmt.Errorf("error registering corev1: %v", err)
+		return nil, fmt.Errorf("error registering corev1: %v", err)
+	}
+	if err := v1alpha2.AddToScheme(scheme); err != nil {
+		return nil, fmt.Errorf("error registering kops/v1alpha2 API: %v", err)
 	}
 	// Needed so that the leader-election system can post events
 	if err := coordinationv1.AddToScheme(scheme); err != nil {
-		return fmt.Errorf("error registering coordinationv1: %v", err)
+		return nil, fmt.Errorf("error registering coordinationv1: %v", err)
 	}
-	return nil
+	return scheme, nil
 }
 
-func addNodeController(mgr manager.Manager, opt *config.Options) error {
+func addNodeController(ctx context.Context, mgr manager.Manager, vfsContext *vfs.VFSContext, opt *config.Options) error {
 	var legacyIdentifier nodeidentity.LegacyIdentifier
 	var identifier nodeidentity.Identifier
 	var err error
 	switch opt.Cloud {
 	case "aws":
-		identifier, err = nodeidentityaws.New(opt.CacheNodeidentityInfo)
+		identifier, err = nodeidentityaws.New(ctx, opt.CacheNodeidentityInfo)
 		if err != nil {
 			return fmt.Errorf("error building identifier: %v", err)
 		}
@@ -259,6 +308,12 @@ func addNodeController(mgr manager.Manager, opt *config.Options) error {
 			return fmt.Errorf("error building identifier: %w", err)
 		}
 
+	case "metal":
+		identifier, err = nodeidentitymetal.New()
+		if err != nil {
+			return fmt.Errorf("error building metal node identifier: %w", err)
+		}
+
 	case "":
 		return fmt.Errorf("must specify cloud")
 
@@ -282,7 +337,7 @@ func addNodeController(mgr manager.Manager, opt *config.Options) error {
 			return fmt.Errorf("must specify secretStore")
 		}
 
-		nodeController, err := controllers.NewLegacyNodeReconciler(mgr, opt.ConfigBase, legacyIdentifier)
+		nodeController, err := controllers.NewLegacyNodeReconciler(mgr, vfsContext, opt.ConfigBase, legacyIdentifier)
 		if err != nil {
 			return err
 		}
@@ -321,12 +376,12 @@ type Reconciler interface {
 	SetupWithManager(mgr manager.Manager) error
 }
 
-func setupCloudIPAM(mgr manager.Manager, opt *config.Options) error {
+func setupCloudIPAM(ctx context.Context, mgr manager.Manager, opt *config.Options) error {
 	setupLog.Info("enabling IPAM controller")
 	var controller Reconciler
 	switch opt.Cloud {
 	case "aws":
-		ipamController, err := controllers.NewAWSIPAMReconciler(mgr)
+		ipamController, err := controllers.NewAWSIPAMReconciler(ctx, mgr)
 		if err != nil {
 			return fmt.Errorf("creating aws IPAM controller: %w", err)
 		}

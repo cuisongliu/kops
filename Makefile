@@ -20,7 +20,7 @@ UPLOAD_DEST?=$(S3_BUCKET)
 GCS_LOCATION?=gs://must-override
 GCS_URL=$(GCS_LOCATION:gs://%=https://storage.googleapis.com/%)
 LATEST_FILE?=latest-ci.txt
-GOPATH_1ST:=$(shell go env | grep GOPATH | cut -f 2 -d '"' | sed 's/ /\\ /g')
+GOPATH_1ST:=$(shell go env GOPATH)
 UNIQUE:=$(shell date +%s)
 BUILD=$(KOPS_ROOT)/.build
 LOCAL=$(BUILD)/local
@@ -40,9 +40,9 @@ GOBIN := $(shell go env GOPATH)/bin
 endif
 
 # CODEGEN_VERSION is the version of k8s.io/code-generator to use
-CODEGEN_VERSION=v0.24.0
+CODEGEN_VERSION=v0.29.0
 
-KO=go run github.com/google/ko@v0.13.0
+KO=go run github.com/google/ko@v0.14.1
 
 UPLOAD_CMD=$(KOPS_ROOT)/hack/upload ${UPLOAD_ARGS}
 
@@ -50,7 +50,7 @@ UPLOAD_CMD=$(KOPS_ROOT)/hack/upload ${UPLOAD_ARGS}
 unexport AWS_ACCESS_KEY_ID AWS_REGION AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN CNI_VERSION_URL DNS_IGNORE_NS_CHECK DNSCONTROLLER_IMAGE DO_ACCESS_TOKEN GOOGLE_APPLICATION_CREDENTIALS
 unexport KOPS_BASE_URL KOPS_CLUSTER_NAME KOPS_RUN_OBSOLETE_VERSION KOPS_STATE_STORE KOPS_STATE_S3_ACL KUBE_API_VERSIONS NODEUP_URL OPENSTACK_CREDENTIAL_FILE SKIP_PACKAGE_UPDATE
 unexport SKIP_REGION_CHECK S3_ACCESS_KEY_ID S3_ENDPOINT S3_REGION S3_SECRET_ACCESS_KEY HCLOUD_TOKEN SCW_ACCESS_KEY SCW_SECRET_KEY SCW_DEFAULT_PROJECT_ID SCW_PROFILE
-unexport AZURE_CLIENT_ID AZURE_CLIENT_SECRET AZURE_STORAGE_ACCOUNT AZURE_STORAGE_KEY AZURE_SUBSCRIPTION_ID AZURE_TENANT_ID
+unexport AZURE_CLIENT_ID AZURE_CLIENT_SECRET AZURE_STORAGE_ACCOUNT AZURE_SUBSCRIPTION_ID AZURE_TENANT_ID
 
 
 VERSION=$(shell tools/get_version.sh | grep VERSION | awk '{print $$2}')
@@ -66,16 +66,16 @@ GITSHA := $(shell cd ${KOPS_ROOT}; git describe --always)
 # We lock the versions of our controllers also
 # We need to keep in sync with:
 #   pkg/model/components/etcdmanager/model.go
-KOPS_UTILS_CP_TAG=1.28.0-alpha.1
+KOPS_UTILS_CP_TAG=1.31.0-beta.1
 KOPS_UTILS_CP_PUSH_TAG=$(shell tools/get_workspace_status.sh | grep STABLE_KOPS_UTILS_CP_TAG | awk '{print $$2}')
 #   upup/models/cloudup/resources/addons/dns-controller/
-DNS_CONTROLLER_TAG=1.28.0-alpha.1
+DNS_CONTROLLER_TAG=1.31.0-beta.1
 DNS_CONTROLLER_PUSH_TAG=$(shell tools/get_workspace_status.sh | grep STABLE_DNS_CONTROLLER_TAG | awk '{print $$2}')
 #   upup/models/cloudup/resources/addons/kops-controller.addons.k8s.io/
-KOPS_CONTROLLER_TAG=1.28.0-alpha.1
+KOPS_CONTROLLER_TAG=1.31.0-beta.1
 KOPS_CONTROLLER_PUSH_TAG=$(shell tools/get_workspace_status.sh | grep STABLE_KOPS_CONTROLLER_TAG | awk '{print $$2}')
 #   pkg/model/components/kubeapiserver/model.go
-KUBE_APISERVER_HEALTHCHECK_TAG=1.28.0-alpha.1
+KUBE_APISERVER_HEALTHCHECK_TAG=1.31.0-beta.1
 KUBE_APISERVER_HEALTHCHECK_PUSH_TAG=$(shell tools/get_workspace_status.sh | grep STABLE_KUBE_APISERVER_HEALTHCHECK_TAG | awk '{print $$2}')
 
 CGO_ENABLED=0
@@ -169,6 +169,8 @@ verify-codegen:
 
 .PHONY: protobuf
 protobuf:
+	protoc --go_out=. --go_opt=paths=source_relative pkg/otel/otlptracefile/pb/file.proto
+	go run golang.org/x/tools/cmd/goimports@latest -w pkg/otel/otlptracefile/pb/file.pb.go
 	cd ${GOPATH_1ST}/src; protoc --gogo_out=. k8s.io/kops/protokube/pkg/gossip/mesh/mesh.proto
 
 .PHONY: hooks
@@ -244,7 +246,7 @@ crossbuild-channels: channels-amd64 channels-arm64
 
 .PHONY: upload
 upload: version-dist # Upload kops to S3
-	aws s3 sync --acl public-read ${UPLOAD}/ ${S3_BUCKET}
+	aws s3 sync --no-progress --acl public-read ${UPLOAD}/ ${S3_BUCKET}
 
 # gcs-upload builds kops and uploads to GCS
 .PHONY: gcs-upload
@@ -322,15 +324,19 @@ ko-kops-utils-cp-push:
 gomod:
 	go mod tidy
 	go mod vendor
-	cd tests/e2e; go mod tidy
 	cd hack; go mod tidy
+	cd tests/e2e; go mod tidy
+	cd tools/otel/traceserver; go mod tidy
 
 .PHONY: goget
 goget:
 	go get $(shell go list -f '{{if not (or .Main .Indirect)}}{{.Path}}{{end}}' -mod=mod -m all | grep -v spotinst-sdk-go)
+	cd hack; go get $(shell go list -f '{{if not (or .Main .Indirect)}}{{.Path}}{{end}}' -mod=mod -m all)
+	cd tests/e2e; go get $(shell go list -f '{{if not (or .Main .Indirect)}}{{.Path}}{{end}}' -mod=mod -m all | grep -v kubetest2)
+	cd tools/otel/traceserver; go get $(shell go list -f '{{if not (or .Main .Indirect)}}{{.Path}}{{end}}' -mod=mod -m all)
 
 .PHONY: depup
-depup: goget gomod gen-cli-docs
+depup: goget gomod
 
 .PHONY: gofmt
 gofmt:
@@ -752,7 +758,7 @@ dev-upload: dev-upload-linux-amd64 dev-upload-linux-arm64
 .PHONY: crds
 crds:
 	cd "${KOPS_ROOT}/hack" && go build -o "${KOPS_ROOT}/_output/bin/controller-gen" sigs.k8s.io/controller-tools/cmd/controller-gen
-	"${KOPS_ROOT}/_output/bin/controller-gen" crd paths=k8s.io/kops/pkg/apis/kops/v1alpha2 output:dir=k8s/crds/ crd:crdVersions=v1
+	"${KOPS_ROOT}/_output/bin/controller-gen" crd paths=k8s.io/kops/pkg/apis/kops/v1alpha2 output:dir=k8s/crds/
 
 #------------------------------------------------------
 # kops-controller

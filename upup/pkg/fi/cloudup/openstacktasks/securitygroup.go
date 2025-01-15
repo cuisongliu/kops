@@ -21,8 +21,8 @@ import (
 	"strconv"
 	"strings"
 
-	sg "github.com/gophercloud/gophercloud/openstack/networking/v2/extensions/security/groups"
-	sgr "github.com/gophercloud/gophercloud/openstack/networking/v2/extensions/security/rules"
+	sg "github.com/gophercloud/gophercloud/v2/openstack/networking/v2/extensions/security/groups"
+	sgr "github.com/gophercloud/gophercloud/v2/openstack/networking/v2/extensions/security/rules"
 	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/openstack"
@@ -259,6 +259,10 @@ func (d *deleteSecurityGroup) Item() string {
 	return s
 }
 
+func (d *deleteSecurityGroup) DeferDeletion() bool {
+	return false // TODO: Should we defer deletion?
+}
+
 type deleteSecurityGroupRule struct {
 	rule          sgr.SecGroupRule
 	securityGroup *SecurityGroup
@@ -296,6 +300,10 @@ func (d *deleteSecurityGroupRule) Item() string {
 	s += fmt.Sprintf(" ip=%s", d.rule.RemoteIPPrefix)
 	s += fmt.Sprintf(" securitygroup=%s", fi.ValueOf(d.securityGroup.Name))
 	return s
+}
+
+func (d *deleteSecurityGroupRule) DeferDeletion() bool {
+	return false // TODO: Should we defer deletion?
 }
 
 // RemovalRule is a rule that filters the permissions we should remove

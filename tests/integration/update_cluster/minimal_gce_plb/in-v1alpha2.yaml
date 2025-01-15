@@ -28,7 +28,8 @@ spec:
       name: a
     memoryRequest: 100Mi
     name: events
-  gceServiceAccount: default
+  cloudConfig:
+    gceServiceAccount: default
   iam:
     legacy: false
   kubelet:
@@ -36,7 +37,7 @@ spec:
   kubernetesApiAccess:
   - 0.0.0.0/0
   - ::/0
-  kubernetesVersion: v1.26.0
+  kubernetesVersion: v1.32.0
   masterPublicName: api.minimal-gce-plb.example.com
   networking:
     cni: {}
@@ -52,8 +53,6 @@ spec:
   topology:
     dns:
       type: Public
-    masters: private
-    nodes: private
 
 ---
 

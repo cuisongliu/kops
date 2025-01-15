@@ -1,0 +1,259 @@
+apiVersion: kops.k8s.io/v1alpha2
+kind: Cluster
+metadata:
+  creationTimestamp: "2017-01-01T00:00:00Z"
+  name: complex.example.com
+spec:
+  additionalNetworkCIDRs:
+  - 10.1.0.0/16
+  - 10.2.0.0/16
+  - 10.3.0.0/16
+  - 10.4.0.0/16
+  api:
+    loadBalancer:
+      class: Network
+      type: Public
+  authorization:
+    rbac: {}
+  channel: stable
+  cloudProvider: aws
+  configBase: memfs://tests/complex.example.com
+  etcdClusters:
+  - cpuRequest: 200m
+    etcdMembers:
+    - encryptedVolume: true
+      instanceGroup: control-plane-us-test-1a
+      name: a
+    - encryptedVolume: true
+      instanceGroup: control-plane-us-test-1b
+      name: b
+    - encryptedVolume: true
+      instanceGroup: control-plane-us-test-1c
+      name: c
+    manager:
+      backupRetentionDays: 90
+    memoryRequest: 100Mi
+    name: main
+  - cpuRequest: 100m
+    etcdMembers:
+    - encryptedVolume: true
+      instanceGroup: control-plane-us-test-1a
+      name: a
+    - encryptedVolume: true
+      instanceGroup: control-plane-us-test-1b
+      name: b
+    - encryptedVolume: true
+      instanceGroup: control-plane-us-test-1c
+      name: c
+    manager:
+      backupRetentionDays: 90
+    memoryRequest: 100Mi
+    name: events
+  iam:
+    allowContainerRegistry: true
+    legacy: false
+  kubelet:
+    anonymousAuth: false
+  kubernetesApiAccess:
+  - 0.0.0.0/0
+  - ::/0
+  kubernetesVersion: v1.32.0
+  networkCIDR: 10.0.0.0/16
+  networking:
+    cni: {}
+  nonMasqueradeCIDR: 100.64.0.0/10
+  sshAccess:
+  - 1.2.3.4/32
+  subnets:
+  - cidr: 10.0.64.0/18
+    name: us-test-1a
+    type: Private
+    zone: us-test-1a
+  - cidr: 10.0.128.0/18
+    name: us-test-1b
+    type: Private
+    zone: us-test-1b
+  - cidr: 10.0.192.0/18
+    name: us-test-1c
+    type: Private
+    zone: us-test-1c
+  - cidr: 10.1.0.0/16
+    name: us-test-1a-1
+    type: Private
+    zone: us-test-1a
+  - cidr: 10.2.0.0/16
+    name: us-test-1b-2
+    type: Private
+    zone: us-test-1b
+  - cidr: 10.3.0.0/16
+    name: us-test-1c-3
+    type: Private
+    zone: us-test-1c
+  - cidr: 10.4.0.0/16
+    name: us-test-1a-4
+    type: Private
+    zone: us-test-1a
+  - cidr: 10.0.0.0/21
+    name: utility-us-test-1a
+    type: Utility
+    zone: us-test-1a
+  - cidr: 10.0.24.0/21
+    name: utility-us-test-1b
+    type: Utility
+    zone: us-test-1b
+  - cidr: 10.0.40.0/21
+    name: utility-us-test-1c
+    type: Utility
+    zone: us-test-1c
+  - cidr: 10.0.8.0/21
+    name: utility-us-test-1a-1
+    type: Utility
+    zone: us-test-1a
+  - cidr: 10.0.32.0/21
+    name: utility-us-test-1b-2
+    type: Utility
+    zone: us-test-1b
+  - cidr: 10.0.48.0/21
+    name: utility-us-test-1c-3
+    type: Utility
+    zone: us-test-1c
+  - cidr: 10.0.16.0/21
+    name: utility-us-test-1a-4
+    type: Utility
+    zone: us-test-1a
+  topology:
+    dns:
+      type: None
+
+---
+
+apiVersion: kops.k8s.io/v1alpha2
+kind: InstanceGroup
+metadata:
+  creationTimestamp: "2017-01-01T00:00:00Z"
+  labels:
+    kops.k8s.io/cluster: complex.example.com
+  name: bastions
+spec:
+  image: 099720109477/ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-20241206
+  machineType: t2.micro
+  maxSize: 1
+  minSize: 1
+  role: Bastion
+  subnets:
+  - us-test-1a
+  - us-test-1b
+  - us-test-1c
+  - us-test-1a-1
+  - us-test-1b-2
+  - us-test-1c-3
+  - us-test-1a-4
+
+---
+
+apiVersion: kops.k8s.io/v1alpha2
+kind: InstanceGroup
+metadata:
+  creationTimestamp: "2017-01-01T00:00:00Z"
+  labels:
+    kops.k8s.io/cluster: complex.example.com
+  name: control-plane-us-test-1a
+spec:
+  image: 099720109477/ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-20241206
+  machineType: m3.medium
+  maxSize: 1
+  minSize: 1
+  role: Master
+  subnets:
+  - us-test-1a
+
+---
+
+apiVersion: kops.k8s.io/v1alpha2
+kind: InstanceGroup
+metadata:
+  creationTimestamp: "2017-01-01T00:00:00Z"
+  labels:
+    kops.k8s.io/cluster: complex.example.com
+  name: control-plane-us-test-1b
+spec:
+  image: 099720109477/ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-20241206
+  machineType: m3.medium
+  maxSize: 1
+  minSize: 1
+  role: Master
+  subnets:
+  - us-test-1b
+
+---
+
+apiVersion: kops.k8s.io/v1alpha2
+kind: InstanceGroup
+metadata:
+  creationTimestamp: "2017-01-01T00:00:00Z"
+  labels:
+    kops.k8s.io/cluster: complex.example.com
+  name: control-plane-us-test-1c
+spec:
+  image: 099720109477/ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-20241206
+  machineType: m3.medium
+  maxSize: 1
+  minSize: 1
+  role: Master
+  subnets:
+  - us-test-1c
+
+---
+
+apiVersion: kops.k8s.io/v1alpha2
+kind: InstanceGroup
+metadata:
+  creationTimestamp: "2017-01-01T00:00:00Z"
+  labels:
+    kops.k8s.io/cluster: complex.example.com
+  name: nodes-us-test-1a
+spec:
+  image: 099720109477/ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-20241206
+  machineType: t2.medium
+  maxSize: 4
+  minSize: 4
+  role: Node
+  subnets:
+  - us-test-1a-1
+  - us-test-1a-4
+
+---
+
+apiVersion: kops.k8s.io/v1alpha2
+kind: InstanceGroup
+metadata:
+  creationTimestamp: "2017-01-01T00:00:00Z"
+  labels:
+    kops.k8s.io/cluster: complex.example.com
+  name: nodes-us-test-1b
+spec:
+  image: 099720109477/ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-20241206
+  machineType: t2.medium
+  maxSize: 3
+  minSize: 3
+  role: Node
+  subnets:
+  - us-test-1b-2
+
+---
+
+apiVersion: kops.k8s.io/v1alpha2
+kind: InstanceGroup
+metadata:
+  creationTimestamp: "2017-01-01T00:00:00Z"
+  labels:
+    kops.k8s.io/cluster: complex.example.com
+  name: nodes-us-test-1c
+spec:
+  image: 099720109477/ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-20241206
+  machineType: t2.medium
+  maxSize: 3
+  minSize: 3
+  role: Node
+  subnets:
+  - us-test-1c-3

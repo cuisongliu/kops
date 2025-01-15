@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -30,6 +31,9 @@ import (
 	"github.com/aws/aws-sdk-go/service/elbv2"
 	"github.com/aws/aws-sdk-go/service/kms"
 	"k8s.io/klog/v2"
+
+	"k8s.io/cloud-provider-aws/pkg/providers/v1/config"
+	"k8s.io/cloud-provider-aws/pkg/providers/v1/iface"
 )
 
 // FakeAWSServices is an fake AWS session used for testing
@@ -47,12 +51,14 @@ type FakeAWSServices struct {
 	asg      *FakeASG
 	metadata *FakeMetadata
 	kms      *FakeKMS
+
+	callCounts map[string]int
 }
 
 // NewFakeAWSServices creates a new FakeAWSServices
 func NewFakeAWSServices(clusterID string) *FakeAWSServices {
 	s := &FakeAWSServices{}
-	s.region = "us-east-1"
+	s.region = "us-west-2"
 	s.ec2 = &FakeEC2Impl{aws: s}
 	s.elb = &FakeELB{aws: s}
 	s.elbv2 = &FakeELBV2{aws: s}
@@ -66,7 +72,7 @@ func NewFakeAWSServices(clusterID string) *FakeAWSServices {
 	selfInstance := &ec2.Instance{}
 	selfInstance.InstanceId = aws.String("i-self")
 	selfInstance.Placement = &ec2.Placement{
-		AvailabilityZone: aws.String("us-east-1a"),
+		AvailabilityZone: aws.String("us-west-2a"),
 	}
 	selfInstance.PrivateDnsName = aws.String("ip-172-20-0-100.ec2.internal")
 	selfInstance.PrivateIpAddress = aws.String("192.168.0.1")
@@ -74,10 +80,51 @@ func NewFakeAWSServices(clusterID string) *FakeAWSServices {
 	s.selfInstance = selfInstance
 	s.instances = []*ec2.Instance{selfInstance}
 
+	selfInstance.NetworkInterfaces = []*ec2.InstanceNetworkInterface{
+		{
+			Attachment: &ec2.InstanceNetworkInterfaceAttachment{
+				DeviceIndex: aws.Int64(1),
+			},
+			PrivateIpAddresses: []*ec2.InstancePrivateIpAddress{
+				{
+					Primary:          aws.Bool(true),
+					PrivateDnsName:   aws.String("ip-172-20-1-100.ec2.internal"),
+					PrivateIpAddress: aws.String("172.20.1.1"),
+				},
+				{
+					Primary:          aws.Bool(false),
+					PrivateDnsName:   aws.String("ip-172-20-1-101.ec2.internal"),
+					PrivateIpAddress: aws.String("172.20.1.2"),
+				},
+			},
+			Status: aws.String(ec2.NetworkInterfaceStatusInUse),
+		},
+		{
+			Attachment: &ec2.InstanceNetworkInterfaceAttachment{
+				DeviceIndex: aws.Int64(0),
+			},
+			PrivateIpAddresses: []*ec2.InstancePrivateIpAddress{
+				{
+					Primary:          aws.Bool(true),
+					PrivateDnsName:   aws.String("ip-172-20-0-100.ec2.internal"),
+					PrivateIpAddress: aws.String("172.20.0.100"),
+				},
+				{
+					Primary:          aws.Bool(false),
+					PrivateDnsName:   aws.String("ip-172-20-0-101.ec2.internal"),
+					PrivateIpAddress: aws.String("172.20.0.101"),
+				},
+			},
+			Status: aws.String(ec2.NetworkInterfaceStatusInUse),
+		},
+	}
+
 	var tag ec2.Tag
 	tag.Key = aws.String(TagNameKubernetesClusterLegacy)
 	tag.Value = aws.String(clusterID)
 	selfInstance.Tags = []*ec2.Tag{&tag}
+
+	s.callCounts = make(map[string]int)
 
 	return s
 }
@@ -97,8 +144,17 @@ func (s *FakeAWSServices) WithRegion(region string) *FakeAWSServices {
 	return s
 }
 
+// countCall increments the counter for the given service, api, and resourceID and returns the resulting call count
+func (s *FakeAWSServices) countCall(service string, api string, resourceID string) int {
+	key := fmt.Sprintf("%s:%s:%s", service, api, resourceID)
+	s.callCounts[key]++
+	count := s.callCounts[key]
+	klog.Warningf("call count: %s:%d", key, count)
+	return count
+}
+
 // Compute returns a fake EC2 client
-func (s *FakeAWSServices) Compute(region string) (EC2, error) {
+func (s *FakeAWSServices) Compute(region string) (iface.EC2, error) {
 	return s.ec2, nil
 }
 
@@ -118,7 +174,7 @@ func (s *FakeAWSServices) Autoscaling(region string) (ASG, error) {
 }
 
 // Metadata returns a fake EC2Metadata client
-func (s *FakeAWSServices) Metadata() (EC2Metadata, error) {
+func (s *FakeAWSServices) Metadata() (config.EC2Metadata, error) {
 	return s.metadata, nil
 }
 
@@ -129,7 +185,7 @@ func (s *FakeAWSServices) KeyManagement(region string) (KMS, error) {
 
 // FakeEC2 is a fake EC2 client used for testing
 type FakeEC2 interface {
-	EC2
+	iface.EC2
 	CreateSubnet(*ec2.Subnet) (*ec2.CreateSubnetOutput, error)
 	RemoveSubnets()
 	CreateRouteTable(*ec2.RouteTable) (*ec2.CreateRouteTableOutput, error)
@@ -273,34 +329,56 @@ func (ec2i *FakeEC2Impl) RemoveSubnets() {
 // DescribeAvailabilityZones returns fake availability zones
 // For every input returns a hardcoded list of fake availability zones for the moment
 func (ec2i *FakeEC2Impl) DescribeAvailabilityZones(request *ec2.DescribeAvailabilityZonesInput) ([]*ec2.AvailabilityZone, error) {
-	var azs []*ec2.AvailabilityZone
-
-	fakeZones := [5]string{"az-local", "az-wavelength", "us-west-2a", "us-west-2b", "us-west-2c"}
-	for _, name := range fakeZones {
-		var zoneType *string
-		switch name {
-		case "az-local":
-			zoneType = aws.String(localZoneType)
-		case "az-wavelength":
-			zoneType = aws.String(wavelengthZoneType)
-		default:
-			zoneType = aws.String(regularAvailabilityZoneType)
-		}
-		zone := &ec2.AvailabilityZone{ZoneName: aws.String(name), ZoneType: zoneType, ZoneId: aws.String(name)}
-		azs = append(azs, zone)
-	}
-	return azs, nil
+	return []*ec2.AvailabilityZone{
+		{
+			ZoneName: aws.String("us-west-2a"),
+			ZoneType: aws.String("availability-zone"),
+			ZoneId:   aws.String("az1"),
+		},
+		{
+			ZoneName: aws.String("us-west-2b"),
+			ZoneType: aws.String("availability-zone"),
+			ZoneId:   aws.String("az2"),
+		},
+		{
+			ZoneName: aws.String("us-west-2c"),
+			ZoneType: aws.String("availability-zone"),
+			ZoneId:   aws.String("az3"),
+		},
+		{
+			ZoneName: aws.String("az-local"),
+			ZoneType: aws.String("local-zone"),
+			ZoneId:   aws.String("lz1"),
+		},
+		{
+			ZoneName: aws.String("az-wavelength"),
+			ZoneType: aws.String("wavelength"),
+			ZoneId:   aws.String("wl1"),
+		},
+	}, nil
 }
 
 // CreateTags is a mock for CreateTags from EC2
 func (ec2i *FakeEC2Impl) CreateTags(input *ec2.CreateTagsInput) (*ec2.CreateTagsOutput, error) {
 	for _, id := range input.Resources {
+		callCount := ec2i.aws.countCall("ec2", "CreateTags", *id)
 		if *id == "i-error" {
 			return nil, errors.New("Unable to tag")
 		}
 
 		if *id == "i-not-found" {
 			return nil, awserr.New("InvalidInstanceID.NotFound", "Instance not found", nil)
+		}
+		// return an Instance not found error for the first `n` calls
+		// instance ID should be of the format `i-not-found-count-$N-$SUFFIX`
+		if strings.HasPrefix(*id, "i-not-found-count-") {
+			notFoundCount, err := strconv.Atoi(strings.Split(*id, "-")[4])
+			if err != nil {
+				panic(err)
+			}
+			if callCount < notFoundCount {
+				return nil, awserr.New("InvalidInstanceID.NotFound", "Instance not found", nil)
+			}
 		}
 	}
 	return &ec2.CreateTagsOutput{}, nil
@@ -743,6 +821,7 @@ func contains(haystack []*string, needle string) bool {
 
 // DescribeNetworkInterfaces returns list of ENIs for testing
 func (ec2i *FakeEC2Impl) DescribeNetworkInterfaces(input *ec2.DescribeNetworkInterfacesInput) (*ec2.DescribeNetworkInterfacesOutput, error) {
+	fargateNodeNamePrefix := "fargate-"
 	networkInterface := []*ec2.NetworkInterface{
 		{
 			PrivateIpAddress: aws.String("1.2.3.4"),

@@ -25,6 +25,15 @@ spec:
   - 1.1.1.0/24
   - pl-44444444
   channel: stable
+  cloudControllerManager:
+    concurrentNodeSyncs: 5
+  kubeControllerManager:
+    concurrentHorizontalPodAustoscalerSyncs: 10
+    concurrentJobSyncs: 10
+    cpuRequest: 200m
+    cpuLimit: 500m
+    memoryRequest: 800Mi
+    memoryLimit: 1000Mi
   cloudProvider: aws
   cloudLabels:
     Owner: John Doe
@@ -48,11 +57,18 @@ spec:
     cpuLimit: 500m
     memoryRequest: 800Mi
     memoryLimit: 1000Mi
+  kubeScheduler:
+    cpuRequest: 200m
+    cpuLimit: 500m
+    memoryRequest: 800Mi
+    memoryLimit: 1000Mi
   kubelet:
     anonymousAuth: false
-  kubernetesVersion: v1.24.0
+  kubernetesVersion: v1.30.0
   masterPublicName: api.complex.example.com
   networkCIDR: 172.20.0.0/16
+  nodeTerminationHandler:
+    managedASGTag: kubernetes.io/cluster/complex.example.com
   additionalNetworkCIDRs:
   - 10.1.0.0/16
   - 10.2.0.0/16
@@ -77,9 +93,6 @@ spec:
         max_retries: "10"
       filesProviderExtraConfig:
         profile: "foo"
-  topology:
-    masters: public
-    nodes: public
   subnets:
   - cidr: 172.20.32.0/19
     name: us-test-1a

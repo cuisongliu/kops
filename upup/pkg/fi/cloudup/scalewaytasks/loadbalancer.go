@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	"k8s.io/klog/v2"
+	"k8s.io/kops/pkg/wellknownservices"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/scaleway"
 	"k8s.io/kops/upup/pkg/fi/cloudup/terraform"
@@ -31,9 +32,12 @@ import (
 	"github.com/scaleway/scaleway-sdk-go/scw"
 )
 
+const LbDefaultType = "LB-S"
+
 // +kops:fitask
 type LoadBalancer struct {
 	Name      *string
+	Type      string
 	Lifecycle fi.Lifecycle
 
 	Zone                  *string
@@ -42,7 +46,10 @@ type LoadBalancer struct {
 	Tags                  []string
 	Description           string
 	SslCompatibilityLevel string
-	ForAPIServer          bool
+
+	// WellKnownServices indicates which services are supported by this resource.
+	// This field is internal and is not rendered to the cloud.
+	WellKnownServices []wellknownservices.WellKnownService
 }
 
 var _ fi.CompareWithID = &LoadBalancer{}
@@ -52,8 +59,10 @@ func (l *LoadBalancer) CompareWithID() *string {
 	return l.LBID
 }
 
-func (l *LoadBalancer) IsForAPIServer() bool {
-	return l.ForAPIServer
+// GetWellKnownServices implements fi.HasAddress::GetWellKnownServices.
+// It indicates which services we support with this load balancer.
+func (l *LoadBalancer) GetWellKnownServices() []wellknownservices.WellKnownService {
+	return l.WellKnownServices
 }
 
 func (l *LoadBalancer) Find(context *fi.CloudupContext) (*LoadBalancer, error) {
@@ -78,13 +87,13 @@ func (l *LoadBalancer) Find(context *fi.CloudupContext) (*LoadBalancer, error) {
 	}
 
 	return &LoadBalancer{
-		Name:         fi.PtrTo(loadBalancer.Name),
-		LBID:         fi.PtrTo(loadBalancer.ID),
-		Zone:         fi.PtrTo(string(loadBalancer.Zone)),
-		LBAddresses:  lbIPs,
-		Tags:         loadBalancer.Tags,
-		Lifecycle:    l.Lifecycle,
-		ForAPIServer: l.ForAPIServer,
+		Name:              fi.PtrTo(loadBalancer.Name),
+		LBID:              fi.PtrTo(loadBalancer.ID),
+		Zone:              fi.PtrTo(string(loadBalancer.Zone)),
+		LBAddresses:       lbIPs,
+		Tags:              loadBalancer.Tags,
+		Lifecycle:         l.Lifecycle,
+		WellKnownServices: l.WellKnownServices,
 	}, nil
 }
 
@@ -97,21 +106,19 @@ func (l *LoadBalancer) FindAddresses(context *fi.CloudupContext) ([]string, erro
 	cloud := context.T.Cloud.(scaleway.ScwCloud)
 	lbService := cloud.LBService()
 
-	if l.LBID == nil {
-		return nil, nil
-	}
-
-	loadBalancer, err := lbService.GetLB(&lb.ZonedAPIGetLBRequest{
+	loadBalancers, err := lbService.ListLBs(&lb.ZonedAPIListLBsRequest{
 		Zone: scw.Zone(cloud.Zone()),
-		LBID: fi.ValueOf(l.LBID),
+		Name: l.Name,
 	})
 	if err != nil {
 		return nil, err
 	}
 
 	addresses := []string(nil)
-	for _, address := range loadBalancer.IP {
-		addresses = append(addresses, address.IPAddress)
+	for _, loadBalancer := range loadBalancers.LBs {
+		for _, address := range loadBalancer.IP {
+			addresses = append(addresses, address.IPAddress)
+		}
 	}
 
 	return addresses, nil
@@ -175,6 +182,7 @@ func (l *LoadBalancer) RenderScw(t *scaleway.ScwAPITarget, actual, expected, cha
 		lbCreated, err := lbService.CreateLB(&lb.ZonedAPICreateLBRequest{
 			Zone: scw.Zone(fi.ValueOf(expected.Zone)),
 			Name: fi.ValueOf(expected.Name),
+			Type: LbDefaultType,
 			Tags: expected.Tags,
 		})
 		if err != nil {
@@ -204,10 +212,11 @@ func (l *LoadBalancer) RenderScw(t *scaleway.ScwAPITarget, actual, expected, cha
 type terraformLBIP struct{}
 
 type terraformLoadBalancer struct {
-	Type string                   `cty:"type"`
-	Name *string                  `cty:"name"`
-	Tags []string                 `cty:"tags"`
-	IPID *terraformWriter.Literal `cty:"ip_id"`
+	Type        string                   `cty:"type"`
+	Name        *string                  `cty:"name"`
+	Description string                   `cty:"description"`
+	Tags        []string                 `cty:"tags"`
+	IPID        *terraformWriter.Literal `cty:"ip_id"`
 }
 
 func (_ *LoadBalancer) RenderTerraform(t *terraform.TerraformTarget, actual, expected, changes *LoadBalancer) error {
@@ -220,10 +229,11 @@ func (_ *LoadBalancer) RenderTerraform(t *terraform.TerraformTarget, actual, exp
 	}
 
 	tfLB := terraformLoadBalancer{
-		Type: "LB-S",
-		Name: expected.Name,
-		Tags: expected.Tags,
-		IPID: terraformWriter.LiteralProperty("scaleway_lb_ip", tfName, "id"),
+		Type:        LbDefaultType,
+		Name:        expected.Name,
+		Description: expected.Description,
+		Tags:        expected.Tags,
+		IPID:        terraformWriter.LiteralProperty("scaleway_lb_ip", tfName, "id"),
 	}
 	return t.RenderResource("scaleway_lb", tfName, tfLB)
 }

@@ -21,8 +21,8 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"k8s.io/kops/cloudmock/aws/mockec2"
 	"k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/pkg/featureflag"
@@ -243,26 +243,6 @@ func Test_TemplateFunctions_CloudControllerConfigArgv(t *testing.T) {
 			},
 		},
 		{
-			desc: "Leader Migration",
-			cluster: &kops.Cluster{Spec: kops.ClusterSpec{
-				CloudProvider: kops.CloudProviderSpec{
-					Openstack: &kops.OpenstackSpec{},
-				},
-				ExternalCloudControllerManager: &kops.CloudControllerManagerConfig{
-					LeaderElection:        &kops.LeaderElectionConfiguration{LeaderElect: fi.PtrTo(true)},
-					EnableLeaderMigration: fi.PtrTo(true),
-				},
-			}},
-			expectedArgv: []string{
-				"--enable-leader-migration=true",
-				"--leader-elect=true",
-				"--v=2",
-				"--cloud-provider=openstack",
-				"--use-service-account-credentials=true",
-				"--cloud-config=/etc/kubernetes/cloud.config",
-			},
-		},
-		{
 			desc: "Disable Controller",
 			cluster: &kops.Cluster{Spec: kops.ClusterSpec{
 				CloudProvider: kops.CloudProviderSpec{
@@ -300,13 +280,13 @@ func Test_TemplateFunctions_CloudControllerConfigArgv(t *testing.T) {
 func Test_KarpenterInstanceTypes(t *testing.T) {
 	amiId := "ami-073c8c0760395aab8"
 	ec2Client := &mockec2.MockEC2{}
-	ec2Client.Images = append(ec2Client.Images, &ec2.Image{
+	ec2Client.Images = append(ec2Client.Images, &ec2types.Image{
 		CreationDate:   aws.String("2016-10-21T20:07:19.000Z"),
 		ImageId:        &amiId,
 		Name:           aws.String("focal"),
 		OwnerId:        aws.String(awsup.WellKnownAccountUbuntu),
 		RootDeviceName: aws.String("/dev/xvda"),
-		Architecture:   aws.String("x86_64"),
+		Architecture:   ec2types.ArchitectureValuesX8664,
 	})
 	ig := kops.InstanceGroupSpec{
 		Image: amiId,

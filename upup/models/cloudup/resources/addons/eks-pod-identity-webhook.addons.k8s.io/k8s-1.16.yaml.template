@@ -80,7 +80,7 @@ spec:
       serviceAccountName: pod-identity-webhook
       containers:
       - name: pod-identity-webhook
-        image: amazon/amazon-eks-pod-identity-webhook:v0.4.0
+        image: amazon/amazon-eks-pod-identity-webhook:v0.5.7
         command:
         - /webhook
         - --in-cluster=false
@@ -96,8 +96,8 @@ spec:
         readinessProbe:
           httpGet:
             path: /healthz
-            port: 9999
-            scheme: HTTP
+            port: 443
+            scheme: HTTPS
           initialDelaySeconds: 5
           periodSeconds: 5
           timeoutSeconds: 1
@@ -207,11 +207,7 @@ metadata:
 data:
   config: {{ PodIdentityWebhookConfigMapData }}
 ---
-{{ if IsKubernetesGTE "1.23" }}
 apiVersion: policy/v1
-{{ else }}
-apiVersion: policy/v1beta1
-{{ end }}
 kind: PodDisruptionBudget
 metadata:
   name: pod-identity-webhook

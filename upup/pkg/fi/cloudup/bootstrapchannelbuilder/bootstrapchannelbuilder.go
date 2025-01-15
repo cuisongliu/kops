@@ -21,8 +21,8 @@ import (
 	"strings"
 
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/klog/v2"
-
 	channelsapi "k8s.io/kops/channels/pkg/api"
 	"k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/pkg/assets"
@@ -47,6 +47,7 @@ import (
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/fitasks"
 	"k8s.io/kops/upup/pkg/fi/utils"
+	"k8s.io/kops/util/pkg/vfs"
 )
 
 // BootstrapChannelBuilder is responsible for handling the addons in channels
@@ -60,7 +61,7 @@ type BootstrapChannelBuilder struct {
 
 var _ fi.CloudupModelBuilder = &BootstrapChannelBuilder{}
 
-// networkSelector is the labels set on networking addons
+// networkingSelector is the labels set on networking addons
 //
 // The role.kubernetes.io/networking is used to label anything related to a networking addin,
 // so that if we switch networking plugins (e.g. calico -> weave or vice-versa), we'll replace the
@@ -162,7 +163,8 @@ func (b *BootstrapChannelBuilder) Build(c *fi.CloudupModelBuilderContext) error 
 
 	if featureflag.UseAddonOperators.Enabled() {
 		ob := &wellknownoperators.Builder{
-			Cluster: b.Cluster,
+			VFSContext: vfs.Context,
+			Cluster:    b.Cluster,
 		}
 
 		addonPackages, clusterAddons, err := ob.Build(b.ClusterAddons)
@@ -324,7 +326,7 @@ type Addon struct {
 	BuildPrune bool
 }
 
-func (b *BootstrapChannelBuilder) buildAddons(c *fi.CloudupModelBuilderContext) (*AddonList, map[string]iam.Subject, error) {
+func (b *BootstrapChannelBuilder) buildAddons(c *fi.CloudupModelBuilderContext) (*AddonList, map[types.NamespacedName]iam.Subject, error) {
 	addons := &AddonList{}
 
 	serviceAccountRoles := []iam.Subject{}
@@ -405,37 +407,6 @@ func (b *BootstrapChannelBuilder) buildAddons(c *fi.CloudupModelBuilderContext) 
 		}
 	}
 
-	// @check if bootstrap tokens are enabled an if so we can forgo applying
-	// this manifest. For clusters whom are upgrading from RBAC to Node,RBAC the clusterrolebinding
-	// will remain and have to be deleted manually once all the nodes have been upgraded.
-	enableRBACAddon := true
-	if b.UseKopsControllerForNodeBootstrap() {
-		enableRBACAddon = false
-	}
-	if b.Cluster.Spec.KubeAPIServer != nil {
-		if b.Cluster.Spec.KubeAPIServer.EnableBootstrapAuthToken != nil && *b.Cluster.Spec.KubeAPIServer.EnableBootstrapAuthToken {
-			enableRBACAddon = false
-		}
-	}
-
-	if enableRBACAddon {
-		{
-			key := "rbac.addons.k8s.io"
-
-			{
-				location := key + "/k8s-1.8.yaml"
-				id := "k8s-1.8"
-
-				addons.Add(&channelsapi.AddonSpec{
-					Name:     fi.PtrTo(key),
-					Selector: map[string]string{"k8s-addon": key},
-					Manifest: fi.PtrTo(location),
-					Id:       id,
-				})
-			}
-		}
-	}
-
 	{
 		// Adding the kubelet-api-admin binding: this is required when switching to webhook authorization on the kubelet
 		// docs: https://kubernetes.io/docs/reference/access-authn-authz/rbac/#other-component-roles
@@ -445,25 +416,6 @@ func (b *BootstrapChannelBuilder) buildAddons(c *fi.CloudupModelBuilderContext) 
 		{
 			location := key + "/k8s-1.9.yaml"
 			id := "k8s-1.9"
-
-			addons.Add(&channelsapi.AddonSpec{
-				Name:     fi.PtrTo(key),
-				Selector: map[string]string{"k8s-addon": key},
-				Manifest: fi.PtrTo(location),
-				Id:       id,
-			})
-		}
-	}
-
-	if b.IsKubernetesLT("1.26") &&
-		(b.Cluster.Spec.GetCloudProvider() == kops.CloudProviderAWS ||
-			b.Cluster.Spec.GetCloudProvider() == kops.CloudProviderGCE) {
-		// AWS and GCE KCM-to-CCM leader migration
-		key := "leader-migration.rbac.addons.k8s.io"
-
-		{
-			location := key + "/k8s-1.23.yaml"
-			id := "k8s-1.23"
 
 			addons.Add(&channelsapi.AddonSpec{
 				Name:     fi.PtrTo(key),
@@ -650,12 +602,13 @@ func (b *BootstrapChannelBuilder) buildAddons(c *fi.CloudupModelBuilderContext) 
 			location := key + "/k8s-1.17.yaml"
 			id := "k8s-1.17"
 
-			addons.Add(&channelsapi.AddonSpec{
+			addon := addons.Add(&channelsapi.AddonSpec{
 				Name:     fi.PtrTo(key),
 				Selector: map[string]string{"k8s-addon": key},
 				Manifest: fi.PtrTo(location),
 				Id:       id,
 			})
+			addon.BuildPrune = true
 		}
 	}
 
@@ -729,7 +682,7 @@ func (b *BootstrapChannelBuilder) buildAddons(c *fi.CloudupModelBuilderContext) 
 	}
 
 	if fi.ValueOf(b.Cluster.Spec.CloudConfig.ManageStorageClasses) {
-		if b.Cluster.Spec.GetCloudProvider() == kops.CloudProviderAWS {
+		if b.Cluster.GetCloudProvider() == kops.CloudProviderAWS {
 			key := "storage-aws.addons.k8s.io"
 
 			{
@@ -746,7 +699,7 @@ func (b *BootstrapChannelBuilder) buildAddons(c *fi.CloudupModelBuilderContext) 
 		}
 	}
 
-	if b.Cluster.Spec.GetCloudProvider() == kops.CloudProviderDO {
+	if b.Cluster.GetCloudProvider() == kops.CloudProviderDO {
 		key := "digitalocean-cloud-controller.addons.k8s.io"
 
 		{
@@ -776,7 +729,7 @@ func (b *BootstrapChannelBuilder) buildAddons(c *fi.CloudupModelBuilderContext) 
 		}
 	}
 
-	if b.Cluster.Spec.GetCloudProvider() == kops.CloudProviderHetzner {
+	if b.Cluster.GetCloudProvider() == kops.CloudProviderHetzner {
 		{
 			key := "hcloud-cloud-controller.addons.k8s.io"
 			id := "k8s-1.22"
@@ -803,7 +756,7 @@ func (b *BootstrapChannelBuilder) buildAddons(c *fi.CloudupModelBuilderContext) 
 		}
 	}
 
-	if b.Cluster.Spec.GetCloudProvider() == kops.CloudProviderGCE {
+	if b.Cluster.GetCloudProvider() == kops.CloudProviderGCE {
 		if fi.ValueOf(b.Cluster.Spec.CloudConfig.ManageStorageClasses) {
 			key := "storage-gce.addons.k8s.io"
 
@@ -834,7 +787,7 @@ func (b *BootstrapChannelBuilder) buildAddons(c *fi.CloudupModelBuilderContext) 
 		}
 	}
 
-	if b.Cluster.Spec.GetCloudProvider() == kops.CloudProviderScaleway {
+	if b.Cluster.GetCloudProvider() == kops.CloudProviderScaleway {
 		{
 			key := "scaleway-cloud-controller.addons.k8s.io"
 			id := "k8s-1.24"
@@ -868,18 +821,19 @@ func (b *BootstrapChannelBuilder) buildAddons(c *fi.CloudupModelBuilderContext) 
 			id := "v1.14.0"
 			location := key + "/" + id + ".yaml"
 
-			addons.Add(&channelsapi.AddonSpec{
+			addon := addons.Add(&channelsapi.AddonSpec{
 				Name:     fi.PtrTo(key),
 				Selector: map[string]string{"k8s-addon": key},
 				Manifest: fi.PtrTo(location),
 				Id:       id,
 			})
+			addon.BuildPrune = true
 		}
 	}
 
 	// The metadata-proxy daemonset conceals node metadata endpoints in GCE.
 	// It will land on nodes labeled cloud.google.com/metadata-proxy-ready=true
-	if b.Cluster.Spec.GetCloudProvider() == kops.CloudProviderGCE {
+	if b.Cluster.GetCloudProvider() == kops.CloudProviderGCE && b.Cluster.IsKubernetesLT("1.29") {
 		key := "metadata-proxy.addons.k8s.io"
 
 		{
@@ -893,61 +847,61 @@ func (b *BootstrapChannelBuilder) buildAddons(c *fi.CloudupModelBuilderContext) 
 				Id:       id,
 			})
 		}
+	}
 
-		if b.Cluster.Spec.GetCloudProvider() == kops.CloudProviderGCE {
-			if b.Cluster.Spec.ExternalCloudControllerManager != nil {
-				key := "gcp-cloud-controller.addons.k8s.io"
-				useBuiltin := !b.hasExternalAddon(key)
+	if b.Cluster.GetCloudProvider() == kops.CloudProviderGCE {
+		{
+			key := "gcp-cloud-controller.addons.k8s.io"
+			useBuiltin := !b.hasExternalAddon(key)
 
-				if !useBuiltin {
-					klog.Infof("Found cloud-controller-manager in addons; won't use builtin")
+			if !useBuiltin {
+				klog.Infof("Found cloud-controller-manager in addons; won't use builtin")
 
-					// Until we make the manifest extensible, we still need to inject our arguments.
-					// TODO(justinsb): we don't really want to do this, it limits the ability for users to override things.
-					// However, this is behind a feature flag at the moment, and this way we can work towards something better.
-					gkDaemonset := schema.GroupKind{Group: "apps", Kind: "DaemonSet"}
-					for _, addon := range b.ClusterAddons {
-						if addon.GroupVersionKind().GroupKind() == gkDaemonset &&
-							addon.GetName() == "cloud-controller-manager" &&
-							addon.GetNamespace() == "kube-system" {
+				// Until we make the manifest extensible, we still need to inject our arguments.
+				// TODO(justinsb): we don't really want to do this, it limits the ability for users to override things.
+				// However, this is behind a feature flag at the moment, and this way we can work towards something better.
+				gkDaemonset := schema.GroupKind{Group: "apps", Kind: "DaemonSet"}
+				for _, addon := range b.ClusterAddons {
+					if addon.GroupVersionKind().GroupKind() == gkDaemonset &&
+						addon.GetName() == "cloud-controller-manager" &&
+						addon.GetNamespace() == "kube-system" {
 
-							klog.Infof("replacing arguments in externally provided cloud-controller-manager")
+						klog.Infof("replacing arguments in externally provided cloud-controller-manager")
 
-							fnAny, ok := b.templates.TemplateFunctions["CloudControllerConfigArgv"]
-							if !ok {
-								return nil, nil, fmt.Errorf("unable to find TemplateFunction CloudControllerConfigArgv")
-							}
-							fn, ok := fnAny.(func() ([]string, error))
-							if !ok {
-								return nil, nil, fmt.Errorf("unexpected type for TemplateFunction CloudControllerConfigArgv: %T", fnAny)
-							}
-							args, err := fn()
-							if err != nil {
-								return nil, nil, fmt.Errorf("in TemplateFunction CloudControllerConfigArgv: %w", err)
-							}
+						fnAny, ok := b.templates.TemplateFunctions["CloudControllerConfigArgv"]
+						if !ok {
+							return nil, nil, fmt.Errorf("unable to find TemplateFunction CloudControllerConfigArgv")
+						}
+						fn, ok := fnAny.(func() ([]string, error))
+						if !ok {
+							return nil, nil, fmt.Errorf("unexpected type for TemplateFunction CloudControllerConfigArgv: %T", fnAny)
+						}
+						args, err := fn()
+						if err != nil {
+							return nil, nil, fmt.Errorf("in TemplateFunction CloudControllerConfigArgv: %w", err)
+						}
 
-							if err := addon.VisitContainers(func(container map[string]interface{}) error {
-								// TODO: Check name?
-								container["args"] = args
-								return nil
-							}); err != nil {
-								return nil, nil, fmt.Errorf("error visiting containers: %w", err)
-							}
+						if err := addon.VisitContainers(func(container map[string]interface{}) error {
+							// TODO: Check name?
+							container["args"] = args
+							return nil
+						}); err != nil {
+							return nil, nil, fmt.Errorf("error visiting containers: %w", err)
 						}
 					}
 				}
+			}
 
-				if useBuiltin {
-					id := "k8s-1.23"
-					location := key + "/" + id + ".yaml"
-					addon := addons.Add(&channelsapi.AddonSpec{
-						Name:     fi.PtrTo(key),
-						Manifest: fi.PtrTo(location),
-						Selector: map[string]string{"k8s-addon": key},
-						Id:       id,
-					})
-					addon.BuildPrune = true
-				}
+			if useBuiltin {
+				id := "k8s-1.23"
+				location := key + "/" + id + ".yaml"
+				addon := addons.Add(&channelsapi.AddonSpec{
+					Name:     fi.PtrTo(key),
+					Manifest: fi.PtrTo(location),
+					Selector: map[string]string{"k8s-addon": key},
+					Id:       id,
+				})
+				addon.BuildPrune = true
 			}
 		}
 	}
@@ -978,19 +932,8 @@ func (b *BootstrapChannelBuilder) buildAddons(c *fi.CloudupModelBuilderContext) 
 	if b.Cluster.Spec.Networking.Flannel != nil {
 		key := "networking.flannel"
 
-		if b.IsKubernetesGTE("v1.25.0") {
+		{
 			id := "k8s-1.25"
-			location := key + "/" + id + ".yaml"
-
-			addon := addons.Add(&channelsapi.AddonSpec{
-				Name:     fi.PtrTo(key),
-				Selector: networkingSelector(),
-				Manifest: fi.PtrTo(location),
-				Id:       id,
-			})
-			addon.BuildPrune = true
-		} else {
-			id := "k8s-1.12"
 			location := key + "/" + id + ".yaml"
 
 			addon := addons.Add(&channelsapi.AddonSpec{
@@ -1006,19 +949,8 @@ func (b *BootstrapChannelBuilder) buildAddons(c *fi.CloudupModelBuilderContext) 
 	if b.Cluster.Spec.Networking.Calico != nil {
 		key := "networking.projectcalico.org"
 
-		if b.IsKubernetesGTE("v1.25.0") {
+		{
 			id := "k8s-1.25"
-			location := key + "/" + id + ".yaml"
-
-			addon := addons.Add(&channelsapi.AddonSpec{
-				Name:     fi.PtrTo(key),
-				Selector: networkingSelector(),
-				Manifest: fi.PtrTo(location),
-				Id:       id,
-			})
-			addon.BuildPrune = true
-		} else {
-			id := "k8s-1.22"
 			location := key + "/" + id + ".yaml"
 
 			addon := addons.Add(&channelsapi.AddonSpec{
@@ -1034,19 +966,8 @@ func (b *BootstrapChannelBuilder) buildAddons(c *fi.CloudupModelBuilderContext) 
 	if b.Cluster.Spec.Networking.Canal != nil {
 		key := "networking.projectcalico.org.canal"
 
-		if b.IsKubernetesGTE("v1.25.0") {
+		{
 			id := "k8s-1.25"
-			location := key + "/" + id + ".yaml"
-
-			addon := addons.Add(&channelsapi.AddonSpec{
-				Name:     fi.PtrTo(key),
-				Selector: networkingSelector(),
-				Manifest: fi.PtrTo(location),
-				Id:       id,
-			})
-			addon.BuildPrune = true
-		} else {
-			id := "k8s-1.22"
 			location := key + "/" + id + ".yaml"
 
 			addon := addons.Add(&channelsapi.AddonSpec{
@@ -1085,6 +1006,23 @@ func (b *BootstrapChannelBuilder) buildAddons(c *fi.CloudupModelBuilderContext) 
 
 		{
 			id := "k8s-1.16"
+			location := key + "/" + id + ".yaml"
+
+			addons.Add(&channelsapi.AddonSpec{
+				Name:               fi.PtrTo(key),
+				Selector:           networkingSelector(),
+				Manifest:           fi.PtrTo(location),
+				Id:                 id,
+				NeedsRollingUpdate: channelsapi.NeedsRollingUpdateAll,
+			})
+		}
+	}
+
+	if b.Cluster.Spec.Networking.Kindnet != nil {
+		key := "networking.kindnet"
+
+		{
+			id := "k8s-1.32"
 			location := key + "/" + id + ".yaml"
 
 			addons.Add(&channelsapi.AddonSpec{
@@ -1137,7 +1075,7 @@ func (b *BootstrapChannelBuilder) buildAddons(c *fi.CloudupModelBuilderContext) 
 		}
 	}
 
-	if b.Cluster.Spec.GetCloudProvider() == kops.CloudProviderOpenstack {
+	if b.Cluster.GetCloudProvider() == kops.CloudProviderOpenstack {
 		{
 			key := "storage-openstack.addons.k8s.io"
 
@@ -1153,27 +1091,25 @@ func (b *BootstrapChannelBuilder) buildAddons(c *fi.CloudupModelBuilderContext) 
 			addon.BuildPrune = true
 		}
 
-		if b.Cluster.Spec.ExternalCloudControllerManager != nil {
-			// cloudprovider specific out-of-tree controller
-			{
-				key := "openstack.addons.k8s.io"
+		// cloudprovider specific out-of-tree controller
+		{
+			key := "openstack.addons.k8s.io"
 
-				location := key + "/k8s-1.13.yaml"
-				id := "k8s-1.13-ccm"
+			location := key + "/k8s-1.13.yaml"
+			id := "k8s-1.13-ccm"
 
-				addons.Add(&channelsapi.AddonSpec{
-					Name:     fi.PtrTo(key),
-					Manifest: fi.PtrTo(location),
-					Selector: map[string]string{"k8s-addon": key},
-					Id:       id,
-				})
-			}
+			addons.Add(&channelsapi.AddonSpec{
+				Name:     fi.PtrTo(key),
+				Manifest: fi.PtrTo(location),
+				Selector: map[string]string{"k8s-addon": key},
+				Id:       id,
+			})
 		}
 	}
 
-	if b.Cluster.Spec.GetCloudProvider() == kops.CloudProviderAWS {
+	if b.Cluster.GetCloudProvider() == kops.CloudProviderAWS {
 
-		if b.Cluster.Spec.ExternalCloudControllerManager != nil {
+		{
 			key := "aws-cloud-controller.addons.k8s.io"
 
 			{
@@ -1190,8 +1126,7 @@ func (b *BootstrapChannelBuilder) buildAddons(c *fi.CloudupModelBuilderContext) 
 				serviceAccountRoles = append(serviceAccountRoles, &awscloudcontrollermanager.ServiceAccount{})
 			}
 		}
-		if b.Cluster.Spec.CloudProvider.AWS != nil && b.Cluster.Spec.CloudProvider.AWS.EBSCSIDriver != nil &&
-			fi.ValueOf(b.Cluster.Spec.CloudProvider.AWS.EBSCSIDriver.Enabled) &&
+		if b.Cluster.Spec.CloudProvider.AWS != nil &&
 			(b.Cluster.Spec.CloudProvider.AWS.EBSCSIDriver.Managed == nil || fi.ValueOf(b.Cluster.Spec.CloudProvider.AWS.EBSCSIDriver.Managed)) {
 			key := "aws-ebs-csi-driver.addons.k8s.io"
 
@@ -1245,21 +1180,9 @@ func (b *BootstrapChannelBuilder) buildAddons(c *fi.CloudupModelBuilderContext) 
 		}
 	}
 
-	if b.Cluster.Spec.KubeScheduler.UsePolicyConfigMap != nil {
-		key := "scheduler.addons.k8s.io"
-		version := "1.7.0"
-		location := key + "/v" + version + ".yaml"
+	serviceAccounts := make(map[types.NamespacedName]iam.Subject)
 
-		addons.Add(&channelsapi.AddonSpec{
-			Name:     fi.PtrTo(key),
-			Selector: map[string]string{"k8s-addon": key},
-			Manifest: fi.PtrTo(location),
-		})
-	}
-
-	serviceAccounts := make(map[string]iam.Subject)
-
-	if b.Cluster.Spec.GetCloudProvider() == kops.CloudProviderAWS && b.Cluster.Spec.KubeAPIServer.ServiceAccountIssuer != nil {
+	if b.Cluster.GetCloudProvider() == kops.CloudProviderAWS && b.Cluster.Spec.KubeAPIServer.ServiceAccountIssuer != nil {
 		awsModelContext := &awsmodel.AWSModelContext{
 			KopsModelContext: b.KopsModelContext,
 		}
@@ -1272,7 +1195,7 @@ func (b *BootstrapChannelBuilder) buildAddons(c *fi.CloudupModelBuilderContext) 
 				return nil, nil, err
 			}
 			sa, _ := serviceAccountRole.ServiceAccount()
-			serviceAccounts[sa.Name] = serviceAccountRole
+			serviceAccounts[sa] = serviceAccountRole
 		}
 	}
 	return addons, serviceAccounts, nil

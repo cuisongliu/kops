@@ -20,7 +20,6 @@ import (
 	"fmt"
 
 	"k8s.io/kops/pkg/apis/kops"
-	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/loader"
 )
 
@@ -29,24 +28,15 @@ type NetworkingOptionsBuilder struct {
 	Context *OptionsContext
 }
 
-var _ loader.OptionsBuilder = &NetworkingOptionsBuilder{}
+var _ loader.ClusterOptionsBuilder = &NetworkingOptionsBuilder{}
 
-func (b *NetworkingOptionsBuilder) BuildOptions(o interface{}) error {
-	clusterSpec := o.(*kops.ClusterSpec)
-
-	options := o.(*kops.ClusterSpec)
-	if options.Kubelet == nil {
-		options.Kubelet = &kops.KubeletConfigSpec{}
+func (b *NetworkingOptionsBuilder) BuildOptions(o *kops.Cluster) error {
+	clusterSpec := &o.Spec
+	if clusterSpec.Kubelet == nil {
+		clusterSpec.Kubelet = &kops.KubeletConfigSpec{}
 	}
 
 	networking := &clusterSpec.Networking
-	if b.Context.IsKubernetesLT("1.24") {
-		if UsesCNI(networking) {
-			options.Kubelet.NetworkPluginName = fi.PtrTo("cni")
-		} else if networking.GCP != nil {
-			options.Kubelet.NetworkPluginName = fi.PtrTo("kubenet")
-		}
-	}
 
 	if networking.Classic != nil {
 		return fmt.Errorf("classic networking not supported")

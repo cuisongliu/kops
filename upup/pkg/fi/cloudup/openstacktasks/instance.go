@@ -17,20 +17,20 @@ limitations under the License.
 package openstacktasks
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
 
-	l3floatingip "github.com/gophercloud/gophercloud/openstack/networking/v2/extensions/layer3/floatingips"
-	"github.com/gophercloud/gophercloud/openstack/networking/v2/ports"
+	l3floatingip "github.com/gophercloud/gophercloud/v2/openstack/networking/v2/extensions/layer3/floatingips"
+	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/ports"
 
-	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/attachinterfaces"
-	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/bootfromvolume"
-	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/keypairs"
-	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/schedulerhints"
-	"github.com/gophercloud/gophercloud/openstack/compute/v2/servers"
+	"github.com/gophercloud/gophercloud/v2/openstack/compute/v2/attachinterfaces"
+	"github.com/gophercloud/gophercloud/v2/openstack/compute/v2/keypairs"
+	"github.com/gophercloud/gophercloud/v2/openstack/compute/v2/servers"
 	"k8s.io/klog/v2"
 	"k8s.io/kops/pkg/truncate"
+	"k8s.io/kops/pkg/wellknownservices"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/openstack"
 )
@@ -55,8 +55,11 @@ type Instance struct {
 	ConfigDrive      *bool
 	Status           *string
 
-	Lifecycle    fi.Lifecycle
-	ForAPIServer bool
+	Lifecycle fi.Lifecycle
+
+	// WellKnownServices indicates which services are supported by this resource.
+	// This field is internal and is not rendered to the cloud.
+	WellKnownServices []wellknownservices.WellKnownService
 }
 
 var (
@@ -102,8 +105,10 @@ func (e *Instance) CompareWithID() *string {
 	return e.ID
 }
 
-func (e *Instance) IsForAPIServer() bool {
-	return e.ForAPIServer
+// GetWellKnownServices implements fi.HasAddress::GetWellKnownServices.
+// It indicates which services we support with this instance.
+func (e *Instance) GetWellKnownServices() []wellknownservices.WellKnownService {
+	return e.WellKnownServices
 }
 
 func (e *Instance) FindAddresses(context *fi.CloudupContext) ([]string, error) {
@@ -152,16 +157,12 @@ func (e *Instance) Find(c *fi.CloudupContext) (*Instance, error) {
 		return nil, nil
 	}
 	cloud := c.T.Cloud.(openstack.OpenstackCloud)
-	computeClient := cloud.ComputeClient()
-	serverPage, err := servers.List(computeClient, servers.ListOpts{
+
+	serverList, err := cloud.ListInstances(servers.ListOpts{
 		Name: fmt.Sprintf("^%s", fi.ValueOf(e.GroupName)),
-	}).AllPages()
+	})
 	if err != nil {
 		return nil, fmt.Errorf("error listing servers: %v", err)
-	}
-	serverList, err := servers.ExtractServers(serverPage)
-	if err != nil {
-		return nil, fmt.Errorf("error extracting server page: %v", err)
 	}
 
 	var filteredList []servers.Server
@@ -248,7 +249,7 @@ func (e *Instance) Find(c *fi.CloudupContext) (*Instance, error) {
 	// Avoid flapping
 	e.ID = actual.ID
 	e.Status = fi.PtrTo(activeStatus)
-	actual.ForAPIServer = e.ForAPIServer
+	actual.WellKnownServices = e.WellKnownServices
 
 	// Immutable fields
 	actual.Flavor = e.Flavor
@@ -364,29 +365,22 @@ func (_ *Instance) RenderOpenstack(t *openstack.OpenstackAPITarget, a, e, change
 		if e.AvailabilityZone != nil {
 			opt.AvailabilityZone = fi.ValueOf(e.AvailabilityZone)
 		}
+		if opt, err = includeBootVolumeOptions(t, e, opt); err != nil {
+			return err
+		}
+
 		keyext := keypairs.CreateOptsExt{
 			CreateOptsBuilder: opt,
 			KeyName:           openstackKeyPairName(fi.ValueOf(e.SSHKey)),
 		}
 
-		sgext := schedulerhints.CreateOptsExt{
-			CreateOptsBuilder: keyext,
-			SchedulerHints: &schedulerhints.SchedulerHints{
-				Group: *e.ServerGroup.ID,
-			},
-		}
+		schedulerHints := servers.SchedulerHintOpts{Group: *e.ServerGroup.ID}
 
-		opts, err := includeBootVolumeOptions(t, e, sgext)
-		if err != nil {
-			return err
-		}
-
-		v, err := t.Cloud.CreateInstance(opts, fi.ValueOf(e.Port.ID))
+		v, err := t.Cloud.CreateInstance(keyext, schedulerHints, fi.ValueOf(e.Port.ID))
 		if err != nil {
 			return fmt.Errorf("Error creating instance: %v", err)
 		}
 		e.ID = fi.PtrTo(v.ID)
-		e.ServerGroup.AddNewMember(fi.ValueOf(e.ID))
 
 		if e.FloatingIP != nil {
 			err = associateFloatingIP(t, e)
@@ -400,7 +394,7 @@ func (_ *Instance) RenderOpenstack(t *openstack.OpenstackAPITarget, a, e, change
 		return nil
 	}
 	if changes.Port != nil {
-		_, err := attachinterfaces.Create(cloud.ComputeClient(), fi.ValueOf(e.ID), attachinterfaces.CreateOpts{
+		_, err := attachinterfaces.Create(context.TODO(), cloud.ComputeClient(), fi.ValueOf(e.ID), attachinterfaces.CreateOpts{
 			PortID: fi.ValueOf(changes.Port.ID),
 		}).Extract()
 		if err != nil {
@@ -419,7 +413,7 @@ func (_ *Instance) RenderOpenstack(t *openstack.OpenstackAPITarget, a, e, change
 func associateFloatingIP(t *openstack.OpenstackAPITarget, e *Instance) error {
 	client := t.Cloud.NetworkingClient()
 
-	_, err := l3floatingip.Update(client, fi.ValueOf(e.FloatingIP.ID), l3floatingip.UpdateOpts{
+	_, err := l3floatingip.Update(context.TODO(), client, fi.ValueOf(e.FloatingIP.ID), l3floatingip.UpdateOpts{
 		PortID: e.Port.ID,
 	}).Extract()
 	if err != nil {
@@ -428,38 +422,36 @@ func associateFloatingIP(t *openstack.OpenstackAPITarget, e *Instance) error {
 	return nil
 }
 
-func includeBootVolumeOptions(t *openstack.OpenstackAPITarget, e *Instance, opts servers.CreateOptsBuilder) (servers.CreateOptsBuilder, error) {
+func includeBootVolumeOptions(t *openstack.OpenstackAPITarget, e *Instance, opts servers.CreateOpts) (servers.CreateOpts, error) {
 	if !bootFromVolume(e.Metadata) {
 		return opts, nil
 	}
 
 	i, err := t.Cloud.GetImage(fi.ValueOf(e.Image))
 	if err != nil {
-		return nil, fmt.Errorf("Error getting image information: %v", err)
+		return servers.CreateOpts{}, fmt.Errorf("Error getting image information: %v", err)
 	}
 
-	bfv := bootfromvolume.CreateOptsExt{
-		CreateOptsBuilder: opts,
-		BlockDevice: []bootfromvolume.BlockDevice{{
-			BootIndex:           0,
-			DeleteOnTermination: true,
-			DestinationType:     "volume",
-			SourceType:          "image",
-			UUID:                i.ID,
-			VolumeSize:          i.MinDiskGigabytes,
-		}},
+	blockDevice := servers.BlockDevice{
+		BootIndex:           0,
+		DeleteOnTermination: true,
+		DestinationType:     "volume",
+		SourceType:          "image",
+		UUID:                i.ID,
+		VolumeSize:          i.MinDiskGigabytes,
 	}
 
 	if s, ok := e.Metadata[openstack.BOOT_VOLUME_SIZE]; ok {
 		i, err := strconv.ParseInt(s, 10, 64)
 		if err != nil {
-			return nil, fmt.Errorf("Invalid value for %v: %v", openstack.BOOT_VOLUME_SIZE, err)
+			return servers.CreateOpts{}, fmt.Errorf("Invalid value for %v: %v", openstack.BOOT_VOLUME_SIZE, err)
 		}
 
-		bfv.BlockDevice[0].VolumeSize = int(i)
+		blockDevice.VolumeSize = int(i)
 	}
 
-	return bfv, nil
+	opts.BlockDevice = []servers.BlockDevice{blockDevice}
+	return opts, nil
 }
 
 func bootFromVolume(m map[string]string) bool {

@@ -25,14 +25,14 @@ contents: |
       - --bind-address=0.0.0.0
       - --client-ca-file=/srv/kubernetes/ca.crt
       - --cloud-config=/etc/kubernetes/in-tree-cloud.config
-      - --cloud-provider=aws
+      - --cloud-provider=external
       - --enable-admission-plugins=NamespaceLifecycle,LimitRanger,ServiceAccount,DefaultStorageClass,DefaultTolerationSeconds,MutatingAdmissionWebhook,ValidatingAdmissionWebhook,NodeRestriction,ResourceQuota
       - --etcd-cafile=/srv/kubernetes/kube-apiserver/etcd-ca.crt
       - --etcd-certfile=/srv/kubernetes/kube-apiserver/etcd-client.crt
       - --etcd-keyfile=/srv/kubernetes/kube-apiserver/etcd-client.key
       - --etcd-servers-overrides=/events#https://127.0.0.1:4002
       - --etcd-servers=https://127.0.0.1:4001
-      - --feature-gates=CSIMigrationAWS=true,InTreePluginAWSUnregister=true
+      - --feature-gates=InTreePluginAWSUnregister=true
       - --kubelet-client-certificate=/srv/kubernetes/kube-apiserver/kubelet-api.crt
       - --kubelet-client-key=/srv/kubernetes/kube-apiserver/kubelet-api.key
       - --kubelet-preferred-address-types=InternalIP,Hostname,ExternalIP
@@ -52,8 +52,8 @@ contents: |
       - --requestheader-group-headers=X-Remote-Group
       - --requestheader-username-headers=X-Remote-User
       - --secure-port=443
-      - --service-account-issuer=https://api.internal.minimal.example.com
-      - --service-account-jwks-uri=https://api.internal.minimal.example.com/openid/v1/jwks
+      - --service-account-issuer=https://huh.com/multisaissuer.example.com
+      - --service-account-jwks-uri=https://huh.com/multisaissuer.example.com/openid/v1/jwks
       - --service-account-key-file=/srv/kubernetes/kube-apiserver/service-account.pub
       - --service-account-signing-key-file=/srv/kubernetes/kube-apiserver/service-account.key
       - --service-cluster-ip-range=100.64.0.0/13
@@ -61,9 +61,13 @@ contents: |
       - --tls-cert-file=/srv/kubernetes/kube-apiserver/server.crt
       - --tls-private-key-file=/srv/kubernetes/kube-apiserver/server.key
       - --v=2
+      - --service-account-issuer=https://foobar.com
+      - --service-account-issuer=https://aaa.com
+      - --service-account-issuer=https://hello.com
+      - --service-account-issuer=https://dorld.com
       command:
       - /go-runner
-      image: registry.k8s.io/kube-apiserver:v1.23.0
+      image: registry.k8s.io/kube-apiserver:v1.28.0
       livenessProbe:
         httpGet:
           host: 127.0.0.1

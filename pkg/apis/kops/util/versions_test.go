@@ -72,6 +72,22 @@ func Test_ParseKubernetesVersion(t *testing.T) {
 			},
 		},
 		{
+			version: "https://storage.googleapis.com/k8s-release-dev/ci/v1.30.0-alpha.0.5+d61cbac69aae97",
+			expected: &semver.Version{
+				Major: 1,
+				Minor: 30,
+				Patch: 0,
+			},
+		},
+		{
+			version: "https://dl.k8s.io/release/v1.30.2",
+			expected: &semver.Version{
+				Major: 1,
+				Minor: 30,
+				Patch: 0,
+			},
+		},
+		{
 			version:       "",
 			expectedError: fmt.Errorf("unable to parse kubernetes version \"\""),
 		},

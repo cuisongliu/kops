@@ -36,7 +36,8 @@ type LegacyIdentifier interface {
 }
 
 type LegacyInfo struct {
-	InstanceID        string
-	InstanceGroup     string
+	InstanceID    string
+	InstanceGroup string
+	// TODO: Remove
 	InstanceLifecycle string
 }

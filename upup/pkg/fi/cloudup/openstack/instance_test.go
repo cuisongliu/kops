@@ -17,12 +17,13 @@ limitations under the License.
 package openstack
 
 import (
+	"context"
 	"fmt"
 	"testing"
 
 	"time"
 
-	"github.com/gophercloud/gophercloud/openstack/compute/v2/servers"
+	"github.com/gophercloud/gophercloud/v2/openstack/compute/v2/servers"
 	"k8s.io/kops/upup/pkg/fi"
 )
 
@@ -65,7 +66,7 @@ func Test_WaitForStatusActiveResultsInInstanceNotFound(t *testing.T) {
 	actualErr := waitForStatusActive(c, wrongServerID, nil)
 
 	expectedErr := fmt.Errorf("Server with ID '%s' not found.", wrongServerID)
-	assertTestResults(t, nil, actualErr, expectedErr)
+	assertTestResults(t, nil, expectedErr, actualErr)
 }
 
 func Test_WaitForStatusActiveResultsInUnableToCreateServer(t *testing.T) {
@@ -75,7 +76,7 @@ func Test_WaitForStatusActiveResultsInUnableToCreateServer(t *testing.T) {
 	actualErr := waitForStatusActive(c, serverID, nil)
 
 	expectedErr := fmt.Errorf("unable to create server: {0 0001-01-01 00:00:00 +0000 UTC  }")
-	assertTestResults(t, nil, actualErr, expectedErr)
+	assertTestResults(t, nil, expectedErr, actualErr)
 }
 
 func Test_WaitForStatusActiveResultsInTimeout(t *testing.T) {
@@ -84,6 +85,6 @@ func Test_WaitForStatusActiveResultsInTimeout(t *testing.T) {
 
 	actualErr := waitForStatusActive(c, serverID, fi.PtrTo(time.Second))
 
-	expectedErr := fmt.Errorf("A timeout occurred")
-	assertTestResults(t, nil, actualErr, expectedErr)
+	expectedErr := context.DeadlineExceeded
+	assertTestResults(t, nil, expectedErr, actualErr)
 }

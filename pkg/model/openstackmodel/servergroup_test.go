@@ -24,6 +24,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/pkg/apis/nodeup"
+	"k8s.io/kops/pkg/assets"
 	"k8s.io/kops/pkg/model"
 	"k8s.io/kops/pkg/model/iam"
 	"k8s.io/kops/pkg/testutils"
@@ -31,7 +32,6 @@ import (
 	"k8s.io/kops/upup/pkg/fi/fitasks"
 	"k8s.io/kops/util/pkg/architectures"
 	"k8s.io/kops/util/pkg/hashing"
-	"k8s.io/kops/util/pkg/mirrors"
 )
 
 type serverGroupModelBuilderTestInput struct {
@@ -62,7 +62,7 @@ func getServerGroupModelBuilderTestInput() []serverGroupModelBuilderTestInput {
 							},
 						},
 					},
-					KubernetesVersion: "1.24.0",
+					KubernetesVersion: "1.30.0",
 					Networking: kops.NetworkingSpec{
 						Subnets: []kops.ClusterSubnetSpec{
 							{
@@ -125,7 +125,7 @@ func getServerGroupModelBuilderTestInput() []serverGroupModelBuilderTestInput {
 							},
 						},
 					},
-					KubernetesVersion: "1.24.0",
+					KubernetesVersion: "1.30.0",
 					Networking: kops.NetworkingSpec{
 						Subnets: []kops.ClusterSubnetSpec{
 							{
@@ -139,10 +139,7 @@ func getServerGroupModelBuilderTestInput() []serverGroupModelBuilderTestInput {
 								Region: "region",
 							},
 						},
-						Topology: &kops.TopologySpec{
-							ControlPlane: "private",
-							Nodes:        "private",
-						},
+						Topology: &kops.TopologySpec{},
 					},
 				},
 			},
@@ -218,7 +215,7 @@ func getServerGroupModelBuilderTestInput() []serverGroupModelBuilderTestInput {
 							},
 						},
 					},
-					KubernetesVersion: "1.24.0",
+					KubernetesVersion: "1.30.0",
 					Networking: kops.NetworkingSpec{
 						Subnets: []kops.ClusterSubnetSpec{
 							{
@@ -347,7 +344,7 @@ func getServerGroupModelBuilderTestInput() []serverGroupModelBuilderTestInput {
 							},
 						},
 					},
-					KubernetesVersion: "1.24.0",
+					KubernetesVersion: "1.30.0",
 					Networking: kops.NetworkingSpec{
 						Subnets: []kops.ClusterSubnetSpec{
 							{
@@ -356,10 +353,7 @@ func getServerGroupModelBuilderTestInput() []serverGroupModelBuilderTestInput {
 								Region: "region",
 							},
 						},
-						Topology: &kops.TopologySpec{
-							ControlPlane: kops.TopologyPublic,
-							Nodes:        kops.TopologyPublic,
-						},
+						Topology: &kops.TopologySpec{},
 					},
 				},
 			},
@@ -415,7 +409,7 @@ func getServerGroupModelBuilderTestInput() []serverGroupModelBuilderTestInput {
 							},
 						},
 					},
-					KubernetesVersion: "1.24.0",
+					KubernetesVersion: "1.30.0",
 					Networking: kops.NetworkingSpec{
 						Subnets: []kops.ClusterSubnetSpec{
 							{
@@ -434,10 +428,7 @@ func getServerGroupModelBuilderTestInput() []serverGroupModelBuilderTestInput {
 								Type:   kops.SubnetTypePrivate,
 							},
 						},
-						Topology: &kops.TopologySpec{
-							ControlPlane: kops.TopologyPrivate,
-							Nodes:        kops.TopologyPrivate,
-						},
+						Topology: &kops.TopologySpec{},
 					},
 				},
 			},
@@ -594,9 +585,7 @@ func getServerGroupModelBuilderTestInput() []serverGroupModelBuilderTestInput {
 							},
 						},
 						Topology: &kops.TopologySpec{
-							ControlPlane: kops.TopologyPrivate,
-							DNS:          kops.DNSTypeNone,
-							Nodes:        kops.TopologyPrivate,
+							DNS: kops.DNSTypeNone,
 						},
 					},
 				},
@@ -689,6 +678,135 @@ func getServerGroupModelBuilderTestInput() []serverGroupModelBuilderTestInput {
 			},
 		},
 		{
+			desc: "single-zone setup 3 masters 1 node without bastion with API loadbalancer dns none",
+			cluster: &kops.Cluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "cluster",
+				},
+				Spec: kops.ClusterSpec{
+					API: kops.APISpec{
+						LoadBalancer: &kops.LoadBalancerAccessSpec{
+							Type: kops.LoadBalancerTypePublic,
+						},
+					},
+					CloudProvider: kops.CloudProviderSpec{
+						Openstack: &kops.OpenstackSpec{
+							BlockStorage: &kops.OpenstackBlockStorageConfig{
+								Version:            fi.PtrTo("v3"),
+								IgnoreAZ:           fi.PtrTo(false),
+								CreateStorageClass: fi.PtrTo(false),
+								CSITopologySupport: fi.PtrTo(true),
+							},
+							Loadbalancer: &kops.OpenstackLoadbalancerConfig{
+								FloatingNetwork: fi.PtrTo("test"),
+								FloatingSubnet:  fi.PtrTo("test-lb-subnet"),
+								Method:          fi.PtrTo("ROUND_ROBIN"),
+								Provider:        fi.PtrTo("amphora"),
+								UseOctavia:      fi.PtrTo(true),
+							},
+							Monitor: &kops.OpenstackMonitor{
+								Delay:      fi.PtrTo("1m"),
+								MaxRetries: fi.PtrTo(3),
+								Timeout:    fi.PtrTo("30s"),
+							},
+							Network: &kops.OpenstackNetwork{
+								AvailabilityZoneHints: []*string{fi.PtrTo("zone-1")},
+							},
+							Router: &kops.OpenstackRouter{
+								DNSServers:            fi.PtrTo("8.8.8.8,8.8.4.4"),
+								ExternalSubnet:        fi.PtrTo("test-router-subnet"),
+								ExternalNetwork:       fi.PtrTo("test"),
+								AvailabilityZoneHints: []*string{fi.PtrTo("zone-1")},
+							},
+							Metadata: &kops.OpenstackMetadata{
+								ConfigDrive: fi.PtrTo(false),
+							},
+						},
+					},
+					KubernetesVersion: "1.25.0",
+					Networking: kops.NetworkingSpec{
+						Subnets: []kops.ClusterSubnetSpec{
+							{
+								Name: "subnet-1",
+								Zone: "zone-1",
+								Type: kops.SubnetTypePrivate,
+							},
+						},
+						Topology: &kops.TopologySpec{
+							DNS: kops.DNSTypeNone,
+						},
+					},
+				},
+			},
+			instanceGroups: []*kops.InstanceGroup{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "master-a",
+						Annotations: map[string]string{
+							"openstack.kops.io/serverGroupName": "control-plane",
+						},
+					},
+					Spec: kops.InstanceGroupSpec{
+						Role:        kops.InstanceGroupRoleControlPlane,
+						Image:       "image",
+						MinSize:     i32(1),
+						MaxSize:     i32(1),
+						MachineType: "blc.1-2",
+						Subnets:     []string{"subnet-1"},
+						Zones:       []string{"zone-1"},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "node-a",
+					},
+					Spec: kops.InstanceGroupSpec{
+						Role:        kops.InstanceGroupRoleNode,
+						Image:       "image",
+						MinSize:     i32(1),
+						MaxSize:     i32(1),
+						MachineType: "blc.1-2",
+						Subnets:     []string{"subnet-1"},
+						Zones:       []string{"zone-1"},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "master-b",
+						Annotations: map[string]string{
+							"openstack.kops.io/serverGroupName": "control-plane",
+						},
+					},
+					Spec: kops.InstanceGroupSpec{
+						Role:        kops.InstanceGroupRoleControlPlane,
+						Image:       "image",
+						MinSize:     i32(1),
+						MaxSize:     i32(1),
+						MachineType: "blc.1-2",
+						Subnets:     []string{"subnet-1"},
+						Zones:       []string{"zone-1"},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "master-c",
+						Annotations: map[string]string{
+							"openstack.kops.io/serverGroupName": "control-plane",
+						},
+					},
+					Spec: kops.InstanceGroupSpec{
+						Role:        kops.InstanceGroupRoleControlPlane,
+						Image:       "image",
+						MinSize:     i32(1),
+						MaxSize:     i32(1),
+						MachineType: "blc.1-2",
+						Subnets:     []string{"subnet-1"},
+						Zones:       []string{"zone-1"},
+					},
+				},
+			},
+		},
+		{
 			desc: "multizone setup 3 masters 3 nodes without external router",
 			cluster: &kops.Cluster{
 				ObjectMeta: metav1.ObjectMeta{
@@ -705,7 +823,7 @@ func getServerGroupModelBuilderTestInput() []serverGroupModelBuilderTestInput {
 							},
 						},
 					},
-					KubernetesVersion: "1.24.0",
+					KubernetesVersion: "1.30.0",
 					Networking: kops.NetworkingSpec{
 						Subnets: []kops.ClusterSubnetSpec{
 							{
@@ -834,7 +952,7 @@ func getServerGroupModelBuilderTestInput() []serverGroupModelBuilderTestInput {
 							},
 						},
 					},
-					KubernetesVersion: "1.24.0",
+					KubernetesVersion: "1.30.0",
 					Networking: kops.NetworkingSpec{
 						Subnets: []kops.ClusterSubnetSpec{
 							{
@@ -923,7 +1041,7 @@ func getServerGroupModelBuilderTestInput() []serverGroupModelBuilderTestInput {
 							},
 						},
 					},
-					KubernetesVersion: "1.24.0",
+					KubernetesVersion: "1.30.0",
 					Networking: kops.NetworkingSpec{
 						Subnets: []kops.ClusterSubnetSpec{
 							{
@@ -988,7 +1106,7 @@ func getServerGroupModelBuilderTestInput() []serverGroupModelBuilderTestInput {
 							},
 						},
 					},
-					KubernetesVersion: "1.24.0",
+					KubernetesVersion: "1.30.0",
 					Networking: kops.NetworkingSpec{
 						Subnets: []kops.ClusterSubnetSpec{
 							{
@@ -1077,7 +1195,7 @@ func getServerGroupModelBuilderTestInput() []serverGroupModelBuilderTestInput {
 							},
 						},
 					},
-					KubernetesVersion: "1.24.0",
+					KubernetesVersion: "1.30.0",
 					Networking: kops.NetworkingSpec{
 						Subnets: []kops.ClusterSubnetSpec{
 							{
@@ -1126,7 +1244,7 @@ func getServerGroupModelBuilderTestInput() []serverGroupModelBuilderTestInput {
 							},
 						},
 					},
-					KubernetesVersion: "1.24.0",
+					KubernetesVersion: "1.30.0",
 					Networking: kops.NetworkingSpec{
 						Subnets: []kops.ClusterSubnetSpec{
 							{
@@ -1177,7 +1295,7 @@ func getServerGroupModelBuilderTestInput() []serverGroupModelBuilderTestInput {
 							},
 						},
 					},
-					KubernetesVersion: "1.24.0",
+					KubernetesVersion: "1.30.0",
 					Networking: kops.NetworkingSpec{
 						Subnets: []kops.ClusterSubnetSpec{
 							{
@@ -1226,7 +1344,7 @@ func getServerGroupModelBuilderTestInput() []serverGroupModelBuilderTestInput {
 							},
 						},
 					},
-					KubernetesVersion: "1.24.0",
+					KubernetesVersion: "1.30.0",
 					Networking: kops.NetworkingSpec{
 						Subnets: []kops.ClusterSubnetSpec{
 							{
@@ -1275,7 +1393,7 @@ func getServerGroupModelBuilderTestInput() []serverGroupModelBuilderTestInput {
 							},
 						},
 					},
-					KubernetesVersion: "1.24.0",
+					KubernetesVersion: "1.30.0",
 					Networking: kops.NetworkingSpec{
 						Subnets: []kops.ClusterSubnetSpec{
 							{
@@ -1324,7 +1442,7 @@ func getServerGroupModelBuilderTestInput() []serverGroupModelBuilderTestInput {
 							},
 						},
 					},
-					KubernetesVersion: "1.24.0",
+					KubernetesVersion: "1.30.0",
 					Networking: kops.NetworkingSpec{
 						Subnets: []kops.ClusterSubnetSpec{
 							{
@@ -1373,7 +1491,7 @@ func getServerGroupModelBuilderTestInput() []serverGroupModelBuilderTestInput {
 							},
 						},
 					},
-					KubernetesVersion: "1.24.0",
+					KubernetesVersion: "1.30.0",
 					Networking: kops.NetworkingSpec{
 						Subnets: []kops.ClusterSubnetSpec{
 							{
@@ -1413,9 +1531,10 @@ func createBuilderForCluster(cluster *kops.Cluster, instanceGroups []*kops.Insta
 	sshPublicKey := []byte("ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDF2sghZsClUBXJB4mBMIw8rb0hJWjg1Vz4eUeXwYmTdi92Gf1zNc5xISSip9Y+PWX/jJokPB7tgPnMD/2JOAKhG1bi4ZqB15pYRmbbBekVpM4o4E0dx+czbqjiAm6wlccTrINK5LYenbucAAQt19eH+D0gJwzYUK9SYz1hWnlGS+qurt2bz7rrsG73lN8E2eiNvGtIXqv3GabW/Hea3acOBgCUJQWUDTRu0OmmwxzKbFN/UpNKeRaHlCqwZWjVAsmqA8TX8LIocq7Np7MmIBwt7EpEeZJxThcmC8DEJs9ClAjD+jlLIvMPXKC3JWCPgwCLGxHjy7ckSGFCSzbyPduh")
 
 	modelContext := &model.KopsModelContext{
-		IAMModelContext: iam.IAMModelContext{Cluster: cluster},
-		InstanceGroups:  instanceGroups,
-		SSHPublicKeys:   [][]byte{sshPublicKey},
+		IAMModelContext:   iam.IAMModelContext{Cluster: cluster},
+		AllInstanceGroups: instanceGroups,
+		InstanceGroups:    instanceGroups,
+		SSHPublicKeys:     [][]byte{sshPublicKey},
 	}
 	openstackModelContext := &OpenstackModelContext{
 		KopsModelContext: modelContext,
@@ -1430,7 +1549,7 @@ func createBuilderForCluster(cluster *kops.Cluster, instanceGroups []*kops.Insta
 
 type nodeupConfigBuilder struct{}
 
-func (n *nodeupConfigBuilder) BuildConfig(ig *kops.InstanceGroup, apiserverAdditionalIPs []string, keysets map[string]*fi.Keyset) (*nodeup.Config, *nodeup.BootConfig, error) {
+func (n *nodeupConfigBuilder) BuildConfig(ig *kops.InstanceGroup, wellKnownAddresses model.WellKnownAddresses, keysets map[string]*fi.Keyset) (*nodeup.Config, *nodeup.BootConfig, error) {
 	return &nodeup.Config{}, &nodeup.BootConfig{}, nil
 }
 
@@ -1451,11 +1570,12 @@ func RunGoldenTest(t *testing.T, basedir string, testCase serverGroupModelBuilde
 	clusterLifecycle := fi.LifecycleSync
 	bootstrapScriptBuilder := &model.BootstrapScriptBuilder{
 		KopsModelContext: &model.KopsModelContext{
-			IAMModelContext: iam.IAMModelContext{Cluster: testCase.cluster},
-			InstanceGroups:  testCase.instanceGroups,
+			IAMModelContext:   iam.IAMModelContext{Cluster: testCase.cluster},
+			AllInstanceGroups: testCase.instanceGroups,
+			InstanceGroups:    testCase.instanceGroups,
 		},
 		NodeUpConfigBuilder: &nodeupConfigBuilder{},
-		NodeUpAssets: map[architectures.Architecture]*mirrors.MirroredAsset{
+		NodeUpAssets: map[architectures.Architecture]*assets.MirroredAsset{
 			architectures.ArchitectureAmd64: {
 				Locations: []string{"nodeup-amd64-1", "nodeup-amd64-2"},
 				Hash:      hashing.MustFromString("833723369ad345a88dd85d61b1e77336d56e61b864557ded71b92b6e34158e6a"),

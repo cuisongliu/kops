@@ -17,7 +17,9 @@ limitations under the License.
 package gcetasks
 
 import (
+	"context"
 	"fmt"
+	"reflect"
 
 	compute "google.golang.org/api/compute/v1"
 	"k8s.io/klog/v2"
@@ -47,6 +49,20 @@ type ForwardingRule struct {
 	Network             *Network
 	Subnetwork          *Subnet
 	BackendService      *BackendService
+
+	// Labels to set on the resource.
+	Labels map[string]string
+
+	// Fingerprint of the labels, used to avoid race-conditions on updates.
+	// Only set on the actual resource returned by Find.
+	labelFingerprint string
+
+	// pruneForwardingRules will prune any forwarding rules found with the specified names
+	pruneForwardingRules []forwardingRulePruneSpec
+}
+
+type forwardingRulePruneSpec struct {
+	Name string
 }
 
 var _ fi.CompareWithID = &ForwardingRule{}
@@ -55,11 +71,17 @@ func (e *ForwardingRule) CompareWithID() *string {
 	return e.Name
 }
 
+func (e *ForwardingRule) PruneForwardingRulesWithName(name string) {
+	e.pruneForwardingRules = append(e.pruneForwardingRules, forwardingRulePruneSpec{Name: name})
+}
+
 func (e *ForwardingRule) Find(c *fi.CloudupContext) (*ForwardingRule, error) {
+	ctx := c.Context()
+
 	cloud := c.T.Cloud.(gce.GCECloud)
 	name := fi.ValueOf(e.Name)
 
-	r, err := cloud.Compute().ForwardingRules().Get(cloud.Project(), cloud.Region(), name)
+	r, err := cloud.Compute().ForwardingRules().Get(ctx, cloud.Project(), cloud.Region(), name)
 	if err != nil {
 		if gce.IsNotFound(err) {
 			return nil, nil
@@ -84,9 +106,9 @@ func (e *ForwardingRule) Find(c *fi.CloudupContext) (*ForwardingRule, error) {
 		}
 	}
 	if r.IPAddress != "" {
-		address, err := findAddressByIP(cloud, r.IPAddress)
+		address, err := findAddressByIP(cloud, r.IPAddress, r.Subnetwork)
 		if err != nil {
-			return nil, fmt.Errorf("error finding Address with IP=%q: %v", r.IPAddress, err)
+			return nil, fmt.Errorf("error finding Address with IP=%q: %w", r.IPAddress, err)
 		}
 		actual.IPAddress = address
 	}
@@ -109,6 +131,9 @@ func (e *ForwardingRule) Find(c *fi.CloudupContext) (*ForwardingRule, error) {
 		}
 	}
 
+	actual.Labels = r.Labels
+	actual.labelFingerprint = r.LabelFingerprint
+
 	// Ignore "system" fields
 	actual.Lifecycle = e.Lifecycle
 
@@ -127,6 +152,8 @@ func (_ *ForwardingRule) CheckChanges(a, e, changes *ForwardingRule) error {
 }
 
 func (_ *ForwardingRule) RenderGCE(t *gce.GCEAPITarget, a, e, changes *ForwardingRule) error {
+	ctx := context.TODO()
+
 	name := fi.ValueOf(e.Name)
 
 	o := &compute.ForwardingRule{
@@ -198,7 +225,7 @@ func (_ *ForwardingRule) RenderGCE(t *gce.GCEAPITarget, a, e, changes *Forwardin
 	if a == nil {
 		klog.V(4).Infof("Creating ForwardingRule %q", o.Name)
 
-		op, err := t.Cloud.Compute().ForwardingRules().Insert(t.Cloud.Project(), t.Cloud.Region(), o)
+		op, err := t.Cloud.Compute().ForwardingRules().Insert(ctx, t.Cloud.Project(), t.Cloud.Region(), o)
 		if err != nil {
 			return fmt.Errorf("error creating ForwardingRule %q: %v", o.Name, err)
 		}
@@ -207,8 +234,48 @@ func (_ *ForwardingRule) RenderGCE(t *gce.GCEAPITarget, a, e, changes *Forwardin
 			return fmt.Errorf("error creating forwarding rule: %v", err)
 		}
 
+		if e.Labels != nil {
+			// We can't set labels on creation; we have to read the object to get the fingerprint
+			// TODO: We could get it from the operation!
+			r, err := t.Cloud.Compute().ForwardingRules().Get(ctx, t.Cloud.Project(), t.Cloud.Region(), name)
+			if err != nil {
+				return fmt.Errorf("reading created ForwardingRule %q: %v", name, err)
+			}
+
+			req := compute.RegionSetLabelsRequest{
+				LabelFingerprint: r.LabelFingerprint,
+				Labels:           e.Labels,
+			}
+			op, err := t.Cloud.Compute().ForwardingRules().SetLabels(ctx, t.Cloud.Project(), t.Cloud.Region(), o.Name, &req)
+			if err != nil {
+				return fmt.Errorf("setting ForwardingRule labels: %w", err)
+			}
+
+			if err := t.Cloud.WaitForOp(op); err != nil {
+				return fmt.Errorf("setting ForwardRule labels: %w", err)
+			}
+		}
 	} else {
-		return fmt.Errorf("cannot apply changes to ForwardingRule: %v", changes)
+		if changes.Labels != nil {
+			req := compute.RegionSetLabelsRequest{
+				LabelFingerprint: a.labelFingerprint,
+				Labels:           e.Labels,
+			}
+			op, err := t.Cloud.Compute().ForwardingRules().SetLabels(ctx, t.Cloud.Project(), t.Cloud.Region(), o.Name, &req)
+			if err != nil {
+				return fmt.Errorf("setting ForwardingRule labels: %w", err)
+			}
+
+			if err := t.Cloud.WaitForOp(op); err != nil {
+				return fmt.Errorf("setting ForwardRule labels: %w", err)
+			}
+
+			changes.Labels = nil
+		}
+
+		if !reflect.DeepEqual(changes, &ForwardingRule{}) {
+			return fmt.Errorf("cannot apply changes to ForwardingRule: %v", changes)
+		}
 	}
 
 	return nil
@@ -225,6 +292,7 @@ type terraformForwardingRule struct {
 	Network             *terraformWriter.Literal `cty:"network"`
 	Subnetwork          *terraformWriter.Literal `cty:"subnetwork"`
 	BackendService      *terraformWriter.Literal `cty:"backend_service"`
+	Labels              map[string]string        `cty:"labels"`
 }
 
 func (_ *ForwardingRule) RenderTerraform(t *terraform.TerraformTarget, a, e, changes *ForwardingRule) error {
@@ -236,6 +304,7 @@ func (_ *ForwardingRule) RenderTerraform(t *terraform.TerraformTarget, a, e, cha
 		LoadBalancingScheme: e.LoadBalancingScheme,
 		Ports:               e.Ports,
 		PortRange:           e.PortRange,
+		Labels:              e.Labels,
 	}
 
 	if e.TargetPool != nil {
@@ -267,4 +336,84 @@ func (e *ForwardingRule) TerraformLink() *terraformWriter.Literal {
 	name := fi.ValueOf(e.Name)
 
 	return terraformWriter.LiteralSelfLink("google_compute_forwarding_rule", name)
+}
+
+var _ fi.CloudupProducesDeletions = &ForwardingRule{}
+
+// FindDeletions implements fi.HasDeletions
+func (e *ForwardingRule) FindDeletions(c *fi.CloudupContext) ([]fi.CloudupDeletion, error) {
+	var removals []fi.CloudupDeletion
+
+	if len(e.pruneForwardingRules) != 0 {
+		ctx := c.Context()
+		cloud := c.T.Cloud.(gce.GCECloud)
+
+		forwardingRules, err := cloud.Compute().ForwardingRules().List(ctx, cloud.Project(), cloud.Region())
+		if err != nil {
+			return nil, fmt.Errorf("listing forwardingRules: %w", err)
+		}
+
+		for _, forwardingRule := range forwardingRules {
+			prune := false
+
+			for _, rule := range e.pruneForwardingRules {
+				if rule.Name == forwardingRule.Name {
+					prune = true
+				}
+			}
+
+			if prune {
+				removals = append(removals, &deleteForwardingRule{forwardingRule: forwardingRule})
+			}
+		}
+	}
+
+	return removals, nil
+}
+
+// deleteForwardingRule tracks a ForwardingRule that we're going to delete
+// It implements fi.Deletion
+type deleteForwardingRule struct {
+	forwardingRule *compute.ForwardingRule
+}
+
+var _ fi.CloudupDeletion = &deleteForwardingRule{}
+
+// TaskName returns the task name
+func (d *deleteForwardingRule) TaskName() string {
+	return "ForwardingRule"
+}
+
+// Item returns the forwarding rule name
+func (d *deleteForwardingRule) Item() string {
+	return d.forwardingRule.Name
+}
+
+func (d *deleteForwardingRule) Delete(t fi.CloudupTarget) error {
+	ctx := context.TODO()
+
+	gceTarget, ok := t.(*gce.GCEAPITarget)
+	if !ok {
+		return fmt.Errorf("unexpected target type for deletion: %T", t)
+	}
+
+	cloud := gceTarget.Cloud
+	name := d.forwardingRule.Name
+
+	if _, err := cloud.Compute().ForwardingRules().Delete(ctx, cloud.Project(), cloud.Region(), name); err != nil {
+		return fmt.Errorf("deleting forwardingRule %s: %w", name, err)
+	}
+
+	return nil
+}
+
+// String returns a string representation of the task
+func (d *deleteForwardingRule) String() string {
+	return d.TaskName() + "-" + d.Item()
+}
+
+func (d *deleteForwardingRule) DeferDeletion() bool {
+	// We want to defer deletion, in case new nodes are launched with
+	// the old configuration during the rolling-update operation.
+	return true
 }

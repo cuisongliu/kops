@@ -22,72 +22,12 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2022-08-01/compute"
-	"github.com/Azure/go-autorest/autorest/to"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
+	compute "github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/compute/armcompute"
 	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/azure"
 )
-
-// SubnetID contains the resource ID/names required to construct a subnet ID.
-type SubnetID struct {
-	SubscriptionID     string
-	ResourceGroupName  string
-	VirtualNetworkName string
-	SubnetName         string
-}
-
-// String returns the subnet ID in the path format.
-func (s *SubnetID) String() string {
-	return fmt.Sprintf("/subscriptions/%s/resourceGroups/%s/providers/Microsoft.Network/virtualNetworks/%s/subnets/%s",
-		s.SubscriptionID,
-		s.ResourceGroupName,
-		s.VirtualNetworkName,
-		s.SubnetName)
-}
-
-// ParseSubnetID parses a given subnet ID string and returns a SubnetID.
-func ParseSubnetID(s string) (*SubnetID, error) {
-	l := strings.Split(s, "/")
-	if len(l) != 11 {
-		return nil, fmt.Errorf("malformed format of subnet ID: %s, %d", s, len(l))
-	}
-	return &SubnetID{
-		SubscriptionID:     l[2],
-		ResourceGroupName:  l[4],
-		VirtualNetworkName: l[8],
-		SubnetName:         l[10],
-	}, nil
-}
-
-// loadBalancerID contains the resource ID/names required to construct a loadbalancer ID.
-type loadBalancerID struct {
-	SubscriptionID    string
-	ResourceGroupName string
-	LoadBalancerName  string
-}
-
-// String returns the loadbalancer ID in the path format.
-func (lb *loadBalancerID) String() string {
-	return fmt.Sprintf("/subscriptions/%s/resourceGroups/%s/providers/Microsoft.Network/loadbalancers/%s/backendAddressPools/LoadBalancerBackEnd",
-		lb.SubscriptionID,
-		lb.ResourceGroupName,
-		lb.LoadBalancerName,
-	)
-}
-
-// parseLoadBalancerID parses a given loadbalancer ID string and returns a loadBalancerID.
-func parseLoadBalancerID(lb string) (*loadBalancerID, error) {
-	l := strings.Split(lb, "/")
-	if len(l) != 11 {
-		return nil, fmt.Errorf("malformed format of loadbalancer ID: %s, %d", lb, len(l))
-	}
-	return &loadBalancerID{
-		SubscriptionID:    l[2],
-		ResourceGroupName: l[4],
-		LoadBalancerName:  l[8],
-	}, nil
-}
 
 // VMScaleSet is an Azure VM Scale Set.
 // +kops:fitask
@@ -95,15 +35,16 @@ type VMScaleSet struct {
 	Name      *string
 	Lifecycle fi.Lifecycle
 
-	ResourceGroup  *ResourceGroup
-	VirtualNetwork *VirtualNetwork
-	Subnet         *Subnet
-	StorageProfile *VMScaleSetStorageProfile
+	ResourceGroup             *ResourceGroup
+	VirtualNetwork            *VirtualNetwork
+	Subnet                    *Subnet
+	ApplicationSecurityGroups []*ApplicationSecurityGroup
+	StorageProfile            *VMScaleSetStorageProfile
 	// RequirePublicIP is set to true when VMs require public IPs.
 	RequirePublicIP *bool
 	// LoadBalancer is the Load Balancer object the VMs will use.
 	LoadBalancer *LoadBalancer
-	// SKUName specifies the SKU of of the VM Scale Set
+	// SKUName specifies the SKU of the VM Scale Set
 	SKUName *string
 	// Capacity specifies the number of virtual machines the VM Scale Set.
 	Capacity *int64
@@ -116,7 +57,7 @@ type VMScaleSet struct {
 	// UserData is the user data configuration
 	UserData    fi.Resource
 	Tags        map[string]*string
-	Zones       []string
+	Zones       []*string
 	PrincipalID *string
 }
 
@@ -161,40 +102,77 @@ func (s *VMScaleSet) Find(c *fi.CloudupContext) (*VMScaleSet, error) {
 		return nil, nil
 	}
 
-	profile := found.VirtualMachineProfile
+	if found.ID == nil {
+		return nil, fmt.Errorf("found VMSS without ID")
+	}
+	if found.Properties == nil {
+		return nil, fmt.Errorf("found VMSS without properties")
+	}
+	if found.Properties.VirtualMachineProfile == nil {
+		return nil, fmt.Errorf("found VMSS without VM profile")
+	}
+	if found.Properties.VirtualMachineProfile.NetworkProfile == nil {
+		return nil, fmt.Errorf("found VMSS without network profile")
+	}
+	if found.Properties.VirtualMachineProfile.OSProfile == nil {
+		return nil, fmt.Errorf("found VMSS without OS profile")
+	}
 
-	nwConfigs := *profile.NetworkProfile.NetworkInterfaceConfigurations
+	profile := found.Properties.VirtualMachineProfile
+
+	nwConfigs := profile.NetworkProfile.NetworkInterfaceConfigurations
 	if len(nwConfigs) != 1 {
-		return nil, fmt.Errorf("unexpected number of network configs found for VM ScaleSet %s: %d", *s.Name, len(nwConfigs))
+		return nil, fmt.Errorf("expecting exactly 1 network interface config for %q, found %d: %+v", *s.Name, len(nwConfigs), nwConfigs)
 	}
 	nwConfig := nwConfigs[0]
-	ipConfigs := *nwConfig.VirtualMachineScaleSetNetworkConfigurationProperties.IPConfigurations
+	if nwConfig.Properties == nil {
+		return nil, fmt.Errorf("found VMSS without network interface config properties")
+	}
+	ipConfigs := nwConfig.Properties.IPConfigurations
 	if len(ipConfigs) != 1 {
-		return nil, fmt.Errorf("unexpected number of IP configs found for VM ScaleSet %s: %d", *s.Name, len(ipConfigs))
+		return nil, fmt.Errorf("expecting exactly 1 network interface IP config for %q, found %d: %+v", *s.Name, len(ipConfigs), ipConfigs)
 	}
 	ipConfig := ipConfigs[0]
-	subnetID, err := ParseSubnetID(*ipConfig.Subnet.ID)
+	if ipConfig.Properties == nil {
+		return nil, fmt.Errorf("found VMSS without IP config properties")
+	}
+	if ipConfig.Properties.Subnet == nil {
+		return nil, fmt.Errorf("found VMSS without IP config subnet")
+	}
+	if ipConfig.Properties.Subnet.ID == nil {
+		return nil, fmt.Errorf("found VMSS without IP config subnet ID")
+	}
+	subnetID, err := azure.ParseSubnetID(*ipConfig.Properties.Subnet.ID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse subnet ID %s", *ipConfig.Subnet.ID)
+		return nil, fmt.Errorf("failed to parse subnet ID %s", *ipConfig.Properties.Subnet.ID)
 	}
 
-	var loadBalancerID *loadBalancerID
-	if ipConfig.LoadBalancerBackendAddressPools != nil {
-		for _, i := range *ipConfig.LoadBalancerBackendAddressPools {
+	var loadBalancerID *azure.LoadBalancerID
+	if ipConfig.Properties.LoadBalancerBackendAddressPools != nil {
+		for _, i := range ipConfig.Properties.LoadBalancerBackendAddressPools {
 			if !strings.Contains(*i.ID, "api") {
 				continue
 			}
-			loadBalancerID, err = parseLoadBalancerID(*i.ID)
+			loadBalancerID, err = azure.ParseLoadBalancerID(*i.ID)
 			if err != nil {
-				return nil, fmt.Errorf("failed to parse loadbalancer ID %s", *ipConfig.Subnet.ID)
+				return nil, fmt.Errorf("failed to parse loadbalancer ID %s", *i.ID)
 			}
 		}
 	}
 
-	osProfile := profile.OsProfile
-	sshKeys := *osProfile.LinuxConfiguration.SSH.PublicKeys
+	osProfile := profile.OSProfile
+	if osProfile.LinuxConfiguration == nil {
+		return nil, fmt.Errorf("found VMSS without Linux config")
+	}
+	if osProfile.LinuxConfiguration.SSH == nil {
+		return nil, fmt.Errorf("found VMSS without SSH config")
+	}
+	if osProfile.LinuxConfiguration.SSH.PublicKeys == nil {
+		return nil, fmt.Errorf("found VMSS without SSH public keys")
+	}
+	sshKeys := osProfile.LinuxConfiguration.SSH.PublicKeys
 	if len(sshKeys) != 1 {
-		return nil, fmt.Errorf("unexpected number of SSH keys found for VM ScaleSet %s: %d", *s.Name, len(sshKeys))
+		return nil, fmt.Errorf("expecting exactly 1 SSH key for %q, found %d: %+v", *s.Name, len(sshKeys), sshKeys)
 	}
 
 	userData, err := base64.StdEncoding.DecodeString(*profile.UserData)
@@ -209,17 +187,17 @@ func (s *VMScaleSet) Find(c *fi.CloudupContext) (*VMScaleSet, error) {
 			Name: s.ResourceGroup.Name,
 		},
 		VirtualNetwork: &VirtualNetwork{
-			Name: to.StringPtr(subnetID.VirtualNetworkName),
+			Name: to.Ptr(subnetID.VirtualNetworkName),
 		},
 		Subnet: &Subnet{
-			Name: to.StringPtr(subnetID.SubnetName),
+			ID: ipConfig.Properties.Subnet.ID,
 		},
 		StorageProfile: &VMScaleSetStorageProfile{
 			VirtualMachineScaleSetStorageProfile: profile.StorageProfile,
 		},
-		RequirePublicIP:    to.BoolPtr(ipConfig.PublicIPAddressConfiguration != nil),
-		SKUName:            found.Sku.Name,
-		Capacity:           found.Sku.Capacity,
+		RequirePublicIP:    to.Ptr(ipConfig.Properties.PublicIPAddressConfiguration != nil),
+		SKUName:            found.SKU.Name,
+		Capacity:           found.SKU.Capacity,
 		ComputerNamePrefix: osProfile.ComputerNamePrefix,
 		AdminUser:          osProfile.AdminUsername,
 		SSHPublicKey:       sshKeys[0].KeyData,
@@ -227,13 +205,20 @@ func (s *VMScaleSet) Find(c *fi.CloudupContext) (*VMScaleSet, error) {
 		Tags:               found.Tags,
 		PrincipalID:        found.Identity.PrincipalID,
 	}
+	if ipConfig.Properties != nil && ipConfig.Properties.ApplicationSecurityGroups != nil {
+		for _, asg := range ipConfig.Properties.ApplicationSecurityGroups {
+			vmss.ApplicationSecurityGroups = append(vmss.ApplicationSecurityGroups, &ApplicationSecurityGroup{
+				ID: asg.ID,
+			})
+		}
+	}
 	if loadBalancerID != nil {
 		vmss.LoadBalancer = &LoadBalancer{
-			Name: to.StringPtr(loadBalancerID.LoadBalancerName),
+			Name: to.Ptr(loadBalancerID.LoadBalancerName),
 		}
 	}
 	if found.Zones != nil {
-		vmss.Zones = *found.Zones
+		vmss.Zones = found.Zones
 	}
 	s.PrincipalID = found.Identity.PrincipalID
 	return vmss, nil
@@ -282,7 +267,7 @@ func (s *VMScaleSet) RenderAzure(t *azure.AzureAPITarget, a, e, changes *VMScale
 		if err != nil {
 			return fmt.Errorf("error rendering UserData: %s", err)
 		}
-		customData = to.StringPtr(base64.StdEncoding.EncodeToString(d))
+		customData = to.Ptr(base64.StdEncoding.EncodeToString(d))
 	}
 
 	osProfile := &compute.VirtualMachineScaleSetOSProfile{
@@ -290,81 +275,88 @@ func (s *VMScaleSet) RenderAzure(t *azure.AzureAPITarget, a, e, changes *VMScale
 		AdminUsername:      e.AdminUser,
 		LinuxConfiguration: &compute.LinuxConfiguration{
 			SSH: &compute.SSHConfiguration{
-				PublicKeys: &[]compute.SSHPublicKey{
+				PublicKeys: []*compute.SSHPublicKey{
 					{
-						Path:    to.StringPtr(fmt.Sprintf("/home/%s/.ssh/authorized_keys", *e.AdminUser)),
-						KeyData: to.StringPtr(*e.SSHPublicKey),
+						Path:    to.Ptr(fmt.Sprintf("/home/%s/.ssh/authorized_keys", *e.AdminUser)),
+						KeyData: to.Ptr(*e.SSHPublicKey),
 					},
 				},
 			},
-			DisablePasswordAuthentication: to.BoolPtr(true),
+			DisablePasswordAuthentication: to.Ptr(true),
 		},
 	}
 
-	subnetID := SubnetID{
+	subnetID := azure.SubnetID{
 		SubscriptionID:     t.Cloud.SubscriptionID(),
 		ResourceGroupName:  *e.ResourceGroup.Name,
 		VirtualNetworkName: *e.VirtualNetwork.Name,
 		SubnetName:         *e.Subnet.Name,
 	}
+	var asgs []*compute.SubResource
+	for _, asg := range e.ApplicationSecurityGroups {
+		asgs = append(asgs, &compute.SubResource{
+			ID: asg.ID,
+		})
+	}
 	ipConfigProperties := &compute.VirtualMachineScaleSetIPConfigurationProperties{
 		Subnet: &compute.APIEntityReference{
-			ID: to.StringPtr(subnetID.String()),
+			ID: to.Ptr(subnetID.String()),
 		},
-		Primary:                 to.BoolPtr(true),
-		PrivateIPAddressVersion: compute.IPv4,
+		Primary:                   to.Ptr(true),
+		PrivateIPAddressVersion:   to.Ptr(compute.IPVersionIPv4),
+		ApplicationSecurityGroups: asgs,
 	}
 	if *e.RequirePublicIP {
 		ipConfigProperties.PublicIPAddressConfiguration = &compute.VirtualMachineScaleSetPublicIPAddressConfiguration{
-			Name: to.StringPtr(name + "-publicipconfig"),
-			VirtualMachineScaleSetPublicIPAddressConfigurationProperties: &compute.VirtualMachineScaleSetPublicIPAddressConfigurationProperties{
-				PublicIPAddressVersion: compute.IPv4,
+			Name: to.Ptr(name + "-publicipconfig"),
+			Properties: &compute.VirtualMachineScaleSetPublicIPAddressConfigurationProperties{
+				PublicIPAddressVersion: to.Ptr(compute.IPVersionIPv4),
 			},
 		}
 	}
 	if e.LoadBalancer != nil {
-		loadBalancerID := loadBalancerID{
+		loadBalancerID := azure.LoadBalancerID{
 			SubscriptionID:    t.Cloud.SubscriptionID(),
 			ResourceGroupName: *e.ResourceGroup.Name,
 			LoadBalancerName:  *e.LoadBalancer.Name,
 		}
-		ipConfigProperties.LoadBalancerBackendAddressPools = &[]compute.SubResource{
+		ipConfigProperties.LoadBalancerBackendAddressPools = []*compute.SubResource{
 			{
-				ID: to.StringPtr(loadBalancerID.String()),
+				ID: to.Ptr(loadBalancerID.String()),
 			},
 		}
 	}
 
-	networkConfig := compute.VirtualMachineScaleSetNetworkConfiguration{
-		Name: to.StringPtr(name + "-netconfig"),
-		VirtualMachineScaleSetNetworkConfigurationProperties: &compute.VirtualMachineScaleSetNetworkConfigurationProperties{
-			Primary:            to.BoolPtr(true),
-			EnableIPForwarding: to.BoolPtr(true),
-			IPConfigurations: &[]compute.VirtualMachineScaleSetIPConfiguration{
+	networkConfig := &compute.VirtualMachineScaleSetNetworkConfiguration{
+		Name: to.Ptr(name + "-netconfig"),
+		Properties: &compute.VirtualMachineScaleSetNetworkConfigurationProperties{
+			Primary:            to.Ptr(true),
+			EnableIPForwarding: to.Ptr(true),
+			IPConfigurations: []*compute.VirtualMachineScaleSetIPConfiguration{
 				{
-					Name: to.StringPtr(name + "-ipconfig"),
-					VirtualMachineScaleSetIPConfigurationProperties: ipConfigProperties,
+					Name:       to.Ptr(name + "-ipconfig"),
+					Properties: ipConfigProperties,
 				},
 			},
 		},
 	}
 
 	vmss := compute.VirtualMachineScaleSet{
-		Location: to.StringPtr(t.Cloud.Region()),
-		Sku: &compute.Sku{
+		Location: to.Ptr(t.Cloud.Region()),
+		SKU: &compute.SKU{
 			Name:     e.SKUName,
 			Capacity: e.Capacity,
 		},
-		VirtualMachineScaleSetProperties: &compute.VirtualMachineScaleSetProperties{
+		Properties: &compute.VirtualMachineScaleSetProperties{
 			UpgradePolicy: &compute.UpgradePolicy{
-				Mode: compute.UpgradeModeManual,
+				Mode: to.Ptr(compute.UpgradeModeManual),
 			},
 			VirtualMachineProfile: &compute.VirtualMachineScaleSetVMProfile{
-				OsProfile:      osProfile,
+				OSProfile:      osProfile,
 				StorageProfile: e.StorageProfile.VirtualMachineScaleSetStorageProfile,
 				UserData:       customData,
 				NetworkProfile: &compute.VirtualMachineScaleSetNetworkProfile{
-					NetworkInterfaceConfigurations: &[]compute.VirtualMachineScaleSetNetworkConfiguration{
+					NetworkInterfaceConfigurations: []*compute.VirtualMachineScaleSetNetworkConfiguration{
 						networkConfig,
 					},
 				},
@@ -374,10 +366,10 @@ func (s *VMScaleSet) RenderAzure(t *azure.AzureAPITarget, a, e, changes *VMScale
 		// Azure creates an identity for VMs and provision
 		// its credentials on the VMs.
 		Identity: &compute.VirtualMachineScaleSetIdentity{
-			Type: compute.ResourceIdentityTypeSystemAssigned,
+			Type: to.Ptr(compute.ResourceIdentityTypeSystemAssigned),
 		},
 		Tags:  e.Tags,
-		Zones: &e.Zones,
+		Zones: e.Zones,
 	}
 
 	result, err := t.Cloud.VMScaleSet().CreateOrUpdate(

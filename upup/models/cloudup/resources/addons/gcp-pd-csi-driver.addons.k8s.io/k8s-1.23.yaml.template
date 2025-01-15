@@ -6,7 +6,7 @@ kind: StorageClass
 metadata:
   name: standard-csi
   annotations:
-    storageclass.kubernetes.io/is-default-class: "true"
+    storageclass.kubernetes.io/is-default-class: "false"
   labels:
     kubernetes.io/cluster-service: "true"
     k8s-addon: gcp-pd-csi-driver.addons.k8s.io
@@ -15,6 +15,41 @@ parameters:
   type: pd-standard
 volumeBindingMode: WaitForFirstConsumer
 allowVolumeExpansion: true
+
+---
+
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: balanced-csi
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+  labels:
+    kubernetes.io/cluster-service: "true"
+    k8s-addon: gcp-pd-csi-driver.addons.k8s.io
+provisioner: pd.csi.storage.gke.io
+reclaimPolicy: Delete
+parameters:
+  type: pd-balanced
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+
+---
+
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  labels:
+    kubernetes.io/cluster-service: "true"
+    k8s-addon: gcp-pd-csi-driver.addons.k8s.io
+  name: ssd-csi
+parameters:
+  type: pd-ssd
+provisioner: pd.csi.storage.gke.io
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+
 {{ end }}
 
 ---
@@ -612,7 +647,7 @@ spec:
         - --v=5
         - --endpoint=unix:/csi/csi.sock
         - --run-controller-service=false
-        image: registry.k8s.io/cloud-provider-gcp/gcp-compute-persistent-disk-csi-driver:v1.10.1
+        image: registry.k8s.io/cloud-provider-gcp/gcp-compute-persistent-disk-csi-driver:v1.10.13
         name: gce-pd-driver
         securityContext:
           privileged: true
@@ -632,6 +667,10 @@ spec:
           name: udev-socket
         - mountPath: /sys
           name: sys
+{{ if KopsFeatureEnabled "SELinuxMount" }}
+        - name: etc-selinux
+          mountPath: /etc/selinux
+{{ end }}
       hostNetwork: true
       nodeSelector: null
       priorityClassName: csi-gce-pd-node
@@ -671,6 +710,12 @@ spec:
           path: /sys
           type: Directory
         name: sys
+{{ if KopsFeatureEnabled "SELinuxMount" }}
+      - name: etc-selinux
+        hostPath:
+          path: /etc/selinux
+          type: DirectoryOrCreate
+{{ end }}
 ---
 apiVersion: storage.k8s.io/v1
 kind: CSIDriver
@@ -679,3 +724,6 @@ metadata:
 spec:
   attachRequired: true
   podInfoOnMount: false
+{{ if KopsFeatureEnabled "SELinuxMount" }}
+  seLinuxMount: true
+{{ end }}

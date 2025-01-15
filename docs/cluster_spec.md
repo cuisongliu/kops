@@ -424,6 +424,8 @@ spec:
 
 Read more about this here: https://kubernetes.io/docs/tasks/debug-application-cluster/audit/
 
+**Note**: As of kOps 1.26, ControlPlane is being used as a role for the master instances. Previously, the master role was Master.
+
 ```yaml
 spec:
   kubeAPIServer:
@@ -436,7 +438,7 @@ spec:
   - name: audit-policy-config
     path: /etc/kubernetes/audit/policy-config.yaml
     roles:
-    - Master
+    - ControlPlane
     content: |
       apiVersion: audit.k8s.io/v1
       kind: Policy
@@ -446,6 +448,8 @@ spec:
 
 **Note**: The auditPolicyFile is needed. If the flag is omitted, no events are logged.
 
+**Note**: For kOps 1.22-1.24 please use `auditPolicyFile: /srv/kubernetes/kube-apiserver/audit/policy-config.yaml` due to [change in mounted paths](https://github.com/kubernetes/kops/blob/master/docs/releases/1.22-NOTES.md#control-plane-pods-no-longer-mount-srvkubernetes).
+
 You could use the [fileAssets](https://github.com/kubernetes/kops/blob/master/docs/cluster_spec.md#fileassets) feature to push an advanced audit policy file on the master nodes.
 
 Example policy file can be found [here](https://raw.githubusercontent.com/kubernetes/website/master/content/en/examples/audit/audit-policy.yaml)
@@ -453,6 +457,8 @@ Example policy file can be found [here](https://raw.githubusercontent.com/kubern
 ### Audit Webhook Backend
 
 Webhook backend sends audit events to a remote API, which is assumed to be the same API as `kube-apiserver` exposes.
+
+**Note**: As of kOps 1.26, ControlPlane is being used as a role for the master instances. Previously, the master role was Master.
 
 ```yaml
 spec:
@@ -463,7 +469,7 @@ spec:
   - name: audit-webhook-config
     path: /etc/kubernetes/audit/webhook-config.yaml
     roles:
-    - Master
+    - ControlPlane
     content: |
       apiVersion: v1
       kind: Config
@@ -580,14 +586,27 @@ spec:
     disableBasicAuth: true
 ```
 
-### targetRamMb
-
-Memory limit for apiserver in MB (used to configure sizes of caches, etc.)
+### watchCache
+Used to disable watch caching in the apiserver, defaults to enabling caching by omission
 
 ```yaml
 spec:
   kubeAPIServer:
-    targetRamMb: 4096
+    watchCache: false
+```
+
+### watchCacheSizes
+
+Set the watch-cache-sizes parameter for the apiserver
+The only currently useful value is setting to 0, which disable caches for specific object types.
+Setting any values other than 0 for a resource will yield no effect since the caches are dynamic
+
+```yaml
+spec:
+  kubeAPIServer:
+    watchCacheSizes: 
+      - secrets#0
+      - pods#0
 ```
 
 ### eventTTL
@@ -619,6 +638,17 @@ Choose between log format. Permitted formats: "json", "text". Default: "text".
 spec:
   kubeAPIServer:
     logFormat: json
+```
+
+### Environment Variables
+```yaml
+spec:
+  kubeAPIServer:
+    env:
+    - name: GOMEMLIMIT
+      value: "2750MiB"
+    - name: GOGC
+      value: 50
 ```
 
 ## externalDns
@@ -816,6 +846,20 @@ spec:
 
 Note that Kubelet will fail to install the shutdown inhibtor on systems where logind is configured with an `InhibitDelayMaxSeconds` lower than `shutdownGracePeriod`. On Ubuntu, this setting is 30 seconds.
 
+### SeccompDefault
+
+[SeccompDefault](https://kubernetes.io/blog/2021/08/25/seccomp-default/) enables the use of `RuntimeDefault` as the default seccomp profile for all workloads. (Default: false)
+
+Note that a feature gate is required to enable the feature, and the feature is turned on using kubelet config.
+
+```yaml
+spec:
+  kubelet:
+    featureGates:
+      SeccompDefault: "true"
+    seccompDefault: true
+```
+
 ## kubeScheduler
 
 This block contains configurations for `kube-scheduler`.  See https://kubernetes.io/docs/admin/kube-scheduler/
@@ -828,8 +872,6 @@ spec:
 ```
 
 Will make kube-scheduler use the scheduler policy from configmap "scheduler-policy" in namespace kube-system.
-
-Note that as of Kubernetes 1.8.0 kube-scheduler does not reload its configuration from configmap automatically. You will need to ssh into the master instance and restart the Docker container manually.
 
 ### LogFormat
 
@@ -1026,7 +1068,7 @@ When creating a systemd unit hook using the `manifest` field, the hook system wi
 spec:
   # many sections removed
 
-  # run a docker container as a hook
+  # run a container as a hook
   hooks:
   - before:
     - some_service.service
@@ -1127,8 +1169,8 @@ spec:
   - name: iptable-restore
     # Note if path is not specified, the default is /srv/kubernetes/assets/<name>
     path: /var/lib/iptables/rules-save
-    # Note if roles are not specified, the default is all roles
-    roles: [Master,Node,Bastion] # a list of roles to apply the asset to
+    # Note if roles are not specified, the default is all roles. As of kOps 1.26, ControlPlane is being used as a role for the master instances. Previously, the master role was Master.
+    roles: [ControlPlane,Node,Bastion] # a list of roles to apply the asset to
     content: |
       some file content
 ```
@@ -1284,86 +1326,24 @@ spec:
       - http://HostIP2:Port2
 ```
 
-## Docker
+### NRI configuration
 
-It is possible to override Docker daemon options for all masters and nodes in the cluster. See the [API docs](https://pkg.go.dev/k8s.io/kops/pkg/apis/kops#DockerConfig) for the full list of options.
-
-### Registry Mirrors
-
-If you have a bunch of Docker instances (physical or vm) running, each time one of them pulls an image that is not present on the host, it will fetch it from the internet (DockerHub). By caching these images, you can keep the traffic within your local network and avoid egress bandwidth usage.
-This setting benefits not only cluster provisioning but also image pulling.
-
-@see [Cache-Mirror Dockerhub For Speed](https://hackernoon.com/mirror-cache-dockerhub-locally-for-speed-f4eebd21a5ca)
-@see [Configure the Docker daemon](https://docs.docker.com/registry/recipes/mirror/#configure-the-docker-daemon).
-
-```yaml
-spec:
-  docker:
-    registryMirrors:
-    - https://registry.example.com
-```
-
-### Skip Install
-
-If you want nodeup to skip the Docker installation tasks, you can do so with:
-
-```yaml
-spec:
-  docker:
-    skipInstall: true
-```
-
-**NOTE:** When this field is set to `true`, it is entirely up to the user to install and configure Docker.
-
-### Storage
-
-The Docker [Storage Driver](https://docs.docker.com/engine/reference/commandline/dockerd/#daemon-storage-driver) can be specified in order to override the default. Be sure the driver you choose is supported by your operating system and docker version.
-
-```yaml
-docker:
-  storage: devicemapper
-  storageOpts:
-    - "dm.thinpooldev=/dev/mapper/thin-pool"
-    - "dm.use_deferred_deletion=true"
-    - "dm.use_deferred_removal=true"
-```
-
-### Networking
-
-In order for containers started with `docker run` instead of Kubernetes to have network and internet access you need to enable the necessary [iptables](https://docs.docker.com/network/iptables/) rules:
-
-```yaml
-docker:
-  ipMasq: true
-  ipTables: true
-```
-
-### Custom Packages
-
-kOps uses the `.tgz` (static) packages for installing Docker on any supported OS. This makes it easy to use a custom build or pre-release packages, by specifying its URL and sha256:
+Using kOps, you can activate the [Node Resource Interface](https://github.com/containerd/nri) (NRI) feature in containerd. It's important to have a at least containerd version of [1.7.0](https://github.com/containerd/containerd/releases/tag/v1.7.0) or later. The available NRI parameters for containerd in kOps include: `enabled`, `pluginRegistrationTimeout` and `pluginRequestTimeout`. By default, NRI options are unset in kOps, which means we rely on containerd's default behavior (i.e., disabled).
 
 ```yaml
 spec:
   containerd:
-    packages:
-      urlAmd64: https://download.docker.com/linux/static/stable/x86_64/docker-20.10.1.tgz
-      hashAmd64: 8790f3b94ee07ca69a9fdbd1310cbffc729af0a07e5bf9f34a79df1e13d2e50e
+    version: 1.7.0
+    nri:
+      # Enable NRI support in containerd.
+      enabled: true
+      # pluginRegistrationTimeout is the timeout for a plugin to register after connection.
+      pluginRegistrationTimeout: "5s"
+      # pluginRequestTimeout is the timeout for a plugin to handle an event/request.
+      pluginRequestTimeout: "2s"
 ```
 
-The format of the custom package must be identical to the official packages:
-
-```bash
-tar tf docker-20.10.1.tgz
-    docker/containerd
-    docker/containerd-shim
-    docker/containerd-shim-runc-v2
-    docker/ctr
-    docker/docker
-    docker/docker-init
-    docker/docker-proxy
-    docker/dockerd
-    docker/runc
-```
+If you have NRI disabled (i.e., `nri.enabled = false`), please note that settings for `pluginRegistrationTimeout`, and `pluginRequestTimeout` won't take effect. These settings are only applicable when NRI is enabled. It is valid configuration to enable NRI without specifying custom values for `pluginRegistrationTimeout`, and `pluginRequestTimeout`, as these fields will inherit their default values from containerd. If you need to configure additional NRI parameters, you can do so by providing your complete containerd configuration using `configOverride`.
 
 ## sshKeyName
 
@@ -1522,6 +1502,8 @@ spec:
 
 **Warning**: Enabling the following configuration on an existing cluster can be disruptive due to the control plane provisioning tokens with different issuers. The symptom is that Pods are unable to authenticate to the Kubernetes API. To resolve this, delete Service Account token secrets that exists in the cluster and kill all pods unable to authenticate.
 
+**Note**: You can follow a variation of the procedure documented [here](/operations/service_account_issuer_migration/) to enable IRSA on an existing cluster without disruption.
+
 kOps can publish the Kubernetes service account token issuer and configure AWS to trust it
 to authenticate Kubernetes service accounts:
 
@@ -1533,7 +1515,7 @@ spec:
 ```
 
 The `discoveryStore` option causes kOps to publish an OIDC-compatible discovery document
-to a path in an S3 bucket. This would ordinarily be a different bucket than the state store.
+to a path in an object storage bucket (such as S3 or GCS). This would ordinarily be a different bucket than the state store.
 kOps will automatically configure `spec.kubeAPIServer.serviceAccountIssuer` and default
 `spec.kubeAPIServer.serviceAccountJWKSURI` to the corresponding
 HTTPS URL.
@@ -1607,6 +1589,7 @@ the removal of fields no longer in use.
 | cloudConfig.spotinstOrientation                        | cloudProvider.aws.spotinstOrientation                          |
 | cloudConfig.spotinstProduct                            | cloudProvider.aws.spotinstProduct                              |
 | cloudProvider (string)                                 | cloudProvider (map)                                            |
+| configBase                                             | configStore.base                                               |
 | DisableSubnetTags                                      | tagSubnets (value inverted)                                    |
 | egressProxy                                            | networking.egressProxy                                         |
 | etcdClusters[\*].etcdMembers[\*].kmsKeyId              | etcdClusters[\*].etcdMembers[\*].kmsKeyID                      |
@@ -1615,6 +1598,7 @@ the removal of fields no longer in use.
 | externalDns.disable: true                              | externalDNS.provider: none                                     |
 | hooks[\*].disabled                                     | hooks[\*].enabled (value inverted)                             |
 | isolateMasters                                         | networking.isolateControlPlane                                 |
+| keyStore                                               | configStore.keypairs                                           |
 | kubeAPIServer.authorizationRbacSuperUser               | kubeAPIServer.authorizationRBACSuperUser                       |
 | kubeAPIServer.authorizationWebhookCacheAuthorizedTtl   | kubeAPIServer.authorizationWebhookCacheAuthorizedTTL           |
 | kubeAPIServer.authorizationWebhookCacheUnauthorizedTtl | kubeAPIServer.authorizationWebhookCacheUnauthorizedTTL         |
@@ -1625,7 +1609,6 @@ the removal of fields no longer in use.
 | kubeAPIServer.oidcRequiredClaim (list)                 | authentication.oidc.oidcRequiredClaims (map)                   |
 | kubeAPIServer.oidcUsernameClaim                        | authentication.oidc.usernameClaim                              |
 | kubeAPIServer.oidcUsernamePrefix                       | authentication.oidc.usernamePrefix                             |
-| kubeAPIServer.targetRamMb                              | kubeAPIServer.targetRamMB                                      |
 | kubeControllerManager.concurrentRcSyncs                | kubeControllerManager.concurrentRCSyncs                        |
 | kubelet.authenticationTokenWebhookCacheTtl             | kubelet.authenticationTokenWebhookCacheTTL                     |
 | kubelet.clientCaFile                                   | kubelet.clientCAFile                                           |
@@ -1652,6 +1635,7 @@ the removal of fields no longer in use.
 | podCIDR                                                | networking.podCIDR                                             |
 | podIdentityWebhook                                     | cloudProvider.aws.podIdentityWebhook                           |
 | project                                                | cloudProvider.gce.project                                      |
+| secretStore                                            | configStore.secrets                                            |
 | serviceClusterIPRange                                  | networking.serviceClusterIPRange                               |
 | subnets                                                | networking.subnets                                             |
 | tagSubnets                                             | networking.tagSubnets                                          |

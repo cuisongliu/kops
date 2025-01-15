@@ -38,6 +38,8 @@ type Context[T SubContext] struct {
 	tasks    map[string]Task[T]
 	warnings []*Warning[T]
 
+	deletionProcessingMode DeletionProcessingMode
+
 	T T
 }
 
@@ -74,31 +76,40 @@ type Warning[T SubContext] struct {
 	Message string
 }
 
-func newContext[T SubContext](ctx context.Context, target Target[T], sub T, tasks map[string]Task[T]) (*Context[T], error) {
+func newContext[T SubContext](ctx context.Context, deletionProcessingMode DeletionProcessingMode, target Target[T], sub T, tasks map[string]Task[T]) (*Context[T], error) {
 	c := &Context[T]{
 		ctx:    ctx,
 		Target: target,
 		tasks:  tasks,
 		T:      sub,
+
+		deletionProcessingMode: deletionProcessingMode,
 	}
 
 	return c, nil
 }
 
 func NewInstallContext(ctx context.Context, target InstallTarget, tasks map[string]InstallTask) (*InstallContext, error) {
+	// We don't expect deletions, but we would be the one to handle them.
+	deletionProcessingMode := DeletionProcessingModeDeleteIncludingDeferred
+
 	sub := InstallSubContext{}
-	return newContext[InstallSubContext](ctx, target, sub, tasks)
+	return newContext[InstallSubContext](ctx, deletionProcessingMode, target, sub, tasks)
 }
+
 func NewNodeupContext(ctx context.Context, target NodeupTarget, keystore KeystoreReader, bootConfig *nodeup.BootConfig, nodeupConfig *nodeup.Config, tasks map[string]NodeupTask) (*NodeupContext, error) {
+	// We don't expect deletions, but we would be the one to handle them.
+	deletionProcessingMode := DeletionProcessingModeDeleteIncludingDeferred
+
 	sub := NodeupSubContext{
 		BootConfig:   bootConfig,
 		NodeupConfig: nodeupConfig,
 		Keystore:     keystore,
 	}
-	return newContext[NodeupSubContext](ctx, target, sub, tasks)
+	return newContext[NodeupSubContext](ctx, deletionProcessingMode, target, sub, tasks)
 }
 
-func NewCloudupContext(ctx context.Context, target CloudupTarget, cluster *kops.Cluster, cloud Cloud, keystore Keystore, secretStore SecretStore, clusterConfigBase vfs.Path, tasks map[string]CloudupTask) (*CloudupContext, error) {
+func NewCloudupContext(ctx context.Context, deletionProcessingMode DeletionProcessingMode, target CloudupTarget, cluster *kops.Cluster, cloud Cloud, keystore Keystore, secretStore SecretStore, clusterConfigBase vfs.Path, tasks map[string]CloudupTask) (*CloudupContext, error) {
 	sub := CloudupSubContext{
 		Cloud:             cloud,
 		Cluster:           cluster,
@@ -106,7 +117,7 @@ func NewCloudupContext(ctx context.Context, target CloudupTarget, cluster *kops.
 		Keystore:          keystore,
 		SecretStore:       secretStore,
 	}
-	return newContext[CloudupSubContext](ctx, target, sub, tasks)
+	return newContext[CloudupSubContext](ctx, deletionProcessingMode, target, sub, tasks)
 }
 
 func (c *Context[T]) AllTasks() map[string]Task[T] {
@@ -118,7 +129,7 @@ func (c *Context[T]) RunTasks(options RunTasksOptions) error {
 		context: c,
 		options: options,
 	}
-	return e.RunTasks(c.tasks)
+	return e.RunTasks(c.ctx, c.tasks)
 }
 
 // Render dispatches the creation of an object to the appropriate handler defined on the Task,
@@ -198,14 +209,14 @@ func (c *Context[T]) Render(a, e, changes Task[T]) error {
 		var args []reflect.Value
 		for j := 0; j < method.Type.NumIn(); j++ {
 			arg := method.Type.In(j)
-			if arg.ConvertibleTo(vType) {
+			if vType.ConvertibleTo(arg) {
 				continue
 			}
-			if arg.ConvertibleTo(typeContextPtr) {
+			if typeContextPtr.ConvertibleTo(arg) {
 				args = append(args, reflect.ValueOf(c))
 				continue
 			}
-			if arg.ConvertibleTo(targetType) {
+			if targetType.ConvertibleTo(arg) {
 				args = append(args, reflect.ValueOf(c.Target))
 				continue
 			}
@@ -273,7 +284,8 @@ func (e *ExistsAndWarnIfChangesError) Error() string { return e.msg }
 
 // TryAgainLaterError is the custom used when a task needs to fail validation with a message and try again later
 type TryAgainLaterError struct {
-	msg string
+	msg   string
+	inner error
 }
 
 // NewTryAgainLaterError is a builder for TryAgainLaterError.
@@ -283,5 +295,17 @@ func NewTryAgainLaterError(message string) *TryAgainLaterError {
 	}
 }
 
+func (e *TryAgainLaterError) WithError(err error) *TryAgainLaterError {
+	e.inner = err
+	return e
+}
+
 // TryAgainLaterError implementation of the error interface.
-func (e *TryAgainLaterError) Error() string { return e.msg }
+func (e *TryAgainLaterError) Error() string {
+	if e.inner != nil {
+		return fmt.Sprintf("%v: %v", e.msg, e.inner)
+	}
+	return e.msg
+}
+
+func (e *TryAgainLaterError) Unwrap() error { return e.inner }

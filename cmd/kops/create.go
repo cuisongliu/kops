@@ -33,7 +33,6 @@ import (
 	"k8s.io/kops/pkg/kubemanifest"
 	"k8s.io/kops/upup/pkg/fi/cloudup"
 	"k8s.io/kops/util/pkg/text"
-	"k8s.io/kops/util/pkg/vfs"
 	"k8s.io/kubectl/pkg/util/i18n"
 	"k8s.io/kubectl/pkg/util/templates"
 )
@@ -55,9 +54,6 @@ var (
 
 	# Create a cluster from the configuration specification in a YAML file.
 	kops create -f my-cluster.yaml
-
-	# Create secret from secret spec file.
-	kops create -f secret.yaml
 
 	# Create an instancegroup based on the YAML passed into stdin.
 	cat instancegroup.yaml | kops create -f -
@@ -102,6 +98,8 @@ func RunCreate(ctx context.Context, f *util.Factory, out io.Writer, c *CreateOpt
 		return err
 	}
 
+	vfsContext := f.VFSContext()
+
 	clusterName := ""
 	// var cSpec = false
 	var sb bytes.Buffer
@@ -118,7 +116,7 @@ func RunCreate(ctx context.Context, f *util.Factory, out io.Writer, c *CreateOpt
 				return err
 			}
 		} else {
-			contents, err = vfs.Context.ReadFile(f)
+			contents, err = vfsContext.ReadFile(f)
 			if err != nil {
 				return fmt.Errorf("error reading file %q: %v", f, err)
 			}
@@ -140,7 +138,7 @@ func RunCreate(ctx context.Context, f *util.Factory, out io.Writer, c *CreateOpt
 
 				// Adding a PerformAssignments() call here as the user might be trying to use
 				// the new `-f` feature, with an old cluster definition.
-				err = cloudup.PerformAssignments(v, cloud)
+				err = cloudup.PerformAssignments(v, vfsContext, cloud)
 				if err != nil {
 					return fmt.Errorf("error populating configuration: %v", err)
 				}

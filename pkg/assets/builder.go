@@ -25,30 +25,31 @@ import (
 	"strings"
 	"time"
 
-	"github.com/blang/semver/v4"
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/crane"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/klog/v2"
 	"k8s.io/kops/pkg/apis/kops"
-	"k8s.io/kops/pkg/apis/kops/util"
+	"k8s.io/kops/pkg/assets/assetdata"
 	"k8s.io/kops/pkg/featureflag"
 	"k8s.io/kops/pkg/kubemanifest"
 	"k8s.io/kops/pkg/values"
 	"k8s.io/kops/util/pkg/hashing"
-	"k8s.io/kops/util/pkg/mirrors"
 	"k8s.io/kops/util/pkg/vfs"
 )
 
 // AssetBuilder discovers and remaps assets.
 type AssetBuilder struct {
+	vfsContext     *vfs.VFSContext
 	ImageAssets    []*ImageAsset
 	FileAssets     []*FileAsset
 	AssetsLocation *kops.AssetsSpec
 	GetAssets      bool
 
-	// KubernetesVersion is the version of kubernetes we are installing
-	KubernetesVersion semver.Version
+	// KubeletSupportedVersion is the max version of kubelet that we are currently allowed to run on worker nodes.
+	// This is used to avoid violating the kubelet supported version skew policy,
+	// (we are not allowed to run a newer kubelet on a worker node than the control plane)
+	KubeletSupportedVersion string
 
 	// StaticManifests records manifests used by nodeup:
 	// * e.g. sidecar manifests for static pods run by kubelet
@@ -79,6 +80,18 @@ type StaticManifest struct {
 
 	// The static manifest will only be applied to instances matching the specified role
 	Roles []kops.InstanceGroupRole
+
+	// Contents is the contents of the manifest, which may be easier than fetching it from Path
+	Contents []byte
+}
+
+func (m *StaticManifest) AppliesToRole(role kops.InstanceGroupRole) bool {
+	for _, r := range m.Roles {
+		if r == role {
+			return true
+		}
+	}
+	return false
 }
 
 // ImageAsset models an image's location.
@@ -97,22 +110,16 @@ type FileAsset struct {
 	// CanonicalURL is the canonical location of the asset, for example as distributed by the kops project
 	CanonicalURL *url.URL
 	// SHAValue is the SHA hash of the FileAsset.
-	SHAValue string
+	SHAValue *hashing.Hash
 }
 
 // NewAssetBuilder creates a new AssetBuilder.
-func NewAssetBuilder(assets *kops.AssetsSpec, kubernetesVersion string, getAssets bool) *AssetBuilder {
+func NewAssetBuilder(vfsContext *vfs.VFSContext, assets *kops.AssetsSpec, getAssets bool) *AssetBuilder {
 	a := &AssetBuilder{
+		vfsContext:     vfsContext,
 		AssetsLocation: assets,
 		GetAssets:      getAssets,
 	}
-
-	version, err := util.ParseKubernetesVersion(kubernetesVersion)
-	if err != nil {
-		// This should have already been validated
-		klog.Fatalf("unexpected error from ParseKubernetesVersion %s: %v", kubernetesVersion, err)
-	}
-	a.KubernetesVersion = *version
 
 	return a
 }
@@ -154,8 +161,8 @@ func (a *AssetBuilder) RemapImage(image string) (string, error) {
 		}
 	}
 
-	if strings.HasPrefix(image, "registry.k8s.io/kops/kops-controller:") {
-		// To use user-defined DNS Controller:
+	if strings.HasPrefix(image, "k8s.gcr.io/kops/kops-controller:") || strings.HasPrefix(image, "registry.k8s.io/kops/kops-controller:") {
+		// To use user-defined kops Controller:
 		// 1. DOCKER_REGISTRY=[your docker hub repo] make kops-controller-push
 		// 2. export KOPSCONTROLLER_IMAGE=[your docker hub repo]
 		// 3. make kops and create/apply cluster
@@ -227,78 +234,56 @@ func (a *AssetBuilder) RemapImage(image string) (string, error) {
 
 	digest, err := crane.Digest(image, crane.WithAuthFromKeychain(authn.DefaultKeychain))
 	if err != nil {
-		klog.Warningf("failed to digest image %q", image)
+		klog.Warningf("failed to digest image %q: %s", image, err)
 		return image, nil
 	}
 
 	return image + "@" + digest, nil
 }
 
-// RemapFileAndSHA returns a remapped URL for the file, if AssetsLocation is defined.
-// It also returns the SHA hash of the file.
-func (a *AssetBuilder) RemapFileAndSHA(fileURL *url.URL) (*url.URL, *hashing.Hash, error) {
-	if fileURL == nil {
-		return nil, nil, fmt.Errorf("unable to remap a nil URL")
-	}
-
-	fileAsset := &FileAsset{
-		DownloadURL:  fileURL,
-		CanonicalURL: fileURL,
-	}
-
-	if a.AssetsLocation != nil && a.AssetsLocation.FileRepository != nil {
-
-		normalizedFileURL, err := a.remapURL(fileURL)
-		if err != nil {
-			return nil, nil, err
-		}
-
-		fileAsset.DownloadURL = normalizedFileURL
-
-		klog.V(4).Infof("adding remapped file: %+v", fileAsset)
-	}
-
-	h, err := a.findHash(fileAsset)
-	if err != nil {
-		return nil, nil, err
-	}
-	fileAsset.SHAValue = h.Hex()
-
-	klog.V(8).Infof("adding file: %+v", fileAsset)
-	a.FileAssets = append(a.FileAssets, fileAsset)
-
-	return fileAsset.DownloadURL, h, nil
-}
-
-// RemapFileAndSHAValue returns a remapped URL for the file without a SHA file in object storage, if AssetsLocation is defined.
-func (a *AssetBuilder) RemapFileAndSHAValue(fileURL *url.URL, shaValue string) (*url.URL, error) {
-	if fileURL == nil {
+// RemapFile returns a remapped URL for the file, if AssetsLocation is defined.
+// It is returns in a FileAsset, alongside the SHA hash of the file.
+// The SHA hash is is knownHash is provided, and otherwise will be found first by
+// checking the canonical URL against our well-known hashes, and failing that via download.
+func (a *AssetBuilder) RemapFile(canonicalURL *url.URL, knownHash *hashing.Hash) (*FileAsset, error) {
+	if canonicalURL == nil {
 		return nil, fmt.Errorf("unable to remap a nil URL")
 	}
 
 	fileAsset := &FileAsset{
-		DownloadURL:  fileURL,
-		CanonicalURL: fileURL,
-		SHAValue:     shaValue,
+		DownloadURL:  canonicalURL,
+		CanonicalURL: canonicalURL,
 	}
 
 	if a.AssetsLocation != nil && a.AssetsLocation.FileRepository != nil {
-		normalizedFile, err := a.remapURL(fileURL)
+		normalizedFile, err := a.remapURL(canonicalURL)
 		if err != nil {
 			return nil, err
 		}
 
-		fileAsset.DownloadURL = normalizedFile
-		klog.V(4).Infof("adding remapped file: %q", fileAsset.DownloadURL.String())
+		if canonicalURL.Host != normalizedFile.Host {
+			fileAsset.DownloadURL = normalizedFile
+			klog.V(4).Infof("adding remapped file: %q", fileAsset.DownloadURL.String())
+		}
 	}
+
+	if knownHash == nil {
+		h, err := a.findHash(fileAsset)
+		if err != nil {
+			return nil, err
+		}
+		knownHash = h
+	}
+
+	fileAsset.SHAValue = knownHash
 
 	klog.V(8).Infof("adding file: %+v", fileAsset)
 	a.FileAssets = append(a.FileAssets, fileAsset)
 
-	return fileAsset.DownloadURL, nil
+	return fileAsset, nil
 }
 
-// FindHash returns the hash value of a FileAsset.
+// findHash returns the hash value of a FileAsset.
 func (a *AssetBuilder) findHash(file *FileAsset) (*hashing.Hash, error) {
 	// If the phase is "assets" we use the CanonicalFileURL,
 	// but during other phases we use the hash from the FileRepository or the base kops path.
@@ -321,6 +306,16 @@ func (a *AssetBuilder) findHash(file *FileAsset) (*hashing.Hash, error) {
 		return nil, fmt.Errorf("file url is not defined")
 	}
 
+	knownHash, found, err := assetdata.GetHash(file.CanonicalURL)
+	if err != nil {
+		return nil, err
+	}
+	if found {
+		return knownHash, nil
+	}
+
+	klog.V(2).Infof("asset %q is not well-known, downloading hash", file.CanonicalURL)
+
 	// We now prefer sha256 hashes
 	for backoffSteps := 1; backoffSteps <= 3; backoffSteps++ {
 		// We try first with a short backoff, so we don't
@@ -332,11 +327,11 @@ func (a *AssetBuilder) findHash(file *FileAsset) (*hashing.Hash, error) {
 			Steps:    backoffSteps,
 		}
 
-		for _, ext := range []string{".sha256", ".sha1"} {
-			for _, mirror := range mirrors.FindUrlMirrors(u.String()) {
+		for _, ext := range []string{".sha256", ".sha256sum"} {
+			for _, mirror := range FindURLMirrors(u.String()) {
 				hashURL := mirror + ext
-				klog.V(3).Infof("Trying to read hash fie: %q", hashURL)
-				b, err := vfs.Context.ReadFile(hashURL, vfs.WithBackoff(backoff))
+				klog.V(3).Infof("Trying to read hash file: %q", hashURL)
+				b, err := a.vfsContext.ReadFile(hashURL, vfs.WithBackoff(backoff))
 				if err != nil {
 					// Try to log without being too alarming - issue #7550
 					klog.V(2).Infof("Unable to read hash file %q: %v", hashURL, err)

@@ -17,6 +17,7 @@ limitations under the License.
 package model
 
 import (
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
@@ -25,8 +26,8 @@ import (
 
 	"github.com/blang/semver/v4"
 	"github.com/pelletier/go-toml"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/klog/v2"
-
 	"k8s.io/kops/nodeup/pkg/model/resources"
 	"k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/pkg/flagbuilder"
@@ -59,26 +60,22 @@ func (b *ContainerdBuilder) Build(c *fi.NodeupModelBuilderContext) error {
 	case distributions.DistributionFlatcar:
 		klog.Infof("Detected Flatcar; won't install containerd")
 		installContainerd = false
-		if b.NodeupConfig.ContainerRuntime == "containerd" {
-			b.buildSystemdServiceOverrideFlatcar(c)
-		}
+		b.buildSystemdServiceOverrideFlatcar(c)
 	case distributions.DistributionContainerOS:
 		klog.Infof("Detected ContainerOS; won't install containerd")
 		installContainerd = false
 		b.buildSystemdServiceOverrideContainerOS(c)
 	}
 
-	if b.NodeupConfig.ContainerRuntime == "containerd" {
-		// Using containerd with Kubenet requires special configuration.
-		// This is a temporary backwards-compatible solution for kubenet users and will be deprecated when Kubenet is deprecated:
-		// https://github.com/containerd/containerd/blob/master/docs/cri/config.md#cni-config-template
-		if b.NodeupConfig.UsesKubenet {
-			if err := b.buildCNIConfigTemplateFile(c); err != nil {
-				return err
-			}
-			if err := b.buildIPMasqueradeRules(c); err != nil {
-				return err
-			}
+	// Using containerd with Kubenet requires special configuration.
+	// This is a temporary backwards-compatible solution for kubenet users and will be deprecated when Kubenet is deprecated:
+	// https://github.com/containerd/containerd/blob/master/docs/cri/config.md#cni-config-template
+	if b.NodeupConfig.UsesKubenet {
+		if err := b.buildCNIConfigTemplateFile(c); err != nil {
+			return err
+		}
+		if err := b.buildIPMasqueradeRules(c); err != nil {
+			return err
 		}
 	}
 
@@ -109,78 +106,67 @@ func (b *ContainerdBuilder) installContainerd(c *fi.NodeupModelBuilderContext) e
 		c.AddTask(t)
 	}
 
-	// Add binaries from assets
-	if b.NodeupConfig.ContainerRuntime == "containerd" {
-		// Add containerd binaries from containerd release package
-		f := b.Assets.FindMatches(regexp.MustCompile(`^bin/(containerd|ctr)`))
-		if len(f) == 0 {
-			// Add containerd binaries from containerd bundle package
-			f = b.Assets.FindMatches(regexp.MustCompile(`^(\./)?usr/local/bin/(containerd|crictl|ctr)`))
+	// Add containerd binaries from containerd release package
+	f := b.Assets.FindMatches(regexp.MustCompile(`^bin/(containerd|ctr)`))
+	if len(f) == 0 {
+		// Add containerd binaries from containerd bundle package
+		f = b.Assets.FindMatches(regexp.MustCompile(`^(\./)?usr/local/bin/(containerd|crictl|ctr)`))
+	}
+	if len(f) == 0 {
+		// Add containerd binaries from Docker package (for ARM64 builds < v1.6.0)
+		// https://github.com/containerd/containerd/pull/6196
+		f = b.Assets.FindMatches(regexp.MustCompile(`^docker/(containerd|ctr)`))
+	}
+	if len(f) == 0 {
+		return fmt.Errorf("unable to find any containerd binaries in assets")
+	}
+	for k, v := range f {
+		fileTask := &nodetasks.File{
+			Path:     filepath.Join("/usr/bin", k),
+			Contents: v,
+			Type:     nodetasks.FileType_File,
+			Mode:     fi.PtrTo("0755"),
 		}
-		if len(f) == 0 {
-			// Add containerd binaries from Docker package (for ARM64 builds < v1.6.0)
-			// https://github.com/containerd/containerd/pull/6196
-			f = b.Assets.FindMatches(regexp.MustCompile(`^docker/(containerd|ctr)`))
-		}
-		if len(f) == 0 {
-			return fmt.Errorf("unable to find any containerd binaries in assets")
-		}
-		for k, v := range f {
-			fileTask := &nodetasks.File{
-				Path:     filepath.Join("/usr/bin", k),
-				Contents: v,
-				Type:     nodetasks.FileType_File,
-				Mode:     fi.PtrTo("0755"),
-			}
-			c.AddTask(fileTask)
-		}
-
-		// Add runc binary from https://github.com/opencontainers/runc
-		// https://github.com/containerd/containerd/issues/6541
-		f = b.Assets.FindMatches(regexp.MustCompile(`/runc\.(amd64|arm64)$`))
-		if len(f) == 0 {
-			// Add runc binary from containerd package (for builds < v1.6.0)
-			f = b.Assets.FindMatches(regexp.MustCompile(`^(\./)?usr/local/sbin/runc$`))
-		}
-		if len(f) == 0 {
-			// Add runc binary from Docker package (for ARM64 builds < v1.6.0)
-			// https://github.com/containerd/containerd/pull/6196
-			f = b.Assets.FindMatches(regexp.MustCompile(`^docker/runc$`))
-		}
-		if len(f) != 1 {
-			return fmt.Errorf("error finding runc asset")
-		}
-		for _, v := range f {
-			fileTask := &nodetasks.File{
-				Path:     "/usr/sbin/runc",
-				Contents: v,
-				Type:     nodetasks.FileType_File,
-				Mode:     fi.PtrTo("0755"),
-			}
-			c.AddTask(fileTask)
-		}
-
-		// Add configuration file for easier use of crictl
-		b.addCrictlConfig(c)
+		c.AddTask(fileTask)
 	}
 
-	var containerRuntimeVersion string
-	if b.NodeupConfig.ContainerRuntime == "containerd" {
-		if b.NodeupConfig.ContainerdConfig != nil {
-			containerRuntimeVersion = fi.ValueOf(b.NodeupConfig.ContainerdConfig.Version)
-		} else {
-			return fmt.Errorf("error finding contained version")
+	// Add runc binary from https://github.com/opencontainers/runc
+	// https://github.com/containerd/containerd/issues/6541
+	f = b.Assets.FindMatches(regexp.MustCompile(`/runc\.(amd64|arm64)$`))
+	if len(f) == 0 {
+		// Add runc binary from containerd package (for builds < v1.6.0)
+		f = b.Assets.FindMatches(regexp.MustCompile(`^(\./)?usr/local/sbin/runc$`))
+	}
+	if len(f) == 0 {
+		// Add runc binary from Docker package (for ARM64 builds < v1.6.0)
+		// https://github.com/containerd/containerd/pull/6196
+		f = b.Assets.FindMatches(regexp.MustCompile(`^docker/runc$`))
+	}
+	if len(f) != 1 {
+		return fmt.Errorf("error finding runc asset")
+	}
+	for _, v := range f {
+		fileTask := &nodetasks.File{
+			Path:     "/usr/sbin/runc",
+			Contents: v,
+			Type:     nodetasks.FileType_File,
+			Mode:     fi.PtrTo("0755"),
 		}
+		c.AddTask(fileTask)
+	}
+
+	// Add configuration file for easier use of crictl
+	b.addCrictlConfig(c)
+
+	var containerdVersion string
+	if b.NodeupConfig.ContainerdConfig != nil {
+		containerdVersion = fi.ValueOf(b.NodeupConfig.ContainerdConfig.Version)
 	} else {
-		if b.NodeupConfig.Docker != nil {
-			containerRuntimeVersion = fi.ValueOf(b.NodeupConfig.Docker.Version)
-		} else {
-			return fmt.Errorf("error finding Docker version")
-		}
+		return fmt.Errorf("error finding contained version")
 	}
-	sv, err := semver.ParseTolerant(containerRuntimeVersion)
+	sv, err := semver.ParseTolerant(containerdVersion)
 	if err != nil {
-		return fmt.Errorf("error parsing container runtime version %q: %v", containerRuntimeVersion, err)
+		return fmt.Errorf("error parsing container runtime version %q: %v", containerdVersion, err)
 	}
 	c.AddTask(b.buildSystemdService(sv))
 
@@ -191,7 +177,7 @@ func (b *ContainerdBuilder) installContainerd(c *fi.NodeupModelBuilderContext) e
 	return nil
 }
 
-func (b *ContainerdBuilder) buildSystemdService(sv semver.Version) *nodetasks.Service {
+func (b *ContainerdBuilder) buildSystemdService(containerdVersion semver.Version) *nodetasks.Service {
 	// Based on https://github.com/containerd/containerd/blob/master/containerd.service
 
 	manifest := &systemd.Manifest{}
@@ -199,21 +185,13 @@ func (b *ContainerdBuilder) buildSystemdService(sv semver.Version) *nodetasks.Se
 	manifest.Set("Unit", "Documentation", "https://containerd.io")
 	manifest.Set("Unit", "After", "network.target local-fs.target")
 
-	// Restore the default SELinux security contexts for the containerd and runc binaries
-	if b.Distribution.IsRHELFamily() && b.NodeupConfig.Docker != nil && fi.ValueOf(b.NodeupConfig.Docker.SelinuxEnabled) {
-		manifest.Set("Service", "ExecStartPre", "/bin/sh -c 'restorecon -v /usr/bin/runc'")
-		manifest.Set("Service", "ExecStartPre", "/bin/sh -c 'restorecon -v /usr/bin/containerd*'")
-	}
-
 	manifest.Set("Service", "EnvironmentFile", "/etc/sysconfig/containerd")
 	manifest.Set("Service", "EnvironmentFile", "/etc/environment")
 	manifest.Set("Service", "ExecStartPre", "-/sbin/modprobe overlay")
 	manifest.Set("Service", "ExecStart", "/usr/bin/containerd -c "+containerdConfigFilePath+" \"$CONTAINERD_OPTS\"")
 
 	// notify the daemon's readiness to systemd
-	if (b.NodeupConfig.ContainerRuntime == "containerd" && sv.GTE(semver.MustParse("1.3.4"))) || sv.GTE(semver.MustParse("19.3.13")) {
-		manifest.Set("Service", "Type", "notify")
-	}
+	manifest.Set("Service", "Type", "notify")
 
 	// set delegate yes so that systemd does not reset the cgroups of containerd containers
 	manifest.Set("Service", "Delegate", "yes")
@@ -225,7 +203,7 @@ func (b *ContainerdBuilder) buildSystemdService(sv semver.Version) *nodetasks.Se
 
 	manifest.Set("Service", "LimitNPROC", "infinity")
 	manifest.Set("Service", "LimitCORE", "infinity")
-	manifest.Set("Service", "LimitNOFILE", "infinity")
+	manifest.Set("Service", "LimitNOFILE", "1048576")
 	manifest.Set("Service", "TasksMax", "infinity")
 
 	// make killing of processes of this unit under memory pressure very unlikely
@@ -365,7 +343,7 @@ func (b *ContainerdBuilder) skipInstall() bool {
 	return d.SkipInstall
 }
 
-// addCritctlConfig creates /etc/crictl.yaml, which lets crictl work out-of-the-box.
+// addCrictlConfig creates /etc/crictl.yaml, which lets crictl work out-of-the-box.
 func (b *ContainerdBuilder) addCrictlConfig(c *fi.NodeupModelBuilderContext) {
 	conf := `
 runtime-endpoint: unix:///run/containerd/containerd.sock
@@ -493,10 +471,6 @@ func (b *ContainerdBuilder) buildCNIConfigTemplateFile(c *fi.NodeupModelBuilderC
 }
 
 func (b *ContainerdBuilder) buildContainerdConfig() (string, error) {
-	if b.NodeupConfig.ContainerRuntime != "containerd" {
-		return "", nil
-	}
-
 	containerd := b.NodeupConfig.ContainerdConfig
 	if fi.ValueOf(containerd.ConfigOverride) != "" {
 		return *containerd.ConfigOverride, nil
@@ -506,6 +480,16 @@ func (b *ContainerdBuilder) buildContainerdConfig() (string, error) {
 
 	config, _ := toml.Load("")
 	config.SetPath([]string{"version"}, int64(2))
+
+	if containerd.NRI != nil && (containerd.NRI.Enabled == nil || fi.ValueOf(containerd.NRI.Enabled)) {
+		config.SetPath([]string{"plugins", "io.containerd.nri.v1.nri", "disable"}, false)
+		if containerd.NRI.PluginRequestTimeout != nil {
+			config.SetPath([]string{"plugins", "io.containerd.nri.v1.nri", "plugin_request_timeout"}, containerd.NRI.PluginRequestTimeout)
+		}
+		if containerd.NRI.PluginRegistrationTimeout != nil {
+			config.SetPath([]string{"plugins", "io.containerd.nri.v1.nri", "plugin_registration_timeout"}, containerd.NRI.PluginRegistrationTimeout)
+		}
+	}
 	if containerd.SeLinuxEnabled {
 		config.SetPath([]string{"plugins", "io.containerd.grpc.v1.cri", "enable_selinux"}, true)
 	}
@@ -530,6 +514,28 @@ func (b *ContainerdBuilder) buildContainerdConfig() (string, error) {
 			return "", err
 		}
 	}
+
+	for k, v := range containerd.ConfigAdditions {
+		r := csv.NewReader(strings.NewReader(k))
+		r.Comma = '.'
+		path, err := r.Read()
+		if err != nil {
+			return "", fmt.Errorf("parsing additional containerd config entry: %w", err)
+		}
+
+		if v.Type == intstr.Int {
+			config.SetPath(path, int64(v.IntValue()))
+		} else {
+			if v.String() == "true" {
+				config.SetPath(path, true)
+			} else if v.String() == "false" {
+				config.SetPath(path, false)
+			} else {
+				config.SetPath(path, v.String())
+			}
+		}
+	}
+
 	return config.String(), nil
 }
 

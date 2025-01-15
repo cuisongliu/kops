@@ -47,16 +47,18 @@ func TestTaintsApplied(t *testing.T) {
 		expectTaints []string
 	}{
 		{
-			version:      "1.9.0",
+			version:      "1.28.0",
 			taints:       []string{"foo", "bar", "baz"},
-			expectTaints: []string{"foo", "bar", "baz", "node-role.kubernetes.io/master=:NoSchedule"},
+			expectTaints: []string{"foo", "bar", "baz", "node-role.kubernetes.io/control-plane=:NoSchedule"},
 		},
 	}
 
 	for _, g := range tests {
 		cluster := &kops.Cluster{Spec: kops.ClusterSpec{
-			KubernetesVersion: g.version,
-			KubeAPIServer:     &kops.KubeAPIServerConfig{},
+			KubernetesVersion:     g.version,
+			KubeAPIServer:         &kops.KubeAPIServerConfig{},
+			KubeControllerManager: &kops.KubeControllerManagerConfig{},
+			KubeScheduler:         &kops.KubeSchedulerConfig{},
 		}}
 		input := testutils.BuildMinimalMasterInstanceGroup("eu-central-1a")
 		input.Spec.Taints = g.taints
@@ -69,7 +71,6 @@ func TestTaintsApplied(t *testing.T) {
 		config, bootConfig := nodeup.NewConfig(cluster, ig)
 		b := &KubeletBuilder{
 			&NodeupModelContext{
-				Cluster:      cluster,
 				BootConfig:   bootConfig,
 				NodeupConfig: config,
 			},
@@ -78,7 +79,7 @@ func TestTaintsApplied(t *testing.T) {
 			t.Error(err)
 		}
 
-		c, err := b.buildKubeletConfigSpec()
+		c, err := b.buildKubeletConfigSpec(context.TODO())
 
 		if g.expectError {
 			if err == nil {
@@ -188,13 +189,13 @@ func runKubeletBuilder(t *testing.T, context *fi.NodeupModelBuilderContext, node
 
 	builder := KubeletBuilder{NodeupModelContext: nodeupModelContext}
 
-	kubeletConfig, err := builder.buildKubeletConfigSpec()
+	kubeletConfig, err := builder.buildKubeletConfigSpec(context.Context())
 	if err != nil {
 		t.Fatalf("error from KubeletBuilder buildKubeletConfig: %v", err)
 		return
 	}
 	{
-		fileTask, err := buildKubeletComponentConfig(kubeletConfig)
+		fileTask, err := buildKubeletComponentConfig(kubeletConfig, "")
 		if err != nil {
 			t.Fatalf("error from KubeletBuilder buildKubeletComponentConfig: %v", err)
 			return
@@ -203,7 +204,7 @@ func runKubeletBuilder(t *testing.T, context *fi.NodeupModelBuilderContext, node
 		context.AddTask(fileTask)
 	}
 	{
-		fileTask, err := builder.buildSystemdEnvironmentFile(kubeletConfig)
+		fileTask, err := builder.buildSystemdEnvironmentFile(context.Context(), kubeletConfig)
 		if err != nil {
 			t.Fatalf("error from KubeletBuilder buildSystemdEnvironmentFile: %v", err)
 			return
@@ -221,10 +222,6 @@ func runKubeletBuilder(t *testing.T, context *fi.NodeupModelBuilderContext, node
 
 	{
 		task := builder.buildSystemdService()
-		if err != nil {
-			t.Fatalf("error from KubeletBuilder buildSystemdService: %v", err)
-			return
-		}
 		context.AddTask(task)
 	}
 }
@@ -239,7 +236,7 @@ func BuildNodeupModelContext(model *testutils.Model) (*NodeupModelContext, error
 	nodeupModelContext := &NodeupModelContext{
 		Architecture: "amd64",
 		BootConfig: &nodeup.BootConfig{
-			CloudProvider: model.Cluster.Spec.GetCloudProvider(),
+			CloudProvider: model.Cluster.GetCloudProvider(),
 		},
 	}
 
@@ -249,12 +246,11 @@ func BuildNodeupModelContext(model *testutils.Model) (*NodeupModelContext, error
 		return nil, fmt.Errorf("error from BuildCloud: %v", err)
 	}
 
-	err = cloudup.PerformAssignments(model.Cluster, cloud)
-	if err != nil {
+	if err := cloudup.PerformAssignments(model.Cluster, vfs.Context, cloud); err != nil {
 		return nil, fmt.Errorf("error from PerformAssignments: %v", err)
 	}
 
-	nodeupModelContext.Cluster, err = mockedPopulateClusterSpec(ctx, model.Cluster, cloud)
+	cluster, err := mockedPopulateClusterSpec(ctx, model.Cluster, model.InstanceGroups, cloud)
 	if err != nil {
 		return nil, fmt.Errorf("unexpected error from mockedPopulateClusterSpec: %v", err)
 	}
@@ -262,13 +258,13 @@ func BuildNodeupModelContext(model *testutils.Model) (*NodeupModelContext, error
 	if len(model.InstanceGroups) == 0 {
 		// We tolerate this - not all tests need an instance group
 		// we then use the cluster kubelet config directly
-		nodeupModelContext.NodeupConfig, nodeupModelContext.BootConfig = nodeup.NewConfig(nodeupModelContext.Cluster, &kops.InstanceGroup{})
-		nodeupModelContext.NodeupConfig.KubeletConfig = *nodeupModelContext.Cluster.Spec.Kubelet
+		nodeupModelContext.NodeupConfig, nodeupModelContext.BootConfig = nodeup.NewConfig(cluster, &kops.InstanceGroup{})
+		nodeupModelContext.NodeupConfig.KubeletConfig = *cluster.Spec.Kubelet
 	} else if len(model.InstanceGroups) == 1 {
 		ig := model.InstanceGroups[0]
-		nodeupModelContext.NodeupConfig, nodeupModelContext.BootConfig = nodeup.NewConfig(nodeupModelContext.Cluster, ig)
+		nodeupModelContext.NodeupConfig, nodeupModelContext.BootConfig = nodeup.NewConfig(cluster, ig)
 		if ig.Spec.Kubelet == nil {
-			nodeupModelContext.NodeupConfig.KubeletConfig = *nodeupModelContext.Cluster.Spec.Kubelet
+			nodeupModelContext.NodeupConfig.KubeletConfig = *cluster.Spec.Kubelet
 		}
 	} else {
 		return nil, fmt.Errorf("unexpected number of instance groups: found %d", len(model.InstanceGroups))
@@ -289,16 +285,16 @@ func BuildNodeupModelContext(model *testutils.Model) (*NodeupModelContext, error
 	return nodeupModelContext, nil
 }
 
-func mockedPopulateClusterSpec(ctx context.Context, c *kops.Cluster, cloud fi.Cloud) (*kops.Cluster, error) {
+func mockedPopulateClusterSpec(ctx context.Context, c *kops.Cluster, instanceGroups []*kops.InstanceGroup, cloud fi.Cloud) (*kops.Cluster, error) {
 	vfs.Context.ResetMemfsContext(true)
 
-	assetBuilder := assets.NewAssetBuilder(c.Spec.Assets, c.Spec.KubernetesVersion, false)
+	assetBuilder := assets.NewAssetBuilder(vfs.Context, c.Spec.Assets, false)
 	basePath, err := vfs.Context.BuildVfsPath("memfs://tests")
 	if err != nil {
 		return nil, fmt.Errorf("error building vfspath: %v", err)
 	}
-	clientset := vfsclientset.NewVFSClientset(basePath)
-	return cloudup.PopulateClusterSpec(ctx, clientset, c, cloud, assetBuilder)
+	clientset := vfsclientset.NewVFSClientset(vfs.Context, basePath)
+	return cloudup.PopulateClusterSpec(ctx, clientset, c, instanceGroups, cloud, assetBuilder)
 }
 
 // Fixed cert and key, borrowed from the create_kubecfg_test.go test
@@ -405,7 +401,7 @@ func Test_BuildComponentConfigFile(t *testing.T) {
 		ShutdownGracePeriodCriticalPods: &metav1.Duration{Duration: 10 * time.Second},
 	}
 
-	_, err := buildKubeletComponentConfig(&componentConfig)
+	_, err := buildKubeletComponentConfig(&componentConfig, "")
 	if err != nil {
 		t.Errorf("Failed to build component config file: %v", err)
 	}

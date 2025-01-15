@@ -21,7 +21,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/aws/aws-sdk-go/service/ec2"
+	armcompute "github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/compute/armcompute"
+	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/scaleway/scaleway-sdk-go/api/instance/v1"
 	"k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/pkg/apis/kops/model"
@@ -44,10 +45,11 @@ import (
 
 const (
 	DefaultEtcdVolumeSize             = 20
-	DefaultAWSEtcdVolumeType          = ec2.VolumeTypeGp3
+	DefaultAWSEtcdVolumeType          = "gp3"
 	DefaultAWSEtcdVolumeIonIops       = 100
 	DefaultAWSEtcdVolumeGp3Iops       = 3000
 	DefaultAWSEtcdVolumeGp3Throughput = 125
+	DefaultAZUREEtcdVolumeType        = "StandardSSD_LRS"
 	DefaultGCEEtcdVolumeType          = "pd-ssd"
 )
 
@@ -98,7 +100,7 @@ func (b *MasterVolumeBuilder) Build(c *fi.CloudupModelBuilderContext) error {
 			}
 			sort.Strings(allMembers)
 
-			switch b.Cluster.Spec.GetCloudProvider() {
+			switch b.Cluster.GetCloudProvider() {
 			case kops.CloudProviderAWS:
 				err = b.addAWSVolume(c, name, volumeSize, zone, etcd, m, allMembers)
 				if err != nil {
@@ -122,8 +124,12 @@ func (b *MasterVolumeBuilder) Build(c *fi.CloudupModelBuilderContext) error {
 				}
 			case kops.CloudProviderScaleway:
 				b.addScalewayVolume(c, name, volumeSize, zone, etcd, m, allMembers)
+
+			case kops.CloudProviderMetal:
+				// Nothing special to do for Metal (yet)
+
 			default:
-				return fmt.Errorf("unknown cloudprovider %q", b.Cluster.Spec.GetCloudProvider())
+				return fmt.Errorf("unknown cloudprovider %q", b.Cluster.GetCloudProvider())
 			}
 		}
 	}
@@ -138,12 +144,12 @@ func (b *MasterVolumeBuilder) addAWSVolume(c *fi.CloudupModelBuilderContext, nam
 	}
 	volumeIops := fi.ValueOf(m.VolumeIOPS)
 	volumeThroughput := fi.ValueOf(m.VolumeThroughput)
-	switch volumeType {
-	case ec2.VolumeTypeIo1, ec2.VolumeTypeIo2:
+	switch ec2types.VolumeType(volumeType) {
+	case ec2types.VolumeTypeIo1, ec2types.VolumeTypeIo2:
 		if volumeIops < 100 {
 			volumeIops = DefaultAWSEtcdVolumeIonIops
 		}
-	case ec2.VolumeTypeGp3:
+	case ec2types.VolumeTypeGp3:
 		if volumeIops < 3000 {
 			volumeIops = DefaultAWSEtcdVolumeGp3Iops
 		}
@@ -181,18 +187,18 @@ func (b *MasterVolumeBuilder) addAWSVolume(c *fi.CloudupModelBuilderContext, nam
 		Lifecycle: b.Lifecycle,
 
 		AvailabilityZone: fi.PtrTo(zone),
-		SizeGB:           fi.PtrTo(int64(volumeSize)),
-		VolumeType:       fi.PtrTo(volumeType),
+		SizeGB:           fi.PtrTo(int32(volumeSize)),
+		VolumeType:       ec2types.VolumeType(volumeType),
 		KmsKeyId:         m.KmsKeyID,
 		Encrypted:        fi.PtrTo(encrypted),
 		Tags:             tags,
 	}
-	switch volumeType {
-	case ec2.VolumeTypeGp3:
-		t.VolumeThroughput = fi.PtrTo(int64(volumeThroughput))
+	switch ec2types.VolumeType(volumeType) {
+	case ec2types.VolumeTypeGp3:
+		t.VolumeThroughput = fi.PtrTo(int32(volumeThroughput))
 		fallthrough
-	case ec2.VolumeTypeIo1, ec2.VolumeTypeIo2:
-		t.VolumeIops = fi.PtrTo(int64(volumeIops))
+	case ec2types.VolumeTypeIo1, ec2types.VolumeTypeIo2:
+		t.VolumeIops = fi.PtrTo(int32(volumeIops))
 	}
 
 	c.AddTask(t)
@@ -203,16 +209,16 @@ func (b *MasterVolumeBuilder) addAWSVolume(c *fi.CloudupModelBuilderContext, nam
 func validateAWSVolume(name, volumeType string, volumeSize, volumeIops, volumeThroughput int32) error {
 	volumeIopsSizeRatio := float64(volumeIops) / float64(volumeSize)
 	volumeThroughputIopsRatio := float64(volumeThroughput) / float64(volumeIops)
-	switch volumeType {
-	case ec2.VolumeTypeIo1:
+	switch ec2types.VolumeType(volumeType) {
+	case ec2types.VolumeTypeIo1:
 		if volumeIopsSizeRatio > 50.0 {
 			return fmt.Errorf("volumeIops to volumeSize ratio must be lower than 50. For %s ratio is %.02f", name, volumeIopsSizeRatio)
 		}
-	case ec2.VolumeTypeIo2:
+	case ec2types.VolumeTypeIo2:
 		if volumeIopsSizeRatio > 500.0 {
 			return fmt.Errorf("volumeIops to volumeSize ratio must be lower than 500. For %s ratio is %.02f", name, volumeIopsSizeRatio)
 		}
-	case ec2.VolumeTypeGp3:
+	case ec2types.VolumeTypeGp3:
 		if volumeIops > 3000 && volumeIopsSizeRatio > 500.0 {
 			return fmt.Errorf("volumeIops to volumeSize ratio must be lower than 500. For %s ratio is %.02f", name, volumeIopsSizeRatio)
 		}
@@ -272,9 +278,11 @@ func (b *MasterVolumeBuilder) addGCEVolume(c *fi.CloudupModelBuilderContext, pre
 	// This is the configuration of the etcd cluster
 	clusterSpec := m.Name + "/" + strings.Join(allMembers, ",")
 
+	clusterLabel := gce.LabelForCluster(b.ClusterName())
+
 	// The tags are how protokube knows to mount the volume and use it for etcd
 	tags := make(map[string]string)
-	tags[gce.GceLabelNameKubernetesCluster] = gce.SafeClusterName(b.ClusterName())
+	tags[clusterLabel.Key] = clusterLabel.Value
 	tags[gce.GceLabelNameRolePrefix+"master"] = "master" // Can't start with a number
 	tags[gce.GceLabelNameEtcdClusterPrefix+etcd.Name] = gce.EncodeGCELabel(clusterSpec)
 
@@ -357,6 +365,10 @@ func (b *MasterVolumeBuilder) addAzureVolume(
 	m kops.EtcdMemberSpec,
 	allMembers []string,
 ) error {
+	volumeType := fi.ValueOf(m.VolumeType)
+	if volumeType == "" {
+		volumeType = DefaultAZUREEtcdVolumeType
+	}
 	// The tags are use by Protokube to mount the volume and use it for etcd.
 	tags := map[string]*string{
 		// This is the configuration of the etcd cluster.
@@ -388,9 +400,10 @@ func (b *MasterVolumeBuilder) addAzureVolume(
 		ResourceGroup: &azuretasks.ResourceGroup{
 			Name: fi.PtrTo(b.Cluster.AzureResourceGroupName()),
 		},
-		SizeGB: fi.PtrTo(volumeSize),
-		Tags:   tags,
-		Zones:  &[]string{zoneNumber},
+		SizeGB:     fi.PtrTo(volumeSize),
+		Tags:       tags,
+		VolumeType: fi.PtrTo(armcompute.DiskStorageAccountTypes(volumeType)),
+		Zones:      []*string{&zoneNumber},
 	}
 	c.AddTask(t)
 

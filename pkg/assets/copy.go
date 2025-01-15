@@ -22,13 +22,14 @@ import (
 
 	"k8s.io/klog/v2"
 	"k8s.io/kops/pkg/apis/kops"
+	"k8s.io/kops/util/pkg/vfs"
 )
 
 type assetTask interface {
 	Run() error
 }
 
-func Copy(imageAssets []*ImageAsset, fileAssets []*FileAsset, cluster *kops.Cluster) error {
+func Copy(imageAssets []*ImageAsset, fileAssets []*FileAsset, vfsContext *vfs.VFSContext, cluster *kops.Cluster) error {
 	tasks := map[string]assetTask{}
 
 	for _, imageAsset := range imageAssets {
@@ -55,7 +56,8 @@ func Copy(imageAssets []*ImageAsset, fileAssets []*FileAsset, cluster *kops.Clus
 				Name:       fileAsset.CanonicalURL.String(),
 				TargetFile: fileAsset.DownloadURL.String(),
 				SourceFile: fileAsset.CanonicalURL.String(),
-				SHA:        fileAsset.SHAValue,
+				SHA:        fileAsset.SHAValue.Hex(),
+				VFSContext: vfsContext,
 				Cluster:    cluster,
 			}
 

@@ -19,13 +19,16 @@ package validation
 import (
 	"net"
 	"testing"
+	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/upup/pkg/fi"
+	"k8s.io/utils/ptr"
 )
 
 func Test_Validate_DNS(t *testing.T) {
@@ -187,7 +190,8 @@ func TestValidateSubnets(t *testing.T) {
 		},
 	}
 	for _, g := range grid {
-		cluster := &kops.ClusterSpec{
+		cluster := &kops.Cluster{}
+		cluster.Spec = kops.ClusterSpec{
 			CloudProvider: kops.CloudProviderSpec{
 				AWS: &kops.AWSSpec{},
 			},
@@ -196,8 +200,8 @@ func TestValidateSubnets(t *testing.T) {
 				Subnets:     g.Input,
 			},
 		}
-		_, ipNet, _ := net.ParseCIDR(cluster.Networking.NetworkCIDR)
-		errs := validateSubnets(cluster, cluster.Networking.Subnets, field.NewPath("subnets"), true, &cloudProviderConstraints{}, []*net.IPNet{ipNet})
+		_, ipNet, _ := net.ParseCIDR(cluster.Spec.Networking.NetworkCIDR)
+		errs := validateSubnets(cluster, cluster.Spec.Networking.Subnets, field.NewPath("subnets"), true, &cloudProviderConstraints{}, []*net.IPNet{ipNet}, nil, nil)
 
 		testErrors(t, g.Input, errs, g.ExpectedErrors)
 	}
@@ -308,6 +312,21 @@ func TestValidateKubeAPIServer(t *testing.T) {
 			},
 			ExpectedErrors: []string{"Unsupported value::KubeAPIServer.logFormat"},
 		},
+		{
+			Input: kops.KubeAPIServerConfig{
+				AuthenticationConfigFile: "/foo/bar",
+			},
+			Cluster: &kops.Cluster{
+				Spec: kops.ClusterSpec{
+					Authentication: &kops.AuthenticationSpec{
+						OIDC: &kops.OIDCAuthenticationSpec{
+							ClientID: fi.PtrTo("foo"),
+						},
+					},
+				},
+			},
+			ExpectedErrors: []string{"Forbidden::KubeAPIServer.authenticationConfigFile"},
+		},
 	}
 	for _, g := range grid {
 		if g.Cluster == nil {
@@ -339,23 +358,49 @@ func TestValidateKubeAPIServer(t *testing.T) {
 	}
 }
 
-func Test_Validate_DockerConfig_Storage(t *testing.T) {
-	for _, name := range []string{"aufs", "zfs", "overlay"} {
-		config := &kops.DockerConfig{Storage: &name}
-		errs := validateDockerConfig(config, field.NewPath("docker"))
-		if len(errs) != 0 {
-			t.Fatalf("Unexpected errors validating DockerConfig %q", errs)
-		}
+func TestValidateKubeControllermanager(t *testing.T) {
+	grid := []struct {
+		Input          kops.KubeControllerManagerConfig
+		Cluster        *kops.Cluster
+		ExpectedErrors []string
+		ExpectedDetail string
+	}{
+		{
+			Input: kops.KubeControllerManagerConfig{
+				ExperimentalClusterSigningDuration: &metav1.Duration{Duration: time.Hour},
+			},
+			ExpectedErrors: []string{
+				"Forbidden::kubeControllerManager.experimentalClusterSigningDuration",
+			},
+			ExpectedDetail: "experimentalClusterSigningDuration has been replaced with clusterSigningDuration as of kubernetes 1.25",
+		},
 	}
-
-	for _, name := range []string{"overlayfs", "", "au"} {
-		config := &kops.DockerConfig{Storage: &name}
-		errs := validateDockerConfig(config, field.NewPath("docker"))
-		if len(errs) != 1 {
-			t.Fatalf("Expected errors validating DockerConfig %+v", config)
+	for _, g := range grid {
+		if g.Cluster == nil {
+			g.Cluster = &kops.Cluster{
+				Spec: kops.ClusterSpec{
+					KubernetesVersion: "1.28.0",
+				},
+			}
 		}
-		if errs[0].Field != "docker.storage" || errs[0].Type != field.ErrorTypeNotSupported {
-			t.Fatalf("Not the expected error validating DockerConfig %q", errs)
+		errs := validateKubeControllerManager(&g.Input, g.Cluster, field.NewPath("kubeControllerManager"), true)
+
+		testErrors(t, g.Input, errs, g.ExpectedErrors)
+
+		if g.ExpectedDetail != "" {
+			found := false
+			for _, err := range errs {
+				if err.Detail == g.ExpectedDetail {
+					found = true
+				}
+			}
+			if !found {
+				for _, err := range errs {
+					t.Logf("found detail: %q", err.Detail)
+				}
+
+				t.Errorf("did not find expected error %q", g.ExpectedDetail)
+			}
 		}
 	}
 }
@@ -391,9 +436,11 @@ func Test_Validate_Networking_Flannel(t *testing.T) {
 	for _, g := range grid {
 		cluster := &kops.Cluster{
 			Spec: kops.ClusterSpec{
+				KubernetesVersion: "1.27.0",
 				Networking: kops.NetworkingSpec{
 					NetworkCIDR:           "10.0.0.0/8",
 					NonMasqueradeCIDR:     "100.64.0.0/10",
+					PodCIDR:               "100.96.0.0/11",
 					ServiceClusterIPRange: "100.64.0.0/13",
 					Subnets: []kops.ClusterSubnetSpec{
 						{
@@ -409,6 +456,181 @@ func Test_Validate_Networking_Flannel(t *testing.T) {
 
 		errs := validateNetworking(cluster, &cluster.Spec.Networking, field.NewPath("networking"), true, &cloudProviderConstraints{})
 		testErrors(t, g.Input, errs, g.ExpectedErrors)
+	}
+}
+
+func Test_Validate_Networking_Kindnet(t *testing.T) {
+	grid := []struct {
+		Input          kops.KindnetNetworkingSpec
+		ExpectedErrors []string
+	}{
+		{
+			Input: kops.KindnetNetworkingSpec{
+				Masquerade: &kops.KindnetMasqueradeSpec{
+					Enabled: ptr.To(true),
+				},
+			},
+		},
+		{
+			Input: kops.KindnetNetworkingSpec{
+				Masquerade: &kops.KindnetMasqueradeSpec{
+					Enabled:            ptr.To(true),
+					NonMasqueradeCIDRs: []string{"10.0.0.0/24", "2001:db8::/64"},
+				},
+			},
+		},
+		{
+			Input: kops.KindnetNetworkingSpec{
+				Masquerade: &kops.KindnetMasqueradeSpec{
+					Enabled:            ptr.To(true),
+					NonMasqueradeCIDRs: []string{"a.b.c.d/24", "2001:db8::/64"},
+				},
+			},
+			ExpectedErrors: []string{"Invalid value::networking.kindnet"},
+		},
+		{
+			Input: kops.KindnetNetworkingSpec{
+				Masquerade: &kops.KindnetMasqueradeSpec{
+					Enabled:            ptr.To(false),
+					NonMasqueradeCIDRs: []string{"a.b.c.d/24", "2001:db8::/64"},
+				},
+			},
+			ExpectedErrors: []string{},
+		},
+	}
+
+	for _, g := range grid {
+		cluster := &kops.Cluster{
+			Spec: kops.ClusterSpec{
+				KubernetesVersion: "1.27.0",
+				Networking: kops.NetworkingSpec{
+					NetworkCIDR:           "10.0.0.0/8",
+					NonMasqueradeCIDR:     "100.64.0.0/10",
+					PodCIDR:               "100.96.0.0/11",
+					ServiceClusterIPRange: "100.64.0.0/13",
+					Subnets: []kops.ClusterSubnetSpec{
+						{
+							Name: "sg-test",
+							CIDR: "10.11.0.0/16",
+							Type: "Public",
+						},
+					},
+					Kindnet: &g.Input,
+				},
+			},
+		}
+
+		errs := validateNetworking(cluster, &cluster.Spec.Networking, field.NewPath("networking"), true, &cloudProviderConstraints{})
+		testErrors(t, g.Input, errs, g.ExpectedErrors)
+	}
+}
+
+func Test_Validate_Networking_OverlappingCIDR(t *testing.T) {
+	grid := []struct {
+		Name           string
+		Networking     kops.NetworkingSpec
+		ExpectedErrors []*field.Error
+	}{
+		{
+			Name: "no-overlap",
+			Networking: kops.NetworkingSpec{
+				NetworkCIDR:           "10.0.0.0/8",
+				NonMasqueradeCIDR:     "100.64.0.0/10",
+				PodCIDR:               "100.64.10.0/24",
+				ServiceClusterIPRange: "100.64.20.0/24",
+				Subnets: []kops.ClusterSubnetSpec{
+					{
+						Name: "subnet-test",
+						CIDR: "10.10.0.0/16",
+						Type: "Public",
+					},
+				},
+			},
+		},
+		{
+			Name: "overlap-podcidr-and-servicecidr",
+			Networking: kops.NetworkingSpec{
+				NetworkCIDR:           "10.0.0.0/8",
+				NonMasqueradeCIDR:     "100.64.0.0/10",
+				PodCIDR:               "100.64.0.0/10",
+				ServiceClusterIPRange: "100.64.0.0/13",
+				Subnets: []kops.ClusterSubnetSpec{
+					{
+						Name: "subnet-test",
+						CIDR: "10.10.0.0/16",
+						Type: "Public",
+					},
+				},
+			},
+		},
+		{
+			Name: "overlap-servicecidr-and-subnetcidr",
+			Networking: kops.NetworkingSpec{
+				NetworkCIDR:           "10.0.0.0/8",
+				NonMasqueradeCIDR:     "100.64.0.0/10",
+				PodCIDR:               "100.64.10.0/24",
+				ServiceClusterIPRange: "100.64.20.0/24",
+				Subnets: []kops.ClusterSubnetSpec{
+					{
+						Name: "subnet-test",
+						CIDR: "100.64.20.0/28",
+						Type: "Public",
+					},
+				},
+			},
+			ExpectedErrors: []*field.Error{
+				{
+					Type:   field.ErrorTypeForbidden,
+					Detail: `subnet "subnet-test" cidr "100.64.20.0/28" is not a subnet of the networkCIDR "10.0.0.0/8"`,
+					Field:  "networking.subnets[0].cidr",
+				},
+				{
+					Type:   field.ErrorTypeForbidden,
+					Detail: `subnet "subnet-test" cidr "100.64.20.0/28" must not overlap serviceClusterIPRange "100.64.20.0/24"`,
+					Field:  "networking.subnets[0].cidr",
+				},
+			},
+		},
+	}
+	for _, g := range grid {
+		t.Run(g.Name, func(t *testing.T) {
+			cluster := &kops.Cluster{
+				Spec: kops.ClusterSpec{
+					KubernetesVersion: "1.27.0",
+				},
+			}
+			cluster.Spec.Networking = g.Networking
+
+			errs := validateNetworking(cluster, &cluster.Spec.Networking, field.NewPath("networking"), true, &cloudProviderConstraints{})
+			testFieldErrors(t, errs, g.ExpectedErrors)
+		})
+	}
+}
+
+func testFieldErrors(t *testing.T, actual field.ErrorList, expectedErrors []*field.Error) {
+	t.Helper()
+
+	if len(actual) > len(expectedErrors) {
+		t.Errorf("found unexpected errors: %+v", actual)
+	}
+
+	for _, expected := range expectedErrors {
+		found := false
+		for _, err := range actual {
+			if expected.Type != "" && expected.Type != err.Type {
+				continue
+			}
+			if expected.Detail != "" && expected.Detail != err.Detail {
+				continue
+			}
+			if expected.Field != "" && expected.Field != err.Field {
+				continue
+			}
+			found = true
+		}
+		if !found {
+			t.Errorf("expected error %+v, was not found in errors: %+v", expected, actual)
+		}
 	}
 }
 
@@ -460,6 +682,7 @@ func Test_Validate_AdditionalPolicies(t *testing.T) {
 			Networking: kops.NetworkingSpec{
 				NetworkCIDR:           "10.10.0.0/16",
 				NonMasqueradeCIDR:     "100.64.0.0/10",
+				PodCIDR:               "100.96.0.0/11",
 				ServiceClusterIPRange: "100.64.0.0/13",
 				Subnets: []kops.ClusterSubnetSpec{
 					{
@@ -894,6 +1117,11 @@ func Test_Validate_Cilium(t *testing.T) {
 		},
 		{
 			Cilium: kops.CiliumNetworkingSpec{
+				ClusterID: 253,
+			},
+		},
+		{
+			Cilium: kops.CiliumNetworkingSpec{
 				Masquerade: fi.PtrTo(true),
 				IPAM:       "eni",
 			},
@@ -976,7 +1204,26 @@ func Test_Validate_Cilium(t *testing.T) {
 		},
 		{
 			Cilium: kops.CiliumNetworkingSpec{
-				Version: "v1.12.4",
+				Version: "v1.16.0",
+				Ingress: &kops.CiliumIngressSpec{
+					Enabled:                 fi.PtrTo(true),
+					DefaultLoadBalancerMode: "bad-value",
+				},
+			},
+			ExpectedErrors: []string{"Unsupported value::cilium.ingress.defaultLoadBalancerMode"},
+		},
+		{
+			Cilium: kops.CiliumNetworkingSpec{
+				Version: "v1.16.0",
+				Ingress: &kops.CiliumIngressSpec{
+					Enabled:                 fi.PtrTo(true),
+					DefaultLoadBalancerMode: "dedicated",
+				},
+			},
+		},
+		{
+			Cilium: kops.CiliumNetworkingSpec{
+				Version: "v1.16.0",
 				Hubble: &kops.HubbleSpec{
 					Enabled: fi.PtrTo(true),
 				},
@@ -1443,7 +1690,6 @@ func Test_Validate_Nvidia_Cluster(t *testing.T) {
 				CloudProvider: kops.CloudProviderSpec{
 					AWS: &kops.AWSSpec{},
 				},
-				ContainerRuntime: "containerd",
 			},
 		},
 		{
@@ -1456,7 +1702,6 @@ func Test_Validate_Nvidia_Cluster(t *testing.T) {
 				CloudProvider: kops.CloudProviderSpec{
 					Openstack: &kops.OpenstackSpec{},
 				},
-				ContainerRuntime: "containerd",
 			},
 			ExpectedErrors: []string{"Forbidden::containerd.nvidiaGPU"},
 		},
@@ -1470,27 +1715,14 @@ func Test_Validate_Nvidia_Cluster(t *testing.T) {
 				CloudProvider: kops.CloudProviderSpec{
 					GCE: &kops.GCESpec{},
 				},
-				ContainerRuntime: "containerd",
-			},
-			ExpectedErrors: []string{"Forbidden::containerd.nvidiaGPU"},
-		},
-		{
-			Input: kops.ClusterSpec{
-				Containerd: &kops.ContainerdConfig{
-					NvidiaGPU: &kops.NvidiaGPUConfig{
-						Enabled: fi.PtrTo(true),
-					},
-				},
-				CloudProvider: kops.CloudProviderSpec{
-					AWS: &kops.AWSSpec{},
-				},
-				ContainerRuntime: "docker",
 			},
 			ExpectedErrors: []string{"Forbidden::containerd.nvidiaGPU"},
 		},
 	}
 	for _, g := range grid {
-		errs := validateNvidiaConfig(&g.Input, g.Input.Containerd.NvidiaGPU, field.NewPath("containerd", "nvidiaGPU"), true)
+		cluster := &kops.Cluster{}
+		cluster.Spec = g.Input
+		errs := validateNvidiaConfig(cluster, g.Input.Containerd.NvidiaGPU, field.NewPath("containerd", "nvidiaGPU"), true)
 		testErrors(t, g.Input, errs, g.ExpectedErrors)
 	}
 }
@@ -1510,7 +1742,6 @@ func Test_Validate_Nvidia_Ig(t *testing.T) {
 				CloudProvider: kops.CloudProviderSpec{
 					AWS: &kops.AWSSpec{},
 				},
-				ContainerRuntime: "containerd",
 			},
 		},
 		{
@@ -1523,7 +1754,6 @@ func Test_Validate_Nvidia_Ig(t *testing.T) {
 				CloudProvider: kops.CloudProviderSpec{
 					Openstack: &kops.OpenstackSpec{},
 				},
-				ContainerRuntime: "containerd",
 			},
 		},
 		{
@@ -1536,27 +1766,81 @@ func Test_Validate_Nvidia_Ig(t *testing.T) {
 				CloudProvider: kops.CloudProviderSpec{
 					GCE: &kops.GCESpec{},
 				},
-				ContainerRuntime: "containerd",
-			},
-			ExpectedErrors: []string{"Forbidden::containerd.nvidiaGPU"},
-		},
-		{
-			Input: kops.ClusterSpec{
-				Containerd: &kops.ContainerdConfig{
-					NvidiaGPU: &kops.NvidiaGPUConfig{
-						Enabled: fi.PtrTo(true),
-					},
-				},
-				CloudProvider: kops.CloudProviderSpec{
-					AWS: &kops.AWSSpec{},
-				},
-				ContainerRuntime: "docker",
 			},
 			ExpectedErrors: []string{"Forbidden::containerd.nvidiaGPU"},
 		},
 	}
 	for _, g := range grid {
-		errs := validateNvidiaConfig(&g.Input, g.Input.Containerd.NvidiaGPU, field.NewPath("containerd", "nvidiaGPU"), false)
+		cluster := &kops.Cluster{}
+		cluster.Spec = g.Input
+		errs := validateNvidiaConfig(cluster, g.Input.Containerd.NvidiaGPU, field.NewPath("containerd", "nvidiaGPU"), false)
 		testErrors(t, g.Input, errs, g.ExpectedErrors)
+	}
+}
+
+func Test_Validate_NriConfig(t *testing.T) {
+	unsupportedContainerdVersion := "1.6.0"
+	supportedContainerdVersion := "1.7.0"
+	grid := []struct {
+		Input          kops.ClusterSpec
+		ExpectedErrors []string
+	}{
+		{
+			Input: kops.ClusterSpec{
+				Containerd: &kops.ContainerdConfig{
+					NRI: &kops.NRIConfig{
+						Enabled: fi.PtrTo(true),
+					},
+					Version: &unsupportedContainerdVersion,
+				},
+			},
+			ExpectedErrors: []string{"Forbidden::containerd.nri"},
+		},
+		{
+			Input: kops.ClusterSpec{
+				Containerd: &kops.ContainerdConfig{
+					NRI:     &kops.NRIConfig{},
+					Version: &unsupportedContainerdVersion,
+				},
+			},
+			ExpectedErrors: []string{},
+		},
+		{
+			Input: kops.ClusterSpec{
+				Containerd: &kops.ContainerdConfig{
+					NRI: &kops.NRIConfig{
+						Enabled: nil,
+					},
+					Version: &unsupportedContainerdVersion,
+				},
+			},
+			ExpectedErrors: []string{},
+		},
+		{
+			Input: kops.ClusterSpec{
+				Containerd: &kops.ContainerdConfig{
+					NRI: &kops.NRIConfig{
+						Enabled: fi.PtrTo(false),
+					},
+					Version: &unsupportedContainerdVersion,
+				},
+			},
+			ExpectedErrors: []string{},
+		},
+		{
+			Input: kops.ClusterSpec{
+				Containerd: &kops.ContainerdConfig{
+					NRI: &kops.NRIConfig{
+						Enabled: fi.PtrTo(true),
+					},
+					Version: &supportedContainerdVersion,
+				},
+			},
+			ExpectedErrors: []string{},
+		},
+	}
+	for _, g := range grid {
+		errs := validateNriConfig(g.Input.Containerd, field.NewPath("containerd", "nri"))
+		testErrors(t, g.Input.Containerd, errs, g.ExpectedErrors)
 	}
 }

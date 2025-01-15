@@ -30,7 +30,8 @@ var allZones = []string{
 	//"ap-northeast-2b",
 	"ap-northeast-2a",
 	"ap-northeast-2c",
-	"ap-northeast-2d",
+	// t4g instances are not available
+	//"ap-northeast-2d",
 	// Disabled until etcd-manager supports the region and the AMIs used in testing are present
 	//"ap-northeast-3a",
 	//"ap-northeast-3b",
@@ -70,14 +71,16 @@ var allZones = []string{
 	"us-east-1b",
 	"us-east-1c",
 	"us-east-1d",
-	"us-east-1e",
+	// t4g instances are not available
+	//"us-east-1e",
 	"us-east-1f",
 	"us-east-2a",
 	"us-east-2b",
 	"us-east-2c",
-	"us-west-1a",
-	"us-west-1b",
-	//"us-west-1c", AZ does not exist, so we're breaking the 3 AZs per region target here
+	// Newer accounts don't have us-west-1c and one other zone is constrained so we ignore the entire region
+	//"us-west-1a",
+	//"us-west-1b",
+	//"us-west-1c",
 	"us-west-2a",
 	"us-west-2b",
 	"us-west-2c",

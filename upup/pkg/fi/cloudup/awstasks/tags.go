@@ -19,47 +19,47 @@ package awstasks
 import (
 	"strings"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/aws/aws-sdk-go/service/eventbridge"
-	"github.com/aws/aws-sdk-go/service/iam"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	eventbridgetypes "github.com/aws/aws-sdk-go-v2/service/eventbridge/types"
+	iamtypes "github.com/aws/aws-sdk-go-v2/service/iam/types"
 )
 
-func mapEC2TagsToMap(tags []*ec2.Tag) map[string]string {
+func mapEC2TagsToMap(tags []ec2types.Tag) map[string]string {
 	if tags == nil {
 		return nil
 	}
 	m := make(map[string]string)
 	for _, t := range tags {
-		if strings.HasPrefix(aws.StringValue(t.Key), "aws:cloudformation:") {
+		if strings.HasPrefix(aws.ToString(t.Key), "aws:cloudformation:") {
 			continue
 		}
-		m[aws.StringValue(t.Key)] = aws.StringValue(t.Value)
+		m[aws.ToString(t.Key)] = aws.ToString(t.Value)
 	}
 	return m
 }
 
-func mapIAMTagsToMap(tags []*iam.Tag) map[string]string {
+func mapIAMTagsToMap(tags []iamtypes.Tag) map[string]string {
 	if tags == nil {
 		return nil
 	}
 	m := make(map[string]string)
 	for _, t := range tags {
-		if strings.HasPrefix(aws.StringValue(t.Key), "aws:cloudformation:") {
+		if strings.HasPrefix(aws.ToString(t.Key), "aws:cloudformation:") {
 			continue
 		}
-		m[aws.StringValue(t.Key)] = aws.StringValue(t.Value)
+		m[aws.ToString(t.Key)] = aws.ToString(t.Value)
 	}
 	return m
 }
 
-func mapToIAMTags(tags map[string]string) []*iam.Tag {
+func mapToIAMTags(tags map[string]string) []iamtypes.Tag {
 	if tags == nil {
 		return nil
 	}
-	m := make([]*iam.Tag, 0)
+	m := make([]iamtypes.Tag, 0)
 	for k, v := range tags {
-		m = append(m, &iam.Tag{
+		m = append(m, iamtypes.Tag{
 			Key:   aws.String(k),
 			Value: aws.String(v),
 		})
@@ -67,23 +67,23 @@ func mapToIAMTags(tags map[string]string) []*iam.Tag {
 	return m
 }
 
-func mapEventBridgeTagsToMap(tags []*eventbridge.Tag) map[string]string {
+func mapEventBridgeTagsToMap(tags []eventbridgetypes.Tag) map[string]string {
 	if tags == nil {
 		return nil
 	}
 	m := make(map[string]string)
 	for _, t := range tags {
-		if strings.HasPrefix(aws.StringValue(t.Key), "aws:cloudformation:") {
+		if strings.HasPrefix(aws.ToString(t.Key), "aws:cloudformation:") {
 			continue
 		}
-		m[aws.StringValue(t.Key)] = aws.StringValue(t.Value)
+		m[aws.ToString(t.Key)] = aws.ToString(t.Value)
 	}
 	return m
 }
 
-func findNameTag(tags []*ec2.Tag) *string {
+func findNameTag(tags []ec2types.Tag) *string {
 	for _, tag := range tags {
-		if aws.StringValue(tag.Key) == "Name" {
+		if aws.ToString(tag.Key) == "Name" {
 			return tag.Value
 		}
 	}
@@ -92,14 +92,14 @@ func findNameTag(tags []*ec2.Tag) *string {
 
 // intersectTags returns the tags of interest from a specified list of AWS tags;
 // because we only add tags, this set of tags of interest is the tags that occur in the desired set.
-func intersectTags(tags []*ec2.Tag, desired map[string]string) map[string]string {
+func intersectTags(tags []ec2types.Tag, desired map[string]string) map[string]string {
 	if tags == nil {
 		return nil
 	}
 	actual := make(map[string]string)
 	for _, t := range tags {
-		k := aws.StringValue(t.Key)
-		v := aws.StringValue(t.Value)
+		k := aws.ToString(t.Key)
+		v := aws.ToString(t.Value)
 
 		if _, found := desired[k]; found {
 			actual[k] = v

@@ -17,19 +17,30 @@ limitations under the License.
 package aws
 
 import (
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 
 	"k8s.io/kops/pkg/resources"
 )
 
-func buildNatGatewayResource(ngw *ec2.NatGateway, forceShared bool, clusterName string) *resources.Resource {
-	id := aws.StringValue(ngw.NatGatewayId)
+func DumpNatGateway(op *resources.DumpOperation, r *resources.Resource) error {
+	data := make(map[string]interface{})
+	data["id"] = r.ID
+	data["type"] = r.Type
+	data["raw"] = r.Obj
+	op.Dump.Resources = append(op.Dump.Resources, data)
+	return nil
+}
+
+func buildNatGatewayResource(ngw ec2types.NatGateway, forceShared bool, clusterName string) *resources.Resource {
+	id := aws.ToString(ngw.NatGatewayId)
 
 	r := &resources.Resource{
 		Name:    id,
 		ID:      id,
+		Obj:     ngw,
 		Type:    TypeNatGateway,
+		Dumper:  DumpNatGateway,
 		Deleter: DeleteNatGateway,
 		Shared:  forceShared,
 	}
@@ -41,7 +52,7 @@ func buildNatGatewayResource(ngw *ec2.NatGateway, forceShared bool, clusterName 
 	// The NAT gateway blocks deletion of any associated Elastic IPs
 	for _, address := range ngw.NatGatewayAddresses {
 		if address.AllocationId != nil {
-			r.Blocks = append(r.Blocks, TypeElasticIp+":"+aws.StringValue(address.AllocationId))
+			r.Blocks = append(r.Blocks, TypeElasticIp+":"+aws.ToString(address.AllocationId))
 		}
 	}
 

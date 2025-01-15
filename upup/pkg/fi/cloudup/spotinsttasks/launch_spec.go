@@ -23,6 +23,7 @@ import (
 	"reflect"
 	"strings"
 
+	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/spotinst/spotinst-sdk-go/service/ocean/providers/aws"
 	"github.com/spotinst/spotinst-sdk-go/spotinst/util/stringutil"
 	corev1 "k8s.io/api/core/v1"
@@ -55,6 +56,7 @@ type LaunchSpec struct {
 	MinSize                  *int64
 	MaxSize                  *int64
 	InstanceMetadataOptions  *InstanceMetadataOptions
+	OtherArchitectureImages  []string
 
 	Ocean *Ocean
 }
@@ -128,7 +130,7 @@ func (o *LaunchSpec) find(svc spotinst.LaunchSpecService, oceanID string) (*aws.
 var _ fi.CloudupHasCheckExisting = &LaunchSpec{}
 
 func (o *LaunchSpec) Find(c *fi.CloudupContext) (*LaunchSpec, error) {
-	cloud := c.T.Cloud.(awsup.AWSCloud)
+	cloud := awsup.GetCloud(c)
 
 	ocean, err := o.Ocean.find(cloud.Spotinst().Ocean())
 	if err != nil {
@@ -157,8 +159,12 @@ func (o *LaunchSpec) Find(c *fi.CloudupContext) (*LaunchSpec, error) {
 
 	// Image.
 	{
+		//		convert spec from api that reply for multi arch data only in spec.images
+		if spec.Images != nil && len(spec.Images) > 1 {
+			spec.SetImageId(fi.PtrTo(fi.ValueOf(spec.Images[0].ImageId)))
+			actual.OtherArchitectureImages = append(actual.OtherArchitectureImages, fi.ValueOf(spec.Images[1].ImageId))
+		}
 		actual.ImageID = spec.ImageID
-
 		if o.ImageID != nil && actual.ImageID != nil &&
 			fi.ValueOf(actual.ImageID) != fi.ValueOf(o.ImageID) {
 			image, err := resolveImage(cloud, fi.ValueOf(o.ImageID))
@@ -167,6 +173,16 @@ func (o *LaunchSpec) Find(c *fi.CloudupContext) (*LaunchSpec, error) {
 			}
 			if fi.ValueOf(image.ImageId) == fi.ValueOf(spec.ImageID) {
 				actual.ImageID = o.ImageID
+			}
+		}
+		if o.OtherArchitectureImages != nil && actual.OtherArchitectureImages != nil &&
+			(actual.OtherArchitectureImages[0] != o.OtherArchitectureImages[0]) {
+			image, err := resolveImage(cloud, o.OtherArchitectureImages[0])
+			if err != nil {
+				return nil, err
+			}
+			if fi.ValueOf(image.ImageId) == actual.OtherArchitectureImages[0] {
+				actual.OtherArchitectureImages[0] = o.OtherArchitectureImages[0]
 			}
 		}
 	}
@@ -395,12 +411,21 @@ func (_ *LaunchSpec) create(cloud awsup.AWSCloud, a, e, changes *LaunchSpec) err
 
 	// Image.
 	{
-		if e.ImageID != nil {
+		if e.ImageID != nil && len(e.OtherArchitectureImages) == 0 { //old api
 			image, err := resolveImage(cloud, fi.ValueOf(e.ImageID))
 			if err != nil {
 				return err
 			}
 			spec.SetImageId(image.ImageId)
+		} else {
+			if e.ImageID != nil && len(e.OtherArchitectureImages) == 1 {
+				images, err := buildImages(cloud, e.ImageID, e.OtherArchitectureImages)
+				if err != nil {
+					return err
+				}
+				spec.SetImageId(nil)
+				spec.SetImages(images)
+			}
 		}
 	}
 
@@ -610,7 +635,7 @@ func (_ *LaunchSpec) update(cloud awsup.AWSCloud, a, e, changes *LaunchSpec) err
 
 	// Image.
 	{
-		if changes.ImageID != nil {
+		if changes.ImageID != nil { //old api
 			image, err := resolveImage(cloud, fi.ValueOf(e.ImageID))
 			if err != nil {
 				return err
@@ -619,10 +644,21 @@ func (_ *LaunchSpec) update(cloud awsup.AWSCloud, a, e, changes *LaunchSpec) err
 			if fi.ValueOf(actual.ImageID) != fi.ValueOf(image.ImageId) {
 				spec.SetImageId(image.ImageId)
 			}
-
 			changes.ImageID = nil
 			changed = true
 		}
+		if changes.OtherArchitectureImages != nil {
+			images, err := buildImages(cloud, spec.ImageID, e.OtherArchitectureImages)
+			if err != nil {
+				return err
+			}
+			spec.SetImageId(nil)
+			spec.SetImages(images)
+			changes.OtherArchitectureImages = nil
+			changed = true
+
+		}
+
 	}
 
 	// User data.
@@ -1012,10 +1048,10 @@ func (_ *LaunchSpec) RenderTerraform(t *terraform.TerraformTarget, a, e, changes
 		tf.BlockDeviceMappings = append(tf.BlockDeviceMappings, &terraformBlockDeviceMapping{
 			DeviceName: rootDevice.DeviceName,
 			EBS: &terraformBlockDeviceMappingEBS{
-				VolumeType:          rootDevice.EbsVolumeType,
-				VolumeSize:          rootDevice.EbsVolumeSize,
-				VolumeIOPS:          rootDevice.EbsVolumeIops,
-				VolumeThroughput:    rootDevice.EbsVolumeThroughput,
+				VolumeType:          fi.PtrTo(string(rootDevice.EbsVolumeType)),
+				VolumeSize:          ptrInt32ToPtrInt64(rootDevice.EbsVolumeSize),
+				VolumeIOPS:          ptrInt32ToPtrInt64(rootDevice.EbsVolumeIops),
+				VolumeThroughput:    ptrInt32ToPtrInt64(rootDevice.EbsVolumeThroughput),
 				Encrypted:           rootDevice.EbsEncrypted,
 				DeleteOnTermination: fi.PtrTo(true),
 			},
@@ -1119,23 +1155,46 @@ func (o *LaunchSpec) convertBlockDeviceMapping(in *awstasks.BlockDeviceMapping) 
 		VirtualName: in.VirtualName,
 	}
 
-	if in.EbsDeleteOnTermination != nil || in.EbsVolumeSize != nil || in.EbsVolumeType != nil {
+	if in.EbsDeleteOnTermination != nil || in.EbsVolumeSize != nil || len(in.EbsVolumeType) > 0 {
 		out.EBS = &aws.EBS{
-			VolumeType:          in.EbsVolumeType,
+			VolumeType:          fi.PtrTo(string(in.EbsVolumeType)),
 			VolumeSize:          fi.PtrTo(int(fi.ValueOf(in.EbsVolumeSize))),
 			DeleteOnTermination: in.EbsDeleteOnTermination,
 		}
 
 		// IOPS is not valid for gp2 volumes.
-		if in.EbsVolumeIops != nil && fi.ValueOf(in.EbsVolumeType) != "gp2" {
+		if in.EbsVolumeIops != nil && in.EbsVolumeType != ec2types.VolumeTypeGp2 {
 			out.EBS.IOPS = fi.PtrTo(int(fi.ValueOf(in.EbsVolumeIops)))
 		}
 
 		// Throughput is only valid for gp3 volumes.
-		if in.EbsVolumeThroughput != nil && fi.ValueOf(in.EbsVolumeType) == "gp3" {
+		if in.EbsVolumeThroughput != nil && in.EbsVolumeType == ec2types.VolumeTypeGp3 {
 			out.EBS.Throughput = fi.PtrTo(int(fi.ValueOf(in.EbsVolumeThroughput)))
 		}
 	}
 
 	return out
+}
+func buildImages(cloud awsup.AWSCloud, ImageID *string, OtherArchitectureImages []string) ([]*aws.Images, error) {
+	var imagesSlice []*aws.Images
+	var imageIndex = 0
+	if ImageID != nil {
+		image, err := resolveImage(cloud, fi.ValueOf(ImageID))
+		if err != nil {
+			return nil, err
+		}
+		imagesSlice = append(imagesSlice, &aws.Images{})
+		imagesSlice[imageIndex].SetImageId(image.ImageId)
+		imageIndex++
+	}
+	if len(OtherArchitectureImages) == 1 {
+		image2, err := resolveImage(cloud, OtherArchitectureImages[0])
+		if err != nil {
+			return nil, err
+		}
+		imagesSlice = append(imagesSlice, &aws.Images{})
+		imagesSlice[imageIndex].SetImageId(image2.ImageId)
+	}
+
+	return imagesSlice, nil
 }

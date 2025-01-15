@@ -56,12 +56,12 @@ provider "aws" {
 }
 
 resource "aws_eip" "us-test-1a-lifecyclephases-example-com" {
+  domain = "vpc"
   tags = {
     "KubernetesCluster"                                 = "lifecyclephases.example.com"
     "Name"                                              = "us-test-1a.lifecyclephases.example.com"
     "kubernetes.io/cluster/lifecyclephases.example.com" = "owned"
   }
-  vpc = true
 }
 
 resource "aws_internet_gateway" "lifecyclephases-example-com" {
@@ -140,8 +140,6 @@ resource "aws_subnet" "us-test-1a-lifecyclephases-example-com" {
     "KubernetesCluster"                                 = "lifecyclephases.example.com"
     "Name"                                              = "us-test-1a.lifecyclephases.example.com"
     "SubnetType"                                        = "Private"
-    "kops.k8s.io/instance-group/master-us-test-1a"      = "true"
-    "kops.k8s.io/instance-group/nodes"                  = "true"
     "kubernetes.io/cluster/lifecyclephases.example.com" = "owned"
     "kubernetes.io/role/internal-elb"                   = "1"
   }
@@ -157,7 +155,6 @@ resource "aws_subnet" "utility-us-test-1a-lifecyclephases-example-com" {
     "KubernetesCluster"                                 = "lifecyclephases.example.com"
     "Name"                                              = "utility-us-test-1a.lifecyclephases.example.com"
     "SubnetType"                                        = "Utility"
-    "kops.k8s.io/instance-group/bastion"                = "true"
     "kubernetes.io/cluster/lifecyclephases.example.com" = "owned"
     "kubernetes.io/role/elb"                            = "1"
   }
@@ -196,7 +193,7 @@ terraform {
   required_providers {
     aws = {
       "source"  = "hashicorp/aws"
-      "version" = ">= 4.0.0"
+      "version" = ">= 5.0.0"
     }
   }
 }

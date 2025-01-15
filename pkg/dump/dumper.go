@@ -46,11 +46,14 @@ type logDumper struct {
 }
 
 // NewLogDumper is the constructor for a logDumper
-func NewLogDumper(clusterName string, sshConfig *ssh.ClientConfig, keyRing agent.Agent, artifactsDir string) *logDumper {
+func NewLogDumper(bastionAddress string, sshConfig *ssh.ClientConfig, keyRing agent.Agent, artifactsDir string) *logDumper {
 	sshClientFactory := &sshClientFactoryImplementation{
-		bastion:   "bastion." + clusterName,
 		keyRing:   keyRing,
 		sshConfig: sshConfig,
+	}
+	if bastionAddress != "" {
+		log.Printf("detected a bastion instance, with the address: %s", bastionAddress)
+		sshClientFactory.bastion = bastionAddress
 	}
 
 	d := &logDumper{
@@ -101,38 +104,48 @@ func NewLogDumper(clusterName string, sshConfig *ssh.ClientConfig, keyRing agent
 // if the IPs are not found from kubectl get nodes, then these will be dumped also.
 // This allows for dumping log on nodes even if they don't register as a kubernetes
 // node, or if a node fails to register, or if the whole cluster fails to start.
-func (d *logDumper) DumpAllNodes(ctx context.Context, nodes corev1.NodeList, additionalIPs, additionalPrivateIPs []string) error {
-	var dumped []*corev1.Node
+func (d *logDumper) DumpAllNodes(ctx context.Context, nodes corev1.NodeList, maxNodesToDump int, additionalIPs, additionalPrivateIPs []string) error {
+	var special, regular, dumped []*corev1.Node
 
+	log.Printf("starting to dump %d nodes fetched through the Kubernetes APIs", len(nodes.Items))
 	for i := range nodes.Items {
-		if ctx.Err() != nil {
-			log.Printf("stopping dumping nodes: %v", ctx.Err())
-			return ctx.Err()
-		}
-
 		node := &nodes.Items[i]
 
-		ip := ""
-		privateIP := ""
-		for _, address := range node.Status.Addresses {
-			if address.Type == "ExternalIP" {
-				ip = address.Address
-				break
-			} else if address.Type == "InternalIP" {
-				if privateIP == "" {
-					privateIP = address.Address
-				}
-			}
+		if _, ok := node.Labels["node-role.kubernetes.io/master"]; ok {
+			special = append(special, node)
+			continue
+		}
+		if _, ok := node.Labels["node-role.kubernetes.io/control-plane"]; ok {
+			special = append(special, node)
+			continue
+		}
+		if _, ok := node.Labels["node-role.kubernetes.io/api-server"]; ok {
+			special = append(special, node)
+			continue
 		}
 
-		var err error
-		if ip != "" {
-			err = d.dumpNode(ctx, node.Name, ip, false)
-		} else {
-			err = d.dumpNode(ctx, node.Name, privateIP, true)
-		}
+		regular = append(regular, node)
+	}
+
+	for i := range special {
+		node := special[i]
+		err := d.dumpRegistered(ctx, node)
 		if err != nil {
-			log.Printf("could not dump node %s (%s): %v", node.Name, ip, err)
+			log.Printf("could not dump node %s: %v", node.Name, err)
+		} else {
+			dumped = append(dumped, node)
+		}
+	}
+
+	for i := range regular {
+		if len(dumped) >= maxNodesToDump {
+			log.Printf("stopping dumping nodes: %d nodes dumped", maxNodesToDump)
+			return nil
+		}
+		node := regular[i]
+		err := d.dumpRegistered(ctx, node)
+		if err != nil {
+			log.Printf("could not dump node %s: %v", node.Name, err)
 		} else {
 			dumped = append(dumped, node)
 		}
@@ -140,6 +153,10 @@ func (d *logDumper) DumpAllNodes(ctx context.Context, nodes corev1.NodeList, add
 
 	notDumped := findInstancesNotDumped(additionalIPs, dumped)
 	for _, ip := range notDumped {
+		if len(dumped) >= maxNodesToDump {
+			log.Printf("stopping dumping nodes: %d nodes dumped", maxNodesToDump)
+			return nil
+		}
 		err := d.dumpNotRegistered(ctx, ip, false)
 		if err != nil {
 			return err
@@ -148,6 +165,10 @@ func (d *logDumper) DumpAllNodes(ctx context.Context, nodes corev1.NodeList, add
 
 	notDumped = findInstancesNotDumped(additionalPrivateIPs, dumped)
 	for _, ip := range notDumped {
+		if len(dumped) >= maxNodesToDump {
+			log.Printf("stopping dumping nodes: %d nodes dumped", maxNodesToDump)
+			return nil
+		}
 		err := d.dumpNotRegistered(ctx, ip, true)
 		if err != nil {
 			return err
@@ -155,6 +176,31 @@ func (d *logDumper) DumpAllNodes(ctx context.Context, nodes corev1.NodeList, add
 	}
 
 	return nil
+}
+
+func (d *logDumper) dumpRegistered(ctx context.Context, node *corev1.Node) error {
+	if ctx.Err() != nil {
+		log.Printf("stopping dumping nodes: %v", ctx.Err())
+		return ctx.Err()
+	}
+
+	var publicIP, privateIP string
+	for _, address := range node.Status.Addresses {
+		if address.Type == "ExternalIP" {
+			publicIP = address.Address
+			break
+		} else if address.Type == "InternalIP" {
+			if privateIP == "" {
+				privateIP = address.Address
+			}
+		}
+	}
+
+	if publicIP != "" {
+		return d.dumpNode(ctx, node.Name, publicIP, false)
+	} else {
+		return d.dumpNode(ctx, node.Name, privateIP, true)
+	}
 }
 
 func (d *logDumper) dumpNotRegistered(ctx context.Context, ip string, useBastion bool) error {
@@ -297,6 +343,21 @@ func (n *logDumperNode) dump(ctx context.Context) []error {
 		errors = append(errors, err)
 	}
 	if err := n.shellToFile(ctx, "sudo iptables -t filter --list-rules", filepath.Join(n.dir, "iptables-filter.log")); err != nil {
+		errors = append(errors, err)
+	}
+	if err := n.shellToFile(ctx, "sudo nft list ruleset", filepath.Join(n.dir, "nftables-ruleset.log")); err != nil {
+		errors = append(errors, err)
+	}
+	if err := n.shellToFile(ctx, "ip route show table all", filepath.Join(n.dir, "ip-routes.log")); err != nil {
+		errors = append(errors, err)
+	}
+	if err := n.shellToFile(ctx, "ip rule list", filepath.Join(n.dir, "ip-rules.log")); err != nil {
+		errors = append(errors, err)
+	}
+	if err := n.shellToFile(ctx, "ip -s link", filepath.Join(n.dir, "ip-link.log")); err != nil {
+		errors = append(errors, err)
+	}
+	if err := n.shellToFile(ctx, "ss -s", filepath.Join(n.dir, "netstat.log")); err != nil {
 		errors = append(errors, err)
 	}
 
@@ -489,7 +550,7 @@ func (f *sshClientFactoryImplementation) Dial(ctx context.Context, host string, 
 	}
 	addr = net.JoinHostPort(addr, "22")
 	d := net.Dialer{
-		Timeout: 15 * time.Second,
+		Timeout: 5 * time.Second,
 	}
 	conn, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {

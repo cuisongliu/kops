@@ -27,7 +27,7 @@ import (
 	"io"
 	"sort"
 
-	"gopkg.in/square/go-jose.v2"
+	"github.com/go-jose/go-jose/v4"
 	"k8s.io/klog/v2"
 	"k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/upup/pkg/fi"
@@ -87,13 +87,40 @@ func (b *IssuerDiscoveryModelBuilder) Build(c *fi.CloudupModelBuilderContext) er
 
 	switch discoveryStore := discoveryStore.(type) {
 	case *vfs.S3Path:
-		isPublic, err := discoveryStore.IsBucketPublic(ctx)
+		discoveryStoreURL, err := discoveryStore.GetHTTPsUrl(b.Cluster.Spec.IsIPv6Only())
 		if err != nil {
-			return fmt.Errorf("checking if bucket was public: %w", err)
+			return err
 		}
-		if !isPublic {
-			klog.Infof("serviceAccountIssuers bucket %q is not public; will use object ACL", discoveryStore.Bucket())
-			publicFileACL = fi.PtrTo(true)
+		if discoveryStoreURL == fi.ValueOf(b.Cluster.Spec.KubeAPIServer.ServiceAccountIssuer) {
+			// Using Amazon S3 static website hosting requires public access
+			isPublic, err := discoveryStore.IsBucketPublic(ctx)
+			if err != nil {
+				return fmt.Errorf("checking if bucket was public: %w", err)
+			}
+			if !isPublic {
+				klog.Infof("serviceAccountIssuers bucket %q is not public; will use object ACL", discoveryStore.Bucket())
+				publicFileACL = fi.PtrTo(true)
+			}
+		} else {
+			klog.Infof("using user managed serviceAccountIssuers")
+		}
+	case *vfs.GSPath:
+		discoveryStoreURL, err := discoveryStore.GetHTTPsUrl()
+		if err != nil {
+			return err
+		}
+		if discoveryStoreURL == fi.ValueOf(b.Cluster.Spec.KubeAPIServer.ServiceAccountIssuer) {
+			// Using Google Cloud Storage requires public access
+			isPublic, err := discoveryStore.IsBucketPublic(ctx)
+			if err != nil {
+				return fmt.Errorf("checking if bucket was public: %w", err)
+			}
+			if !isPublic {
+				klog.Infof("serviceAccountIssuers bucket %q is not public; will use object ACL", discoveryStore.Bucket())
+				publicFileACL = fi.PtrTo(true)
+			}
+		} else {
+			klog.Infof("using user managed serviceAccountIssuers")
 		}
 
 	case *vfs.MemFSPath:

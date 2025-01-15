@@ -26,44 +26,48 @@ import (
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/pkg/apis/nodeup"
+	"k8s.io/kops/pkg/assets"
 	"k8s.io/kops/pkg/model/iam"
+	"k8s.io/kops/pkg/model/resources"
 	"k8s.io/kops/pkg/testutils/golden"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/fitasks"
 	"k8s.io/kops/util/pkg/architectures"
 	"k8s.io/kops/util/pkg/hashing"
-	"k8s.io/kops/util/pkg/mirrors"
 )
 
 func Test_ProxyFunc(t *testing.T) {
-	b := &BootstrapScript{}
-	ps := &kops.EgressProxySpec{
+	cluster := &kops.Cluster{}
+	cluster.Spec.Networking.EgressProxy = &kops.EgressProxySpec{
 		HTTPProxy: kops.HTTPProxy{
 			Host: "example.com",
 			Port: 80,
 		},
 	}
 
-	script, err := b.createProxyEnv(ps)
+	nodeupScript := &resources.NodeUpScript{}
+	nodeupScript.WithProxyEnv(cluster)
+
+	script, err := nodeupScript.ProxyEnv()
 	if err != nil {
-		t.Fatalf("createProxyEnv failed: %v", err)
+		t.Fatalf("ProxyEnv failed: %v", err)
 	}
 	if script == "" {
 		t.Fatalf("script cannot be empty")
 	}
 
-	if !strings.HasPrefix(script, "echo \"http_proxy=http://example.com:80\" >> /etc/environment") {
+	if !strings.Contains(script, "echo \"http_proxy=http://example.com:80\"") {
 		t.Fatalf("script not setting http_proxy properly")
 	}
 
-	ps.ProxyExcludes = "www.google.com,www.kubernetes.io"
+	cluster.Spec.Networking.EgressProxy.ProxyExcludes = "www.google.com,www.kubernetes.io"
 
-	script, err = b.createProxyEnv(ps)
+	script, err = nodeupScript.ProxyEnv()
 	if err != nil {
-		t.Fatalf("createProxyEnv failed: %v", err)
+		t.Fatalf("ProxyEnv failed: %v", err)
 	}
 
-	if !strings.Contains(script, "no_proxy="+ps.ProxyExcludes) {
+	if !strings.Contains(script, "no_proxy="+cluster.Spec.Networking.EgressProxy.ProxyExcludes) {
 		t.Fatalf("script not setting no_proxy properly")
 	}
 }
@@ -72,7 +76,7 @@ type nodeupConfigBuilder struct {
 	cluster *kops.Cluster
 }
 
-func (n *nodeupConfigBuilder) BuildConfig(ig *kops.InstanceGroup, apiserverAdditionalIPs []string, keysets map[string]*fi.Keyset) (*nodeup.Config, *nodeup.BootConfig, error) {
+func (n *nodeupConfigBuilder) BuildConfig(ig *kops.InstanceGroup, wellKnownAddresses WellKnownAddresses, keysets map[string]*fi.Keyset) (*nodeup.Config, *nodeup.BootConfig, error) {
 	config, bootConfig := nodeup.NewConfig(n.cluster, ig)
 	return config, bootConfig, nil
 }
@@ -166,11 +170,12 @@ func TestBootstrapUserData(t *testing.T) {
 
 		bs := &BootstrapScriptBuilder{
 			KopsModelContext: &KopsModelContext{
-				IAMModelContext: iam.IAMModelContext{Cluster: cluster},
-				InstanceGroups:  []*kops.InstanceGroup{group},
+				IAMModelContext:   iam.IAMModelContext{Cluster: cluster},
+				AllInstanceGroups: []*kops.InstanceGroup{group},
+				InstanceGroups:    []*kops.InstanceGroup{group},
 			},
 			NodeUpConfigBuilder: &nodeupConfigBuilder{cluster: cluster},
-			NodeUpAssets: map[architectures.Architecture]*mirrors.MirroredAsset{
+			NodeUpAssets: map[architectures.Architecture]*assets.MirroredAsset{
 				architectures.ArchitectureAmd64: {
 					Locations: []string{"nodeup-amd64-1", "nodeup-amd64-2"},
 					Hash:      hashing.MustFromString("833723369ad345a88dd85d61b1e77336d56e61b864557ded71b92b6e34158e6a"),
@@ -241,12 +246,8 @@ func makeTestCluster(hookSpecRoles []kops.InstanceGroupRole, fileAssetSpecRoles 
 					Image:   "gcr.io/etcd-development/etcd:v3.1.11",
 				},
 			},
-			ContainerRuntime: "docker",
 			Containerd: &kops.ContainerdConfig{
 				LogLevel: fi.PtrTo("info"),
-			},
-			Docker: &kops.DockerConfig{
-				LogLevel: fi.PtrTo("INFO"),
 			},
 			KubeAPIServer: &kops.KubeAPIServerConfig{
 				Image: "CoreOS",

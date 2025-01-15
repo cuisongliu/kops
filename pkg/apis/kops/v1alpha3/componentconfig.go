@@ -17,6 +17,7 @@ limitations under the License.
 package v1alpha3
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -57,6 +58,8 @@ type KubeletConfigSpec struct {
 	HostnameOverride string `json:"-"`
 	// PodInfraContainerImage is the image whose network/ipc containers in each pod will use.
 	PodInfraContainerImage string `json:"podInfraContainerImage,omitempty" flag:"pod-infra-container-image"`
+	// SeccompDefault enables the use of `RuntimeDefault` as the default seccomp profile for all workloads.
+	SeccompDefault *bool `json:"seccompDefault,omitempty" flag:"seccomp-default"`
 	// SeccompProfileRoot is the directory path for seccomp profiles.
 	SeccompProfileRoot *string `json:"seccompProfileRoot,omitempty" flag:"seccomp-profile-root"`
 	// AllowPrivileged was removed.
@@ -115,10 +118,7 @@ type KubeletConfigSpec struct {
 	ReconcileCIDR *bool `json:"-"`
 	// registerSchedulable is not admin-configurable.
 	RegisterSchedulable *bool `json:"-"`
-	//// SerializeImagePulls when enabled, tells the Kubelet to pull images one
-	//// at a time. We recommend *not* changing the default value on nodes that
-	//// run docker daemon with version  < 1.9 or an Aufs storage backend.
-	//// Issue #10959 has more details.
+	// SerializeImagePulls when enabled, tells the Kubelet to pull images one at a time.
 	SerializeImagePulls *bool `json:"serializeImagePulls,omitempty" flag:"serialize-image-pulls"`
 	// NodeLabels is not admin-configurable.
 	NodeLabels map[string]string `json:"-"`
@@ -130,6 +130,12 @@ type KubeletConfigSpec struct {
 	// and overrides the default MTU for cases where it cannot be automatically
 	// computed (such as IPSEC).
 	NetworkPluginMTU *int32 `json:"networkPluginMTU,omitempty" flag:"network-plugin-mtu"`
+	// imageMinimumGCAge is the minimum age for an unused image before it is garbage collected. Default: "2m"
+	ImageMinimumGCAge *string `json:"imageMinimumGCAge,omitempty" flag:"image-minimum-gc-age"`
+	// imageMaximumGCAge is the maximum age an image can be unused before it is garbage collected.
+	// The default of this field is "0s", which disables this field--meaning images won't be garbage
+	// collected based on being unused for too long. Default: "0s" (disabled)
+	ImageMaximumGCAge *string `json:"imageMaximumGCAge,omitempty" flag:"image-maximum-gc-age"`
 	// ImageGCHighThresholdPercent is the percent of disk usage after which
 	// image garbage collection is always run.
 	ImageGCHighThresholdPercent *int32 `json:"imageGCHighThresholdPercent,omitempty" flag:"image-gc-high-threshold"`
@@ -223,6 +229,8 @@ type KubeletConfigSpec struct {
 	EnableCadvisorJsonEndpoints *bool `json:"enableCadvisorJsonEndpoints,omitempty" flag:"enable-cadvisor-json-endpoints"`
 	// PodPidsLimit is the maximum number of pids in any pod.
 	PodPidsLimit *int64 `json:"podPidsLimit,omitempty" flag:"pod-max-pids"`
+	// ExperimentalAllocatableIgnoreEviction enables ignoring Hard Eviction Thresholds while calculating Node Allocatable
+	ExperimentalAllocatableIgnoreEviction *bool `json:"experimentalAllocatableIgnoreEviction,omitempty" flag:"experimental-allocatable-ignore-eviction"`
 
 	// ShutdownGracePeriod specifies the total duration that the node should delay the shutdown by.
 	// Default: 30s
@@ -230,6 +238,9 @@ type KubeletConfigSpec struct {
 	// ShutdownGracePeriodCriticalPods specifies the duration used to terminate critical pods during a node shutdown.
 	// Default: 10s
 	ShutdownGracePeriodCriticalPods *metav1.Duration `json:"shutdownGracePeriodCriticalPods,omitempty"`
+	// MemorySwapBehavior defines how swap is used by container workloads.
+	// Supported values: LimitedSwap, "UnlimitedSwap.
+	MemorySwapBehavior string `json:"memorySwapBehavior,omitempty"`
 }
 
 // KubeProxyConfig defines the configuration for a proxy
@@ -277,7 +288,7 @@ type KubeProxyConfig struct {
 
 // KubeAPIServerConfig defines the configuration for the kube api
 type KubeAPIServerConfig struct {
-	// Image is the docker container used
+	// Image is the container image used.
 	Image string `json:"image,omitempty"`
 	// DisableBasicAuth removes the --basic-auth-file flag
 	DisableBasicAuth *bool `json:"disableBasicAuth,omitempty"`
@@ -389,6 +400,9 @@ type KubeAPIServerConfig struct {
 	// OIDCCAFile if set, the OpenID server's certificate will be verified by one
 	// of the authorities in the oidc-ca-file
 	OIDCCAFile *string `json:"oidcCAFile,omitempty" flag:"oidc-ca-file"`
+	// AuthenticationConfigFile is the location of the authentication-config
+	// this option is mutually exclusive with all OIDC options
+	AuthenticationConfigFile string `json:"authenticationConfigFile,omitempty" flag:"authentication-config"`
 	// ProxyClientCertFile is not admin-configurable.
 	ProxyClientCertFile *string `json:"-"`
 	// ProxyClientKeyFile is not admin-configurable.
@@ -472,8 +486,13 @@ type KubeAPIServerConfig struct {
 	// Currently only honored by the watch request handler
 	MinRequestTimeout *int32 `json:"minRequestTimeout,omitempty" flag:"min-request-timeout"`
 
-	// Memory limit for apiserver in MB (used to configure sizes of caches, etc.)
-	TargetRamMB int32 `json:"targetRamMB,omitempty" flag:"target-ram-mb" flag-empty:"0"`
+	// Used to disable watch caching in the apiserver, defaults to enabling caching by omission
+	WatchCache *bool `json:"watchCache,omitempty" flag:"watch-cache"`
+
+	// Set the watch-cache-sizes parameter for the apiserver
+	// The only meaningful value is setting to 0, which disable caches for specific object types.
+	// Setting any values other than 0 for a resource will yield no effect since the caches are dynamic
+	WatchCacheSizes []string `json:"watchCacheSizes,omitempty" flag:"watch-cache-sizes" flag-empty:"0"`
 
 	// File containing PEM-encoded x509 RSA or ECDSA private or public keys, used to verify ServiceAccount tokens.
 	// The specified file can contain multiple keys, and the flag can be specified multiple times with different files.
@@ -487,6 +506,9 @@ type KubeAPIServerConfig struct {
 	// Identifier of the service account token issuer. The issuer will assert this identifier
 	// in "iss" claim of issued tokens. This value is a string or URI.
 	ServiceAccountIssuer *string `json:"serviceAccountIssuer,omitempty" flag:"service-account-issuer"`
+
+	// AdditionalServiceAccountIssuers can contain additional service account token issuers.
+	AdditionalServiceAccountIssuers []string `json:"additionalServiceAccountIssuers,omitempty"`
 
 	// ServiceAccountJWKSURI overrides the path for the jwks document; this is useful when we are republishing the service account discovery information elsewhere.
 	ServiceAccountJWKSURI *string `json:"serviceAccountJWKSURI,omitempty" flag:"service-account-jwks-uri"`
@@ -514,6 +536,8 @@ type KubeAPIServerConfig struct {
 
 	// EnableProfiling enables profiling via web interface host:port/debug/pprof/
 	EnableProfiling *bool `json:"enableProfiling,omitempty" flag:"profiling"`
+	// EnableContentionProfiling enables block profiling, if profiling is enabled
+	EnableContentionProfiling *bool `json:"enableContentionProfiling,omitempty" flag:"contention-profiling"`
 
 	// CorsAllowedOrigins is a list of origins for CORS. An allowed origin can be a regular
 	// expression to support subdomain matching. If this list is empty CORS will not be enabled.
@@ -523,6 +547,11 @@ type KubeAPIServerConfig struct {
 	DefaultNotReadyTolerationSeconds *int64 `json:"defaultNotReadyTolerationSeconds,omitempty" flag:"default-not-ready-toleration-seconds"`
 	// DefaultUnreachableTolerationSeconds
 	DefaultUnreachableTolerationSeconds *int64 `json:"defaultUnreachableTolerationSeconds,omitempty" flag:"default-unreachable-toleration-seconds"`
+
+	// Env allows users to pass in env variables to the apiserver container.
+	// This can be useful to control some environment runtime settings, such as GOMEMLIMIT and GOCG to tweak the memory settings of the apiserver
+	// This also allows the flexibility for adding any other variables for future use cases
+	Env []corev1.EnvVar `json:"env,omitempty"`
 }
 
 // KubeControllerManagerConfig is the configuration for the controller
@@ -537,7 +566,7 @@ type KubeControllerManagerConfig struct {
 	LogLevel int32 `json:"logLevel,omitempty" flag:"v" flag-empty:"0"`
 	// ServiceAccountPrivateKeyFile is not admin-configurable.
 	ServiceAccountPrivateKeyFile string `json:"-"`
-	// Image is the docker image to use
+	// Image is the container image to use.
 	Image string `json:"image,omitempty"`
 	// CloudProvider is the provider for cloud services.
 	CloudProvider string `json:"cloudProvider,omitempty" flag:"cloud-provider"`
@@ -607,9 +636,11 @@ type KubeControllerManagerConfig struct {
 	// HorizontalPodAutoscalerUseRestClients determines if the new-style clients
 	// should be used if support for custom metrics is enabled.
 	HorizontalPodAutoscalerUseRestClients *bool `json:"horizontalPodAutoscalerUseRestClients,omitempty" flag:"horizontal-pod-autoscaler-use-rest-clients"`
-	// ExperimentalClusterSigningDuration is the duration that determines
-	// the length of duration that the signed certificates will be given. (default 8760h0m0s)
+	// ExperimentalClusterSigningDuration is the max length of duration that the signed certificates will be given. (default 365*24h)
+	// Deprecated - use cluster-signing-duration instead
 	ExperimentalClusterSigningDuration *metav1.Duration `json:"experimentalClusterSigningDuration,omitempty" flag:"experimental-cluster-signing-duration"`
+	// ClusterSigningDuration is the max length of duration that the signed certificates will be given. (default 365*24h)
+	ClusterSigningDuration *metav1.Duration `json:"ClusterSigningDuration,omitempty" flag:"cluster-signing-duration"`
 	// FeatureGates is set of key=value pairs that describe feature gates for alpha/experimental features.
 	FeatureGates map[string]string `json:"featureGates,omitempty" flag:"feature-gates"`
 	// TLSCertFile is the file containing the TLS server certificate.
@@ -644,6 +675,10 @@ type KubeControllerManagerConfig struct {
 	// The number of replicationcontroller objects that are allowed to sync concurrently.
 	// This only works on kubernetes >= 1.14
 	ConcurrentRCSyncs *int32 `json:"concurrentRCSyncs,omitempty" flag:"concurrent-rc-syncs"`
+	// The number of horizontal pod autoscaler objects that are allowed to sync concurrently (default 5).
+	ConcurrentHorizontalPodAustoscalerSyncs *int32 `json:"concurrentHorizontalPodAustoscalerSyncs,omitempty" flag:"concurrent-horizontal-pod-autoscaler-syncs"`
+	// The number of job objects that are allowed to sync concurrently (default 5).
+	ConcurrentJobSyncs *int32 `json:"concurrentJobSyncs,omitempty" flag:"concurrent-job-syncs"`
 	// AuthenticationKubeconfig is the path to an Authentication Kubeconfig
 	AuthenticationKubeconfig string `json:"authenticationKubeconfig,omitempty" flag:"authentication-kubeconfig"`
 	// AuthorizationKubeconfig is the path to an Authorization Kubeconfig
@@ -652,11 +687,30 @@ type KubeControllerManagerConfig struct {
 	AuthorizationAlwaysAllowPaths []string `json:"authorizationAlwaysAllowPaths,omitempty" flag:"authorization-always-allow-paths"`
 	// ExternalCloudVolumePlugin is a fallback mechanism that allows a legacy, in-tree cloudprovider to be used for volume plugins even when an external cloud controller manager is being used.  This can be used instead of installing CSI.  The value should be the same as is used for the --cloud-provider flag, i.e. "aws".
 	ExternalCloudVolumePlugin string `json:"externalCloudVolumePlugin,omitempty" flag:"external-cloud-volume-plugin"`
+	// The length of endpoint updates batching period. Processing of pod changes will be delayed by this duration
+	// to join them with potential upcoming updates and reduce the overall number of endpoints updates.
+	// Larger number = higher endpoint programming latency, but lower number of endpoints revision generated
+	EndpointUpdatesBatchPeriod *metav1.Duration `json:"endpointUpdatesBatchPeriod,omitempty" flag:"endpoint-updates-batch-period"`
+	// The length of endpoint slice updates batching period. Processing of pod changes will be delayed by this duration
+	// to join them with potential upcoming updates and reduce the overall number of endpoints updates.
+	// Larger number = higher endpoint programming latency, but lower number of endpoints revision generated.
+	EndpointSliceUpdatesBatchPeriod *metav1.Duration `json:"endpointSliceUpdatesBatchPeriod,omitempty" flag:"endpointslice-updates-batch-period"`
 
 	// EnableProfiling enables profiling via web interface host:port/debug/pprof/
 	EnableProfiling *bool `json:"enableProfiling,omitempty" flag:"profiling"`
+	// EnableContentionProfiling enables block profiling, if profiling is enabled
+	EnableContentionProfiling *bool `json:"enableContentionProfiling,omitempty" flag:"contention-profiling"`
 	// EnableLeaderMigration enables controller leader migration.
 	EnableLeaderMigration *bool `json:"enableLeaderMigration,omitempty" flag:"enable-leader-migration"`
+
+	// CPURequest, cpu request compute resource for kube-controler-manager. Defaults to "100m"
+	CPURequest *resource.Quantity `json:"cpuRequest,omitempty"`
+	// CPULimit, cpu limit compute resource for kube-controler-manager e.g. "500m"
+	CPULimit *resource.Quantity `json:"cpuLimit,omitempty"`
+	// MemoryRequest, memory request compute resource for kube-controler-manager e.g. "30Mi"
+	MemoryRequest *resource.Quantity `json:"memoryRequest,omitempty"`
+	// MemoryLimit, memory limit compute resource for kube-controler-manager e.g. "30Mi"
+	MemoryLimit *resource.Quantity `json:"memoryLimit,omitempty"`
 }
 
 // CloudControllerManagerConfig is the configuration of the cloud controller
@@ -695,6 +749,8 @@ type CloudControllerManagerConfig struct {
 	CPURequest *resource.Quantity `json:"cpuRequest,omitempty"`
 	// NodeStatusUpdateFrequency is the duration between node status updates. (default: 5m)
 	NodeStatusUpdateFrequency *metav1.Duration `json:"nodeStatusUpdateFrequency,omitempty" flag:"node-status-update-frequency"`
+	// ConcurrentNodeSyncs is the number of workers concurrently synchronizing nodes. (default: 1)
+	ConcurrentNodeSyncs *int32 `json:"concurrentNodeSyncs,omitempty" flag:"concurrent-node-syncs"`
 }
 
 // KubeSchedulerConfig is the configuration for the kube-scheduler
@@ -707,11 +763,12 @@ type KubeSchedulerConfig struct {
 	LogFormat string `json:"logFormat,omitempty" flag:"logging-format" flag-empty:"text"`
 	// LogLevel is the logging level
 	LogLevel int32 `json:"logLevel,omitempty" flag:"v"`
-	// Image is the docker image to use
+	// Image is the container image to use.
 	Image string `json:"image,omitempty"`
 	// LeaderElection defines the configuration of leader election client.
 	LeaderElection *LeaderElectionConfiguration `json:"leaderElection,omitempty"`
 	// UsePolicyConfigMap enable setting the scheduler policy from a configmap
+	// Deprecated - use KubeSchedulerConfiguration instead
 	UsePolicyConfigMap *bool `json:"usePolicyConfigMap,omitempty"`
 	// FeatureGates is set of key=value pairs that describe feature gates for alpha/experimental features.
 	FeatureGates map[string]string `json:"featureGates,omitempty" flag:"feature-gates"`
@@ -724,6 +781,10 @@ type KubeSchedulerConfig struct {
 	Qps *resource.Quantity `json:"qps,omitempty"`
 	// Burst sets the maximum qps to send to apiserver after the burst quota is exhausted
 	Burst int32 `json:"burst,omitempty"`
+	// KubeAPIQPS QPS to use while talking with kubernetes apiserver. (default 20)
+	KubeAPIQPS *resource.Quantity `json:"kubeAPIQPS,omitempty" flag:"kube-api-qps"`
+	// KubeAPIBurst Burst to use while talking with kubernetes apiserver. (default 30)
+	KubeAPIBurst *int32 `json:"kubeAPIBurst,omitempty" flag:"kube-api-burst"`
 	// AuthenticationKubeconfig is the path to an Authentication Kubeconfig
 	AuthenticationKubeconfig string `json:"authenticationKubeconfig,omitempty" flag:"authentication-kubeconfig"`
 	// AuthorizationKubeconfig is the path to an Authorization Kubeconfig
@@ -733,10 +794,21 @@ type KubeSchedulerConfig struct {
 
 	// EnableProfiling enables profiling via web interface host:port/debug/pprof/
 	EnableProfiling *bool `json:"enableProfiling,omitempty" flag:"profiling"`
+	// EnableContentionProfiling enables block profiling, if profiling is enabled
+	EnableContentionProfiling *bool `json:"enableContentionProfiling,omitempty" flag:"contention-profiling"`
 	// TLSCertFile is the file containing the TLS server certificate.
 	TLSCertFile *string `json:"tlsCertFile,omitempty" flag:"tls-cert-file"`
 	// TLSPrivateKeyFile is the file containing the private key for the TLS server certificate.
 	TLSPrivateKeyFile string `json:"tlsPrivateKeyFile,omitempty" flag:"tls-private-key-file"`
+
+	// CPURequest, cpu request compute resource for scheduler. Defaults to "100m"
+	CPURequest *resource.Quantity `json:"cpuRequest,omitempty"`
+	// CPULimit, cpu limit compute resource for scheduler e.g. "500m"
+	CPULimit *resource.Quantity `json:"cpuLimit,omitempty"`
+	// MemoryRequest, memory request compute resource for scheduler e.g. "30Mi"
+	MemoryRequest *resource.Quantity `json:"memoryRequest,omitempty"`
+	// MemoryLimit, memory limit compute resource for scheduler e.g. "30Mi"
+	MemoryLimit *resource.Quantity `json:"memoryLimit,omitempty"`
 }
 
 // LeaderElectionConfiguration defines the configuration of leader election
@@ -840,6 +912,8 @@ type OpenstackSpec struct {
 type AzureSpec struct {
 	// SubscriptionID specifies the subscription used for the cluster installation.
 	SubscriptionID string `json:"subscriptionID,omitempty"`
+	// StorageAccountID specifies the storage account used for the cluster installation.
+	StorageAccountID string `json:"storageAccountID,omitempty"`
 	// TenantID is the ID of the tenant that the cluster is deployed in.
 	TenantID string `json:"tenantID"`
 	// ResourceGroupName specifies the name of the resource group
@@ -867,9 +941,8 @@ type CloudConfiguration struct {
 
 // EBSCSIDriverSpec is the config for the AWS EBS CSI driver
 type EBSCSIDriverSpec struct {
-	// Enabled enables the AWS EBS CSI driver
-	// Default: false
-	Enabled *bool `json:"enabled,omitempty"`
+	// Enabled enables the AWS EBS CSI driver.
+	Enabled *bool `json:"-"`
 
 	// Managed controls if aws-ebs-csi-driver is manged and deployed by kOps.
 	// The deployment of aws-ebs-csi-driver is skipped if this is set to false.
@@ -878,6 +951,15 @@ type EBSCSIDriverSpec struct {
 	// Version is the container image tag used.
 	// Default: The latest stable release which is compatible with your Kubernetes version
 	Version *string `json:"version,omitempty"`
+
+	// KubeAPIQPS QPS to use while talking with Kubernetes API server. (default 20)
+	KubeAPIQPS *resource.Quantity `json:"kubeAPIQPS,omitempty"`
+	// KubeAPIBurst Burst to use while talking with Kubernetes API server. (default 100)
+	KubeAPIBurst *int32 `json:"kubeAPIBurst,omitempty"`
+
+	// HostNetwork can be used for large clusters for faster access to node info via instance metadata.
+	// Default: false
+	HostNetwork bool `json:"hostNetwork,omitempty"`
 
 	// VolumeAttachLimit is the maximum number of volumes attachable per node.
 	// If specified, the limit applies to all nodes.
@@ -906,6 +988,10 @@ type SnapshotControllerConfig struct {
 
 // NodeTerminationHandlerSpec determines the node termination handler configuration.
 type NodeTerminationHandlerSpec struct {
+	// DeleteSQSMsgIfNodeNotFound makes node termination handler delete the SQS Message from the SQS Queue if the targeted node is not found.
+	// Only used in Queue Processor mode.
+	// Default: false
+	DeleteSQSMsgIfNodeNotFound *bool `json:"deleteSQSMsgIfNodeNotFound,omitempty"`
 	// Enabled enables the node termination handler.
 	// Default: true
 	Enabled *bool `json:"enabled,omitempty"`
@@ -942,6 +1028,18 @@ type NodeTerminationHandlerSpec struct {
 	// Default: true
 	ExcludeFromLoadBalancers *bool `json:"excludeFromLoadBalancers,omitempty"`
 
+	// PodTerminationGracePeriod is the time in seconds given to each pod to terminate gracefully.
+	// If negative, the default value specified in the pod will be used, which defaults to 30 seconds if not specified for the pod.
+	// Default: -1
+	PodTerminationGracePeriod *int32 `json:"podTerminationGracePeriod,omitempty"`
+
+	// TaintNode makes node termination handler taint nodes when an interruption event occurs.
+	// Default: false
+	TaintNode *bool `json:"taintNode,omitempty"`
+
+	// MemoryLimit of NodeTerminationHandler container.
+	// Default: none
+	MemoryLimit *resource.Quantity `json:"memoryLimit,omitempty"`
 	// MemoryRequest of NodeTerminationHandler container.
 	// Default: 64Mi
 	MemoryRequest *resource.Quantity `json:"memoryRequest,omitempty"`
@@ -950,6 +1048,11 @@ type NodeTerminationHandlerSpec struct {
 	CPURequest *resource.Quantity `json:"cpuRequest,omitempty"`
 	// Version is the container image tag used.
 	Version *string `json:"version,omitempty"`
+
+	// Replaces the default webhook message template.
+	WebhookTemplate *string `json:"webhookTemplate,omitempty"`
+	// If specified, posts event data to URL upon instance interruption action.
+	WebhookURL *string `json:"webhookURL,omitempty"`
 }
 
 // NodeProblemDetector determines the node problem detector configuration.
@@ -957,7 +1060,7 @@ type NodeProblemDetectorConfig struct {
 	// Enabled enables the NodeProblemDetector.
 	// Default: false
 	Enabled *bool `json:"enabled,omitempty"`
-	// Image is the NodeProblemDetector docker container used.
+	// Image is the NodeProblemDetector container image used.
 	Image *string `json:"image,omitempty"`
 
 	// MemoryRequest of NodeProblemDetector container.
@@ -988,6 +1091,9 @@ type ClusterAutoscalerConfig struct {
 	// BalanceSimilarNodeGroups makes the cluster autoscaler treat similar node groups as one.
 	// Default: false
 	BalanceSimilarNodeGroups *bool `json:"balanceSimilarNodeGroups,omitempty"`
+	// EmitPerNodegroupMetrics If true, publishes the node groups min and max metrics count set on the cluster autoscaler.
+	// Default: false
+	EmitPerNodegroupMetrics *bool `json:"emitPerNodegroupMetrics,omitempty"`
 	// AWSUseStaticInstanceList makes the cluster autoscaler to use statically defined set of AWS EC2 Instance List.
 	// Default: false
 	AWSUseStaticInstanceList *bool `json:"awsUseStaticInstanceList,omitempty"`
@@ -997,6 +1103,9 @@ type ClusterAutoscalerConfig struct {
 	// ScaleDownUtilizationThreshold determines the utilization threshold for node scale-down.
 	// Default: 0.5
 	ScaleDownUtilizationThreshold *string `json:"scaleDownUtilizationThreshold,omitempty"`
+	// SkipNodesWithCustomControllerPods makes the cluster autoscaler skip scale-down of nodes with pods owned by custom controllers.
+	// Default: true
+	SkipNodesWithCustomControllerPods *bool `json:"skipNodesWithCustomControllerPods,omitempty"`
 	// SkipNodesWithSystemPods makes the cluster autoscaler skip scale-down of nodes with non-DaemonSet pods in the kube-system namespace.
 	// Default: true
 	SkipNodesWithSystemPods *bool `json:"skipNodesWithSystemPods,omitempty"`
@@ -1018,7 +1127,7 @@ type ClusterAutoscalerConfig struct {
 	// CordonNodeBeforeTerminating should CA cordon nodes before terminating during downscale process
 	// Default: false
 	CordonNodeBeforeTerminating *bool `json:"cordonNodeBeforeTerminating,omitempty"`
-	// Image is the docker container used.
+	// Image is the container image used.
 	// Default: the latest supported image for the specified kubernetes version.
 	Image *string `json:"image,omitempty"`
 	// MemoryRequest of cluster autoscaler container.
@@ -1045,7 +1154,7 @@ type MetricsServerConfig struct {
 	// Enabled enables the metrics server.
 	// Default: false
 	Enabled *bool `json:"enabled,omitempty"`
-	// Image is the docker container used.
+	// Image is the container image used.
 	// Default: the latest supported image for the specified kubernetes version.
 	Image *string `json:"image,omitempty"`
 	// Insecure determines if API server will validate metrics server TLS cert.
@@ -1063,7 +1172,7 @@ type CertManagerConfig struct {
 	// The deployment of cert-manager is skipped if this is set to false.
 	Managed *bool `json:"managed,omitempty"`
 
-	// Image is the docker container used.
+	// Image is the container image used.
 	// Default: the latest supported image for the specified kubernetes version.
 	Image *string `json:"image,omitempty"`
 
@@ -1077,6 +1186,9 @@ type CertManagerConfig struct {
 
 	// HostedZoneIDs is a list of route53 hostedzone IDs that cert-manager will be allowed to do dns-01 validation for
 	HostedZoneIDs []string `json:"hostedZoneIDs,omitempty"`
+
+	// FeatureGates is a list of experimental features that can be enabled or disabled.
+	FeatureGates map[string]bool `json:"featureGates,omitempty"`
 }
 
 // LoadBalancerControllerSpec determines the AWS LB controller configuration.

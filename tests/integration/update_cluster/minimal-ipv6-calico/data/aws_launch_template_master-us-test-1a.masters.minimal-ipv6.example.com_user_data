@@ -32,9 +32,11 @@ function ensure-install-dir() {
 
 # Retry a download until we get it. args: name, sha, urls
 download-or-bust() {
+  echo "== Downloading $1 with hash $2 from $3 =="
   local -r file="$1"
   local -r hash="$2"
-  local -r urls=( $(split-commas "$3") )
+  local -a urls
+  mapfile -t urls < <(split-commas "$3")
 
   if [[ -f "${file}" ]]; then
     if ! validate-hash "${file}" "${hash}"; then
@@ -47,28 +49,28 @@ download-or-bust() {
   while true; do
     for url in "${urls[@]}"; do
       commands=(
-        "curl -f --compressed -Lo "${file}" --connect-timeout 20 --retry 6 --retry-delay 10"
-        "wget --compression=auto -O "${file}" --connect-timeout=20 --tries=6 --wait=10"
-        "curl -f -Lo "${file}" --connect-timeout 20 --retry 6 --retry-delay 10"
-        "wget -O "${file}" --connect-timeout=20 --tries=6 --wait=10"
+        "curl -f --compressed -Lo ${file} --connect-timeout 20 --retry 6 --retry-delay 10"
+        "wget --compression=auto -O ${file} --connect-timeout=20 --tries=6 --wait=10"
+        "curl -f -Lo ${file} --connect-timeout 20 --retry 6 --retry-delay 10"
+        "wget -O ${file} --connect-timeout=20 --tries=6 --wait=10"
       )
       for cmd in "${commands[@]}"; do
-        echo "Attempting download with: ${cmd} {url}"
+        echo "== Downloading ${url} using ${cmd} =="
         if ! (${cmd} "${url}"); then
-          echo "== Download failed with ${cmd} =="
+          echo "== Failed to download ${url} using ${cmd} =="
           continue
         fi
         if ! validate-hash "${file}" "${hash}"; then
-          echo "== Hash validation of ${url} failed. Retrying. =="
+          echo "== Failed to validate hash for ${url} =="
           rm -f "${file}"
         else
-          echo "== Downloaded ${url} (SHA256 = ${hash}) =="
+          echo "== Downloaded ${url} with hash ${hash} =="
           return 0
         fi
       done
     done
 
-    echo "All downloads failed; sleeping before retrying"
+    echo "== All downloads failed; sleeping before retrying =="
     sleep 60
   done
 }
@@ -78,15 +80,15 @@ validate-hash() {
   local -r expected="$2"
   local actual
 
-  actual=$(sha256sum ${file} | awk '{ print $1 }') || true
+  actual=$(sha256sum "${file}" | awk '{ print $1 }') || true
   if [[ "${actual}" != "${expected}" ]]; then
-    echo "== ${file} corrupted, hash ${actual} doesn't match expected ${expected} =="
+    echo "== File ${file} is corrupted; hash ${actual} doesn't match expected ${expected} =="
     return 1
   fi
 }
 
 function split-commas() {
-  echo $1 | tr "," "\n"
+  echo "$1" | tr "," "\n"
 }
 
 function download-release() {
@@ -110,143 +112,17 @@ function download-release() {
 
   chmod +x nodeup
 
-  echo "Running nodeup"
+  echo "== Running nodeup =="
   # We can't run in the foreground because of https://github.com/docker/docker/issues/23793
   ( cd ${INSTALL_DIR}/bin; ./nodeup --install-systemd-unit --conf=${INSTALL_DIR}/conf/kube_env.yaml --v=8  )
 }
 
 ####################################################################################
 
-/bin/systemd-machine-id-setup || echo "failed to set up ensure machine-id configured"
+/bin/systemd-machine-id-setup || echo "== Failed to initialize the machine ID; ensure machine-id configured =="
 
 echo "== nodeup node config starting =="
 ensure-install-dir
-
-cat > conf/cluster_spec.yaml << '__EOF_CLUSTER_SPEC'
-cloudConfig:
-  manageStorageClasses: true
-encryptionConfig: null
-etcdClusters:
-  events:
-    manager:
-      backupRetentionDays: 90
-    version: 3.5.9
-  main:
-    manager:
-      backupRetentionDays: 90
-    version: 3.5.9
-kubeAPIServer:
-  allowPrivileged: true
-  anonymousAuth: false
-  apiAudiences:
-  - kubernetes.svc.default
-  apiServerCount: 1
-  authorizationMode: AlwaysAllow
-  bindAddress: '::'
-  cloudProvider: external
-  enableAdmissionPlugins:
-  - NamespaceLifecycle
-  - LimitRanger
-  - ServiceAccount
-  - DefaultStorageClass
-  - DefaultTolerationSeconds
-  - MutatingAdmissionWebhook
-  - ValidatingAdmissionWebhook
-  - NodeRestriction
-  - ResourceQuota
-  etcdServers:
-  - https://127.0.0.1:4001
-  etcdServersOverrides:
-  - /events#https://127.0.0.1:4002
-  featureGates:
-    CSIMigrationAWS: "true"
-    InTreePluginAWSUnregister: "true"
-  image: registry.k8s.io/kube-apiserver:v1.25.0
-  kubeletPreferredAddressTypes:
-  - InternalIP
-  - Hostname
-  - ExternalIP
-  logLevel: 2
-  requestheaderAllowedNames:
-  - aggregator
-  requestheaderExtraHeaderPrefixes:
-  - X-Remote-Extra-
-  requestheaderGroupHeaders:
-  - X-Remote-Group
-  requestheaderUsernameHeaders:
-  - X-Remote-User
-  securePort: 443
-  serviceAccountIssuer: https://api.internal.minimal-ipv6.example.com
-  serviceAccountJWKSURI: https://api.internal.minimal-ipv6.example.com/openid/v1/jwks
-  serviceClusterIPRange: fd00:5e4f:ce::/108
-  storageBackend: etcd3
-kubeControllerManager:
-  allocateNodeCIDRs: false
-  attachDetachReconcileSyncPeriod: 1m0s
-  cloudProvider: external
-  clusterName: minimal-ipv6.example.com
-  configureCloudRoutes: false
-  controllers:
-  - '*'
-  - -nodeipam
-  featureGates:
-    CSIMigrationAWS: "true"
-    InTreePluginAWSUnregister: "true"
-  image: registry.k8s.io/kube-controller-manager:v1.25.0
-  leaderElection:
-    leaderElect: true
-  logLevel: 2
-  useServiceAccountCredentials: true
-kubeScheduler:
-  featureGates:
-    CSIMigrationAWS: "true"
-    InTreePluginAWSUnregister: "true"
-  image: registry.k8s.io/kube-scheduler:v1.25.0
-  leaderElection:
-    leaderElect: true
-  logLevel: 2
-kubelet:
-  anonymousAuth: false
-  cgroupDriver: systemd
-  cgroupRoot: /
-  cloudProvider: external
-  clusterDNS: fd00:5e4f:ce::a
-  clusterDomain: cluster.local
-  enableDebuggingHandlers: true
-  evictionHard: memory.available<100Mi,nodefs.available<10%,nodefs.inodesFree<5%,imagefs.available<10%,imagefs.inodesFree<5%
-  featureGates:
-    CSIMigrationAWS: "true"
-    InTreePluginAWSUnregister: "true"
-  kubeconfigPath: /var/lib/kubelet/kubeconfig
-  logLevel: 2
-  podInfraContainerImage: registry.k8s.io/pause:3.9
-  podManifestPath: /etc/kubernetes/manifests
-  protectKernelDefaults: true
-  registerSchedulable: true
-  shutdownGracePeriod: 30s
-  shutdownGracePeriodCriticalPods: 10s
-masterKubelet:
-  anonymousAuth: false
-  cgroupDriver: systemd
-  cgroupRoot: /
-  cloudProvider: external
-  clusterDNS: fd00:5e4f:ce::a
-  clusterDomain: cluster.local
-  enableDebuggingHandlers: true
-  evictionHard: memory.available<100Mi,nodefs.available<10%,nodefs.inodesFree<5%,imagefs.available<10%,imagefs.inodesFree<5%
-  featureGates:
-    CSIMigrationAWS: "true"
-    InTreePluginAWSUnregister: "true"
-  kubeconfigPath: /var/lib/kubelet/kubeconfig
-  logLevel: 2
-  podInfraContainerImage: registry.k8s.io/pause:3.9
-  podManifestPath: /etc/kubernetes/manifests
-  protectKernelDefaults: true
-  registerSchedulable: true
-  shutdownGracePeriod: 30s
-  shutdownGracePeriodCriticalPods: 10s
-
-__EOF_CLUSTER_SPEC
 
 cat > conf/kube_env.yaml << '__EOF_KUBE_ENV'
 CloudProvider: aws
@@ -254,7 +130,7 @@ ClusterName: minimal-ipv6.example.com
 ConfigBase: memfs://clusters.example.com/minimal-ipv6.example.com
 InstanceGroupName: master-us-test-1a
 InstanceGroupRole: ControlPlane
-NodeupConfigHash: wQmqMo5nckX3lcvPTtuyBIIiZngji+sdROxEVj9KrxA=
+NodeupConfigHash: M7ndkjvJERSRki0z89GVExUKFTzCnwAeiLREesJvrnQ=
 
 __EOF_KUBE_ENV
 

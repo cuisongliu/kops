@@ -27,10 +27,10 @@ type AWSEBSCSIDriverOptionsBuilder struct {
 	*OptionsContext
 }
 
-var _ loader.OptionsBuilder = &AWSEBSCSIDriverOptionsBuilder{}
+var _ loader.ClusterOptionsBuilder = &AWSEBSCSIDriverOptionsBuilder{}
 
-func (b *AWSEBSCSIDriverOptionsBuilder) BuildOptions(o interface{}) error {
-	aws := o.(*kops.ClusterSpec).CloudProvider.AWS
+func (b *AWSEBSCSIDriverOptionsBuilder) BuildOptions(o *kops.Cluster) error {
+	aws := o.Spec.CloudProvider.AWS
 	if aws == nil {
 		return nil
 	}
@@ -42,12 +42,8 @@ func (b *AWSEBSCSIDriverOptionsBuilder) BuildOptions(o interface{}) error {
 	}
 	c := aws.EBSCSIDriver
 
-	if !fi.ValueOf(c.Enabled) {
-		return nil
-	}
-
 	if c.Version == nil {
-		version := "v1.14.1"
+		version := "v1.38.1"
 		c.Version = &version
 	}
 

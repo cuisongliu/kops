@@ -17,6 +17,7 @@ limitations under the License.
 package awstasks
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
@@ -24,9 +25,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/awserr"
-	"github.com/aws/aws-sdk-go/service/iam"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/iam"
 	"k8s.io/klog/v2"
 	"k8s.io/kops/pkg/diff"
 	"k8s.io/kops/upup/pkg/fi"
@@ -53,9 +53,10 @@ type IAMRolePolicy struct {
 }
 
 func (e *IAMRolePolicy) Find(c *fi.CloudupContext) (*IAMRolePolicy, error) {
+	ctx := c.Context()
 	var actual IAMRolePolicy
 
-	cloud := c.T.Cloud.(awsup.AWSCloud)
+	cloud := awsup.GetCloud(c)
 
 	// Handle policy overrides
 	if e.ExternalPolicies != nil {
@@ -63,19 +64,20 @@ func (e *IAMRolePolicy) Find(c *fi.CloudupContext) (*IAMRolePolicy, error) {
 			RoleName: e.Role.Name,
 		}
 
-		response, err := cloud.IAM().ListAttachedRolePolicies(request)
-		if awsErr, ok := err.(awserr.Error); ok {
-			if awsErr.Code() == iam.ErrCodeNoSuchEntityException {
+		response, err := cloud.IAM().ListAttachedRolePolicies(ctx, request)
+		if err != nil {
+			if awsup.IsIAMNoSuchEntityException(err) {
+				klog.V(2).Infof("Got NoSuchEntity describing IAM RolePolicy; will treat as already-deleted")
 				return nil, nil
 			}
 
-			return nil, fmt.Errorf("error getting policies for role: %v", err)
+			return nil, fmt.Errorf("error listing policies for role: %w", err)
 		}
 
 		var policies []string
 		if response != nil && len(response.AttachedPolicies) > 0 {
 			for _, policy := range response.AttachedPolicies {
-				policies = append(policies, aws.StringValue(policy.PolicyArn))
+				policies = append(policies, aws.ToString(policy.PolicyArn))
 			}
 		}
 		sort.Strings(policies)
@@ -95,19 +97,17 @@ func (e *IAMRolePolicy) Find(c *fi.CloudupContext) (*IAMRolePolicy, error) {
 		PolicyName: e.Name,
 	}
 
-	response, err := cloud.IAM().GetRolePolicy(request)
-	if awsErr, ok := err.(awserr.Error); ok {
-		if awsErr.Code() == iam.ErrCodeNoSuchEntityException {
+	response, err := cloud.IAM().GetRolePolicy(ctx, request)
+	if err != nil {
+		if awsup.IsIAMNoSuchEntityException(err) {
 			return nil, nil
 		}
-	}
-	if err != nil {
 		return nil, fmt.Errorf("error getting role: %v", err)
 	}
 
 	p := response
 	actual.Role = &IAMRole{Name: p.RoleName}
-	if aws.StringValue(e.Role.Name) == aws.StringValue(p.RoleName) {
+	if aws.ToString(e.Role.Name) == aws.ToString(p.RoleName) {
 		actual.Role.ID = e.Role.ID
 	}
 	if p.PolicyDocument != nil {
@@ -115,7 +115,7 @@ func (e *IAMRolePolicy) Find(c *fi.CloudupContext) (*IAMRolePolicy, error) {
 		policy := *p.PolicyDocument
 		policy, err = url.QueryUnescape(policy)
 		if err != nil {
-			return nil, fmt.Errorf("error parsing PolicyDocument for IAMRolePolicy %q: %v", aws.StringValue(e.Name), err)
+			return nil, fmt.Errorf("error parsing PolicyDocument for IAMRolePolicy %q: %v", aws.ToString(e.Name), err)
 		}
 
 		// Reformat the PolicyDocument by unmarshaling and re-marshaling to JSON.
@@ -169,6 +169,7 @@ func (_ *IAMRolePolicy) ShouldCreate(a, e, changes *IAMRolePolicy) (bool, error)
 }
 
 func (_ *IAMRolePolicy) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *IAMRolePolicy) error {
+	ctx := context.TODO()
 	policy, err := e.policyDocumentString()
 	if err != nil {
 		return fmt.Errorf("error rendering PolicyDocument: %v", err)
@@ -190,7 +191,7 @@ func (_ *IAMRolePolicy) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *IAMRoleP
 				PolicyArn: s(policy),
 			}
 
-			_, err = t.Cloud.IAM().AttachRolePolicy(request)
+			_, err = t.Cloud.IAM().AttachRolePolicy(ctx, request)
 			if err != nil {
 				return fmt.Errorf("error attaching IAMRolePolicy: %v", err)
 			}
@@ -205,7 +206,7 @@ func (_ *IAMRolePolicy) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *IAMRoleP
 				}
 			}
 
-			klog.V(2).Infof("Detaching unused IAMRolePolicy %s/%s", aws.StringValue(e.Role.Name), cloudPolicy)
+			klog.V(2).Infof("Detaching unused IAMRolePolicy %s/%s", aws.ToString(e.Role.Name), cloudPolicy)
 
 			// Detach policy
 			request := &iam.DetachRolePolicyInput{
@@ -213,9 +214,9 @@ func (_ *IAMRolePolicy) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *IAMRoleP
 				PolicyArn: s(cloudPolicy),
 			}
 
-			_, err := t.Cloud.IAM().DetachRolePolicy(request)
+			_, err := t.Cloud.IAM().DetachRolePolicy(ctx, request)
 			if err != nil {
-				klog.V(2).Infof("Unable to detach IAMRolePolicy %s/%s", aws.StringValue(e.Role.Name), cloudPolicy)
+				klog.V(2).Infof("Unable to detach IAMRolePolicy %s/%s", aws.ToString(e.Role.Name), cloudPolicy)
 				return err
 			}
 		}
@@ -230,12 +231,11 @@ func (_ *IAMRolePolicy) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *IAMRoleP
 		request.RoleName = e.Role.Name
 		request.PolicyName = e.Name
 
-		klog.V(2).Infof("Deleting role policy %s/%s", aws.StringValue(e.Role.Name), aws.StringValue(e.Name))
-		_, err = t.Cloud.IAM().DeleteRolePolicy(request)
+		klog.V(2).Infof("Deleting role policy %s/%s", aws.ToString(e.Role.Name), aws.ToString(e.Name))
+		_, err = t.Cloud.IAM().DeleteRolePolicy(ctx, request)
 		if err != nil {
-			if awsup.AWSErrorCode(err) == iam.ErrCodeNoSuchEntityException {
-				// Already deleted
-				klog.V(2).Infof("Got NoSuchEntity deleting role policy %s/%s; assuming does not exist", aws.StringValue(e.Role.Name), aws.StringValue(e.Name))
+			if awsup.IsIAMNoSuchEntityException(err) {
+				klog.V(2).Infof("Got NoSuchEntity deleting role policy %s/%s; assuming does not exist", aws.ToString(e.Role.Name), aws.ToString(e.Name))
 				return nil
 			}
 			return fmt.Errorf("error deleting IAMRolePolicy: %v", err)
@@ -274,11 +274,11 @@ func (_ *IAMRolePolicy) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *IAMRoleP
 		request.RoleName = e.Role.Name
 		request.PolicyName = e.Name
 
-		klog.V(8).Infof("PutRolePolicy RoleName=%s PolicyName=%s: %s", aws.StringValue(e.Role.Name), aws.StringValue(e.Name), policy)
+		klog.V(8).Infof("PutRolePolicy RoleName=%s PolicyName=%s: %s", aws.ToString(e.Role.Name), aws.ToString(e.Name), policy)
 
-		_, err = t.Cloud.IAM().PutRolePolicy(request)
+		_, err = t.Cloud.IAM().PutRolePolicy(ctx, request)
 		if err != nil {
-			klog.V(2).Infof("PutRolePolicy RoleName=%s PolicyName=%s: %s", aws.StringValue(e.Role.Name), aws.StringValue(e.Name), policy)
+			klog.V(2).Infof("PutRolePolicy RoleName=%s PolicyName=%s: %s", aws.ToString(e.Role.Name), aws.ToString(e.Name), policy)
 			return fmt.Errorf("error creating/updating IAMRolePolicy: %v", err)
 		}
 	}

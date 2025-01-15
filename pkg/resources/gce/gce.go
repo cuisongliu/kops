@@ -299,7 +299,7 @@ func (d *clusterDiscoveryGCE) listManagedInstances(igm *compute.InstanceGroupMan
 func (d *clusterDiscoveryGCE) findGCEDisks() ([]*compute.Disk, error) {
 	c := d.gceCloud
 
-	clusterTag := gce.SafeClusterName(d.clusterName)
+	clusterLabel := gce.LabelForCluster(d.clusterName)
 
 	var matches []*compute.Disk
 
@@ -316,8 +316,8 @@ func (d *clusterDiscoveryGCE) findGCEDisks() ([]*compute.Disk, error) {
 		for _, d := range list.Disks {
 			match := false
 			for k, v := range d.Labels {
-				if k == gce.GceLabelNameKubernetesCluster {
-					if v == clusterTag {
+				if k == clusterLabel.Key {
+					if v == clusterLabel.Value {
 						match = true
 					} else {
 						match = false
@@ -377,10 +377,10 @@ func deleteGCEDisk(cloud fi.Cloud, r *resources.Resource) error {
 	op, err := c.Compute().Disks().Delete(u.Project, u.Zone, u.Name)
 	if err != nil {
 		if gce.IsNotFound(err) {
-			klog.Infof("disk not found, assuming deleted: %q", t.SelfLink)
+			klog.Infof("Disk not found, assuming deleted: %q", t.SelfLink)
 			return nil
 		}
-		return fmt.Errorf("error deleting disk %s: %v", t.SelfLink, err)
+		return fmt.Errorf("error deleting Disk %s: %v", t.SelfLink, err)
 	}
 
 	return c.WaitForOp(op)
@@ -500,6 +500,8 @@ func (d *clusterDiscoveryGCE) listForwardingRules() ([]*resources.Resource, erro
 }
 
 func deleteForwardingRule(cloud fi.Cloud, r *resources.Resource) error {
+	ctx := context.TODO()
+
 	c := cloud.(gce.GCECloud)
 	t := r.Obj.(*compute.ForwardingRule)
 
@@ -509,7 +511,7 @@ func deleteForwardingRule(cloud fi.Cloud, r *resources.Resource) error {
 		return err
 	}
 
-	op, err := c.Compute().ForwardingRules().Delete(u.Project, u.Region, u.Name)
+	op, err := c.Compute().ForwardingRules().Delete(ctx, u.Project, u.Region, u.Name)
 	if err != nil {
 		if gce.IsNotFound(err) {
 			klog.Infof("ForwardingRule not found, assuming deleted: %q", t.SelfLink)
@@ -585,7 +587,7 @@ nextFirewallRule:
 
 			// We lookup the forwarding rule by name, but we then validate that it points to one of our resources
 			forwardingRuleName := strings.TrimPrefix(firewallRule.Name, "k8s-fw-")
-			forwardingRule, err := c.Compute().ForwardingRules().Get(c.Project(), c.Region(), forwardingRuleName)
+			forwardingRule, err := c.Compute().ForwardingRules().Get(ctx, c.Project(), c.Region(), forwardingRuleName)
 			if err != nil {
 				if gce.IsNotFound(err) {
 					// We looked it up by name, so an error isn't unlikely
@@ -753,6 +755,9 @@ func (d *clusterDiscoveryGCE) listRoutes(ctx context.Context, resourceMap map[st
 			switch w.Code {
 			case "NEXT_HOP_INSTANCE_NOT_FOUND":
 				remove = true
+			case "NEXT_HOP_NOT_RUNNING":
+				// It might not be running, but it probably exists.
+				remove = false
 			default:
 				klog.Infof("Unknown warning on route %q: %q", r.Name, w.Code)
 			}
@@ -927,7 +932,7 @@ func deleteSubnet(cloud fi.Cloud, r *resources.Resource) error {
 	c := cloud.(gce.GCECloud)
 	o := r.Obj.(*compute.Subnetwork)
 
-	klog.V(2).Infof("deleting GCE subnetwork %s", o.SelfLink)
+	klog.V(2).Infof("deleting GCE Subnetwork %s", o.SelfLink)
 	u, err := gce.ParseGoogleCloudURL(o.SelfLink)
 	if err != nil {
 		return err
@@ -936,10 +941,10 @@ func deleteSubnet(cloud fi.Cloud, r *resources.Resource) error {
 	op, err := c.Compute().Subnetworks().Delete(u.Project, u.Region, u.Name)
 	if err != nil {
 		if gce.IsNotFound(err) {
-			klog.Infof("subnetwork not found, assuming deleted: %q", o.SelfLink)
+			klog.Infof("Subnetwork not found, assuming deleted: %q", o.SelfLink)
 			return nil
 		}
-		return fmt.Errorf("error deleting subnetwork %s: %v", o.SelfLink, err)
+		return fmt.Errorf("error deleting Subnetwork %s: %v", o.SelfLink, err)
 	}
 
 	return c.WaitForOp(op)
@@ -990,7 +995,7 @@ func deleteRouter(cloud fi.Cloud, r *resources.Resource) error {
 	op, err := c.Compute().Routers().Delete(u.Project, u.Region, u.Name)
 	if err != nil {
 		if gce.IsNotFound(err) {
-			klog.Infof("router not found, assuming deleted: %q", o.SelfLink)
+			klog.Infof("Router not found, assuming deleted: %q", o.SelfLink)
 			return nil
 		}
 		return fmt.Errorf("error deleting router %s: %v", o.SelfLink, err)
@@ -1041,7 +1046,14 @@ func deleteServiceAccount(cloud fi.Cloud, r *resources.Resource) error {
 
 	klog.V(2).Infof("deleting GCE ServiceAccount %s", o.Name)
 	_, err := c.IAM().ServiceAccounts().Delete(o.Name)
-	return err
+	if err != nil {
+		if gce.IsNotFound(err) {
+			klog.Infof("ServiceAccount not found, assuming deleted: %q", o.Name)
+			return nil
+		}
+		return fmt.Errorf("error deleting ServiceAccount %s: %v", o.Name, err)
+	}
+	return nil
 }
 
 // containsOnlyListedIGMs returns true if all the given backend service's backends

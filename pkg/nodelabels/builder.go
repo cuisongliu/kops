@@ -19,18 +19,12 @@ package nodelabels
 import (
 	"fmt"
 
-	"k8s.io/kops/pkg/apis/kops"
+	api "k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/pkg/featureflag"
 	"k8s.io/kops/util/pkg/reflectutils"
 )
 
 const (
-	RoleLabelName15           = "kubernetes.io/role"
-	RoleMasterLabelValue15    = "master"
-	RoleAPIServerLabelValue15 = "api-server"
-	RoleNodeLabelValue15      = "node"
-
-	RoleLabelMaster16    = "node-role.kubernetes.io/master"
 	RoleLabelAPIServer16 = "node-role.kubernetes.io/api-server"
 	RoleLabelNode16      = "node-role.kubernetes.io/node"
 
@@ -39,25 +33,25 @@ const (
 
 // BuildNodeLabels returns the node labels for the specified instance group
 // This moved from the kubelet to a central controller in kubernetes 1.16
-func BuildNodeLabels(cluster *kops.Cluster, instanceGroup *kops.InstanceGroup) (map[string]string, error) {
+func BuildNodeLabels(cluster *api.Cluster, instanceGroup *api.InstanceGroup) (map[string]string, error) {
 	isControlPlane := false
 	isAPIServer := false
 	isNode := false
 	switch instanceGroup.Spec.Role {
-	case kops.InstanceGroupRoleControlPlane:
+	case api.InstanceGroupRoleControlPlane:
 		isControlPlane = true
-	case kops.InstanceGroupRoleAPIServer:
+	case api.InstanceGroupRoleAPIServer:
 		isAPIServer = true
-	case kops.InstanceGroupRoleNode:
+	case api.InstanceGroupRoleNode:
 		isNode = true
-	case kops.InstanceGroupRoleBastion:
+	case api.InstanceGroupRoleBastion:
 		// no labels to add
 	default:
 		return nil, fmt.Errorf("unhandled instanceGroup role %q", instanceGroup.Spec.Role)
 	}
 
 	// Merge KubeletConfig for NodeLabels
-	c := &kops.KubeletConfigSpec{}
+	c := &api.KubeletConfigSpec{}
 	if isControlPlane {
 		reflectutils.JSONMergeStruct(c, cluster.Spec.ControlPlaneKubelet)
 	} else {
@@ -81,9 +75,6 @@ func BuildNodeLabels(cluster *kops.Cluster, instanceGroup *kops.InstanceGroup) (
 		if isAPIServer || featureflag.APIServerNodes.Enabled() {
 			nodeLabels[RoleLabelAPIServer16] = ""
 		}
-		if cluster.IsKubernetesLT("1.24") {
-			nodeLabels[RoleLabelName15] = RoleAPIServerLabelValue15
-		}
 	}
 
 	if isNode {
@@ -91,9 +82,6 @@ func BuildNodeLabels(cluster *kops.Cluster, instanceGroup *kops.InstanceGroup) (
 			nodeLabels = make(map[string]string)
 		}
 		nodeLabels[RoleLabelNode16] = ""
-		if cluster.IsKubernetesLT("1.24") {
-			nodeLabels[RoleLabelName15] = RoleNodeLabelValue15
-		}
 	}
 
 	if isControlPlane {
@@ -102,10 +90,6 @@ func BuildNodeLabels(cluster *kops.Cluster, instanceGroup *kops.InstanceGroup) (
 		}
 		for label, value := range BuildMandatoryControlPlaneLabels() {
 			nodeLabels[label] = value
-		}
-		if cluster.IsKubernetesLT("1.24") {
-			nodeLabels[RoleLabelMaster16] = ""
-			nodeLabels[RoleLabelName15] = RoleMasterLabelValue15
 		}
 	}
 
@@ -116,7 +100,7 @@ func BuildNodeLabels(cluster *kops.Cluster, instanceGroup *kops.InstanceGroup) (
 		nodeLabels[k] = v
 	}
 
-	if instanceGroup.Spec.Manager == kops.InstanceManagerKarpenter {
+	if instanceGroup.Spec.Manager == api.InstanceManagerKarpenter {
 		nodeLabels["karpenter.sh/provisioner-name"] = instanceGroup.ObjectMeta.Name
 	}
 

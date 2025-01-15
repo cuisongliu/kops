@@ -27,15 +27,16 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/endpoints"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/aws/aws-sdk-go/service/sts"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/kops/pkg/bootstrap"
 	nodeidentityaws "k8s.io/kops/pkg/nodeidentity/aws"
 	"k8s.io/kops/pkg/wellknownports"
@@ -53,39 +54,44 @@ type awsVerifier struct {
 	partition string
 	opt       AWSVerifierOptions
 
-	ec2    *ec2.EC2
-	sts    *sts.STS
+	ec2    *ec2.Client
 	client http.Client
+
+	stsRequestValidator *stsRequestValidator
 }
 
 var _ bootstrap.Verifier = &awsVerifier{}
 
-func NewAWSVerifier(opt *AWSVerifierOptions) (bootstrap.Verifier, error) {
-	config := aws.NewConfig().
-		WithCredentialsChainVerboseErrors(true).
-		WithRegion(opt.Region).
-		WithSTSRegionalEndpoint(endpoints.RegionalSTSEndpoint)
-	sess, err := session.NewSession(config)
+func NewAWSVerifier(ctx context.Context, opt *AWSVerifierOptions) (bootstrap.Verifier, error) {
+	config, err := awsconfig.LoadDefaultConfig(
+		ctx,
+		awsconfig.WithRegion(opt.Region),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load aws config: %w", err)
+	}
+
+	stsClient := sts.NewFromConfig(config)
+	identity, err := stsClient.GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
 	if err != nil {
 		return nil, err
 	}
 
-	stsClient := sts.New(sess, config)
-	identity, err := stsClient.GetCallerIdentity(&sts.GetCallerIdentityInput{})
+	partition := strings.Split(aws.ToString(identity.Arn), ":")[1]
+
+	ec2Client := ec2.NewFromConfig(config)
+
+	stsRequestValidator, err := buildSTSRequestValidator(ctx, stsClient)
 	if err != nil {
 		return nil, err
 	}
-
-	partition := strings.Split(aws.StringValue(identity.Arn), ":")[1]
-
-	ec2Client := ec2.New(sess, config)
 
 	return &awsVerifier{
-		accountId: aws.StringValue(identity.Account),
-		partition: partition,
-		opt:       *opt,
-		ec2:       ec2Client,
-		sts:       stsClient,
+		accountId:           aws.ToString(identity.Account),
+		partition:           partition,
+		opt:                 *opt,
+		ec2:                 ec2Client,
+		stsRequestValidator: stsRequestValidator,
 		client: http.Client{
 			Transport: &http.Transport{
 				Proxy: http.ProxyFromEnvironment,
@@ -121,63 +127,123 @@ type ResponseMetadata struct {
 	RequestId string `xml:"RequestId"`
 }
 
-func (a awsVerifier) VerifyToken(ctx context.Context, rawRequest *http.Request, token string, body []byte, useInstanceIDForNodeName bool) (*bootstrap.VerifyResult, error) {
-	if !strings.HasPrefix(token, AWSAuthenticationTokenPrefix) {
-		return nil, fmt.Errorf("incorrect authorization type")
+func (a awsVerifier) VerifyToken(ctx context.Context, rawRequest *http.Request, token string, body []byte) (*bootstrap.VerifyResult, error) {
+	if strings.HasPrefix(token, AWSAuthenticationTokenPrefixV1) {
+		return a.verifyTokenV1(ctx, token, body, a.verifyCallerIdentity)
 	}
-	token = strings.TrimPrefix(token, AWSAuthenticationTokenPrefix)
+	if strings.HasPrefix(token, AWSAuthenticationTokenPrefixV2) {
+		return a.verifyTokenV2(ctx, token, body, a.verifyCallerIdentity)
+	}
 
-	// We rely on the client and server using the same version of the same STS library.
-	stsRequest, _ := a.sts.GetCallerIdentityRequest(nil)
-	err := stsRequest.Sign()
+	return nil, bootstrap.ErrNotThisVerifier
+}
+
+func (a awsVerifier) verifyTokenV1(ctx context.Context, token string, body []byte, verifyCallerIdentity verifyCallerIdentityFunc) (*bootstrap.VerifyResult, error) {
+	token = strings.TrimPrefix(token, AWSAuthenticationTokenPrefixV1)
+
+	tokenBytes, err := base64.StdEncoding.DecodeString(token)
 	if err != nil {
-		return nil, fmt.Errorf("creating identity request: %v", err)
+		return nil, fmt.Errorf("decoding authorization token: %w", err)
+	}
+	var decoded awsV1Token
+	if err := json.Unmarshal(tokenBytes, &decoded); err != nil {
+		return nil, fmt.Errorf("unmarshalling authorization token: %w", err)
 	}
 
-	stsRequest.HTTPRequest.Header = nil
+	// Verify the token has signed the body content.
+	sha := sha256.Sum256(body)
+	decodedHeaders := http.Header(decoded)
+
+	if decodedHeaders.Get("X-Kops-Request-SHA") != base64.RawStdEncoding.EncodeToString(sha[:]) {
+		return nil, fmt.Errorf("incorrect SHA")
+	}
+
+	authorization := decodedHeaders.Get("Authorization")
+	if !strings.HasPrefix(authorization, "AWS4-HMAC-SHA256 ") {
+		return nil, fmt.Errorf("incorrect authorization algorithm")
+	}
+
+	amzSignature := ""
+	amzCredential := ""
+	amzSignedHeaders := ""
+
+	for _, token := range strings.Split(strings.TrimPrefix(authorization, "AWS4-HMAC-SHA256 "), ", ") {
+		kv := strings.SplitN(token, "=", 2)
+		if len(kv) == 1 {
+			return nil, fmt.Errorf("incorrect authorization format")
+		}
+		got := kv[1]
+		switch kv[0] {
+		case "Signature":
+			amzSignature = got
+		case "Credential":
+			amzCredential = got
+		case "SignedHeaders":
+			amzSignedHeaders = got
+		}
+	}
+	signedHeaders := sets.New(strings.Split(amzSignedHeaders, ";")...)
+	if !signedHeaders.Has("x-kops-request-sha") {
+		return nil, fmt.Errorf("unexpected signed headers value")
+	}
+
+	if amzSignature == "" {
+		return nil, fmt.Errorf("unexpected signature value")
+	}
+	if amzCredential == "" {
+		return nil, fmt.Errorf("unexpected credential value")
+	}
+
+	callerIdentity, err := a.stsRequestValidator.getCallerIdentityV1(ctx, &a.client, decoded)
+	if err != nil {
+		return nil, err
+	}
+
+	return verifyCallerIdentity(ctx, callerIdentity)
+}
+
+func (a awsVerifier) verifyTokenV2(ctx context.Context, token string, body []byte, verifyCallerIdentity verifyCallerIdentityFunc) (*bootstrap.VerifyResult, error) {
+	token = strings.TrimPrefix(token, AWSAuthenticationTokenPrefixV2)
+
 	tokenBytes, err := base64.StdEncoding.DecodeString(token)
 	if err != nil {
 		return nil, fmt.Errorf("decoding authorization token: %v", err)
 	}
-	err = json.Unmarshal(tokenBytes, &stsRequest.HTTPRequest.Header)
-	if err != nil {
+	var decoded awsV2Token
+	if err := json.Unmarshal(tokenBytes, &decoded); err != nil {
 		return nil, fmt.Errorf("unmarshalling authorization token: %v", err)
 	}
 
 	// Verify the token has signed the body content.
 	sha := sha256.Sum256(body)
-	if stsRequest.HTTPRequest.Header.Get("X-Kops-Request-SHA") != base64.RawStdEncoding.EncodeToString(sha[:]) {
+	if decoded.SignedHeader.Get("X-Kops-Request-SHA") != base64.RawStdEncoding.EncodeToString(sha[:]) {
 		return nil, fmt.Errorf("incorrect SHA")
 	}
 
-	requestBytes, _ := io.ReadAll(stsRequest.Body)
-	_, _ = stsRequest.Body.Seek(0, io.SeekStart)
-	if stsRequest.HTTPRequest.Header.Get("Content-Length") != strconv.Itoa(len(requestBytes)) {
-		return nil, fmt.Errorf("incorrect content-length")
-	}
-
-	response, err := a.client.Do(stsRequest.HTTPRequest)
+	reqURL, err := url.Parse(decoded.URL)
 	if err != nil {
-		return nil, fmt.Errorf("sending STS request: %v", err)
+		return nil, fmt.Errorf("parsing STS request URL: %v", err)
 	}
-	if response != nil {
-		defer response.Body.Close()
+	signedHeaders := sets.New(strings.Split(reqURL.Query().Get("X-Amz-SignedHeaders"), ";")...)
+	if !signedHeaders.Has("x-kops-request-sha") {
+		return nil, fmt.Errorf("unexpected signed headers value")
 	}
 
-	responseBody, err := io.ReadAll(response.Body)
+	if !a.stsRequestValidator.isValidV2(reqURL) {
+		return nil, fmt.Errorf("invalid STS url: host=%q, path=%q", reqURL.Host, reqURL.Path)
+	}
+
+	callerIdentity, err := a.stsRequestValidator.getCallerIdentityV2(ctx, &a.client, &decoded)
 	if err != nil {
-		return nil, fmt.Errorf("reading STS response: %v", err)
-	}
-	if response.StatusCode != 200 {
-		return nil, fmt.Errorf("received status code %d from STS: %s", response.StatusCode, string(responseBody))
+		return nil, err
 	}
 
-	callerIdentity := GetCallerIdentityResponse{}
-	err = xml.NewDecoder(bytes.NewReader(responseBody)).Decode(&callerIdentity)
-	if err != nil {
-		return nil, fmt.Errorf("decoding STS response: %v", err)
-	}
+	return verifyCallerIdentity(ctx, callerIdentity)
+}
 
+type verifyCallerIdentityFunc func(ctx context.Context, callerIdentity *GetCallerIdentityResponse) (*bootstrap.VerifyResult, error)
+
+func (a awsVerifier) verifyCallerIdentity(ctx context.Context, callerIdentity *GetCallerIdentityResponse) (*bootstrap.VerifyResult, error) {
 	if callerIdentity.GetCallerIdentityResult[0].Account != a.accountId {
 		return nil, fmt.Errorf("incorrect account %s", callerIdentity.GetCallerIdentityResult[0].Account)
 	}
@@ -217,8 +283,8 @@ func (a awsVerifier) VerifyToken(ctx context.Context, rawRequest *http.Request, 
 	}
 
 	instanceID := resource[2]
-	instances, err := a.ec2.DescribeInstances(&ec2.DescribeInstancesInput{
-		InstanceIds: aws.StringSlice([]string{instanceID}),
+	instances, err := a.ec2.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
+		InstanceIds: []string{instanceID},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("describing instance for arn %q", arn)
@@ -233,24 +299,24 @@ func (a awsVerifier) VerifyToken(ctx context.Context, rawRequest *http.Request, 
 
 	instance := instances.Reservations[0].Instances[0]
 
-	addrs, err := GetInstanceCertificateNames(instances, useInstanceIDForNodeName)
+	addrs, err := GetInstanceCertificateNames(instances)
 	if err != nil {
 		return nil, err
 	}
 
 	var challengeEndpoints []string
 	for _, nic := range instance.NetworkInterfaces {
-		if ip := aws.StringValue(nic.PrivateIpAddress); ip != "" {
+		if ip := aws.ToString(nic.PrivateIpAddress); ip != "" {
 			challengeEndpoints = append(challengeEndpoints, net.JoinHostPort(ip, strconv.Itoa(wellknownports.NodeupChallenge)))
 		}
 		for _, a := range nic.PrivateIpAddresses {
-			if ip := aws.StringValue(a.PrivateIpAddress); ip != "" {
+			if ip := aws.ToString(a.PrivateIpAddress); ip != "" {
 				challengeEndpoints = append(challengeEndpoints, net.JoinHostPort(ip, strconv.Itoa(wellknownports.NodeupChallenge)))
 			}
 		}
 
 		for _, a := range nic.Ipv6Addresses {
-			if ip := aws.StringValue(a.Ipv6Address); ip != "" {
+			if ip := aws.ToString(a.Ipv6Address); ip != "" {
 				challengeEndpoints = append(challengeEndpoints, net.JoinHostPort(ip, strconv.Itoa(wellknownports.NodeupChallenge)))
 			}
 		}
@@ -267,11 +333,129 @@ func (a awsVerifier) VerifyToken(ctx context.Context, rawRequest *http.Request, 
 	}
 
 	for _, tag := range instance.Tags {
-		tagKey := aws.StringValue(tag.Key)
+		tagKey := aws.ToString(tag.Key)
 		if tagKey == nodeidentityaws.CloudTagInstanceGroupName {
-			result.InstanceGroupName = aws.StringValue(tag.Value)
+			result.InstanceGroupName = aws.ToString(tag.Value)
 		}
 	}
 
 	return result, nil
+}
+
+// stsRequestValidator describes valid STS Presigned URLs, and is used to validate client authentication requests.
+type stsRequestValidator struct {
+	Host string
+}
+
+// IsValid performs some basic pre-validation of the request URL.
+func (s *stsRequestValidator) isValidV2(u *url.URL) bool {
+	if u.Host != s.Host {
+		return false
+	}
+	if u.Path != "/" {
+		return false
+	}
+	if u.Query().Get("Action") != "GetCallerIdentity" {
+		return false
+	}
+	if len(u.Query()["Action"]) != 1 {
+		return false
+	}
+
+	return true
+}
+
+// getCallerIdentityV2 will request the presigned token URL, and decode the returned identity.
+func (s *stsRequestValidator) getCallerIdentityV2(ctx context.Context, httpClient *http.Client, decoded *awsV2Token) (*GetCallerIdentityResponse, error) {
+	reqURL, err := url.Parse(decoded.URL)
+	if err != nil {
+		return nil, fmt.Errorf("parsing STS request URL: %w", err)
+	}
+
+	if !s.isValidV2(reqURL) {
+		return nil, fmt.Errorf("url not valid for STS request")
+	}
+
+	req := &http.Request{
+		URL:    reqURL,
+		Method: decoded.Method,
+		Header: decoded.SignedHeader,
+	}
+	response, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("sending STS request: %v", err)
+	}
+	if response != nil {
+		defer response.Body.Close()
+	}
+
+	responseBody, err := io.ReadAll(response.Body)
+	if err != nil {
+		return nil, fmt.Errorf("reading STS response: %v", err)
+	}
+	if response.StatusCode != 200 {
+		return nil, fmt.Errorf("received status code %d from STS: %s", response.StatusCode, string(responseBody))
+	}
+
+	callerIdentity := &GetCallerIdentityResponse{}
+	err = xml.NewDecoder(bytes.NewReader(responseBody)).Decode(callerIdentity)
+	if err != nil {
+		return nil, fmt.Errorf("decoding STS response: %v", err)
+	}
+
+	return callerIdentity, nil
+}
+
+// GetCallerIdentityV1 will request the presigned token URL, and decode the returned identity.
+func (s *stsRequestValidator) getCallerIdentityV1(ctx context.Context, httpClient *http.Client, decoded awsV1Token) (*GetCallerIdentityResponse, error) {
+	// Well-known V1 request body
+	body := []byte("Action=GetCallerIdentity&Version=2011-06-15")
+
+	// The host is not passed in V1 (a shortcoming of V1)
+	host := s.Host
+	stsURL := "https://" + host + "/"
+
+	req, err := http.NewRequest("POST", stsURL, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("build STS request: %w", err)
+	}
+	req.Header = http.Header(decoded)
+
+	response, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("sending STS request: %v", err)
+	}
+	if response != nil {
+		defer response.Body.Close()
+	}
+
+	responseBody, err := io.ReadAll(response.Body)
+	if err != nil {
+		return nil, fmt.Errorf("reading STS response: %v", err)
+	}
+	if response.StatusCode != 200 {
+		return nil, fmt.Errorf("received status code %d from STS: %s", response.StatusCode, string(responseBody))
+	}
+
+	callerIdentity := &GetCallerIdentityResponse{}
+	err = xml.NewDecoder(bytes.NewReader(responseBody)).Decode(callerIdentity)
+	if err != nil {
+		return nil, fmt.Errorf("decoding STS response: %v", err)
+	}
+
+	return callerIdentity, nil
+}
+
+// buildSTSRequestValidator determines the form of a valid STS presigned URL.
+func buildSTSRequestValidator(ctx context.Context, stsClient *sts.Client) (*stsRequestValidator, error) {
+	// We build a presigned token ourselves, primarily to get the expected hostname for the endpoint.
+	signed, err := sts.NewPresignClient(stsClient).PresignGetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
+	if err != nil {
+		return nil, fmt.Errorf("building presigned request: %w", err)
+	}
+	u, err := url.Parse(signed.URL)
+	if err != nil {
+		return nil, fmt.Errorf("parsing presigned url: %w", err)
+	}
+	return &stsRequestValidator{Host: u.Host}, nil
 }

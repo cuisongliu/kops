@@ -26,7 +26,7 @@ spec:
     useServiceAccountExternalPermissions: true
   kubelet:
     anonymousAuth: false
-  kubernetesVersion: v1.26.0
+  kubernetesVersion: v1.32.0
   masterPublicName: api.minimal.example.com
   networkCIDR: 172.20.0.0/16
   networking:
@@ -37,9 +37,6 @@ spec:
     enableAWSOIDCProvider: true
   sshAccess:
     - 0.0.0.0/0
-  topology:
-    masters: public
-    nodes: public
   subnets:
   - cidr: 172.20.32.0/19
     name: us-test-1a

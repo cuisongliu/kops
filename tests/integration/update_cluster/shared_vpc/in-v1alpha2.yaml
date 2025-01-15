@@ -21,7 +21,7 @@ spec:
   iam: {}
   kubelet:
     anonymousAuth: false
-  kubernetesVersion: v1.26.0
+  kubernetesVersion: v1.32.0
   masterPublicName: api.sharedvpc.example.com
   networkCIDR: 172.20.0.0/16
   networkID: vpc-12345678
@@ -35,9 +35,6 @@ spec:
     name: us-test-1a
     type: Public
     zone: us-test-1a
-  topology:
-    masters: public
-    nodes: public
 
 ---
 

@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -31,31 +32,30 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/ec2metadata"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/autoscaling"
-	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/aws/aws-sdk-go/service/kms"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/feature/ec2/imds"
+	"github.com/aws/aws-sdk-go-v2/service/autoscaling"
+	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/aws/aws-sdk-go-v2/service/kms"
 	"go.uber.org/multierr"
 	"k8s.io/klog/v2"
 	"k8s.io/kops/nodeup/pkg/model"
 	"k8s.io/kops/nodeup/pkg/model/networking"
 	api "k8s.io/kops/pkg/apis/kops"
 	kopsmodel "k8s.io/kops/pkg/apis/kops/model"
-	"k8s.io/kops/pkg/apis/kops/registry"
 	"k8s.io/kops/pkg/apis/nodeup"
 	"k8s.io/kops/pkg/assets"
 	"k8s.io/kops/pkg/bootstrap"
+	"k8s.io/kops/pkg/bootstrap/pkibootstrap"
 	"k8s.io/kops/pkg/configserver"
-	"k8s.io/kops/pkg/kopscodecs"
 	"k8s.io/kops/pkg/kopscontrollerclient"
-	"k8s.io/kops/pkg/resolver"
 	"k8s.io/kops/pkg/wellknownports"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awsup"
+	"k8s.io/kops/upup/pkg/fi/cloudup/azure"
 	"k8s.io/kops/upup/pkg/fi/cloudup/do"
-	"k8s.io/kops/upup/pkg/fi/cloudup/gce/gcediscovery"
 	"k8s.io/kops/upup/pkg/fi/cloudup/gce/tpm/gcetpmsigner"
 	"k8s.io/kops/upup/pkg/fi/cloudup/hetzner"
 	"k8s.io/kops/upup/pkg/fi/cloudup/openstack"
@@ -77,8 +77,6 @@ type NodeUpCommand struct {
 	CacheDir       string
 	ConfigLocation string
 	Target         string
-	// Deprecated: Fields should be accessed from NodeupConfig or BootConfig.
-	cluster *api.Cluster
 }
 
 // Run is responsible for perform the nodeup process
@@ -133,35 +131,6 @@ func (c *NodeUpCommand) Run(out io.Writer) error {
 		return fmt.Errorf("ConfigBase or ConfigServer is required")
 	}
 
-	{
-		var b []byte
-		var clusterDescription string
-		if nodeConfig != nil {
-			b = []byte(nodeConfig.ClusterFullConfig)
-			clusterDescription = "config response"
-		} else {
-			p := configBase.Join(registry.PathClusterCompleted)
-			var err error
-
-			b, err = p.ReadFile(ctx)
-			if err != nil {
-				return fmt.Errorf("error loading Cluster %q: %v", p, err)
-			}
-			clusterDescription = fmt.Sprintf("%q", p)
-		}
-
-		o, _, err := kopscodecs.Decode(b, nil)
-		if err != nil {
-			return fmt.Errorf("error parsing Cluster %s: %v", clusterDescription, err)
-		}
-		var ok bool
-		if c.cluster, ok = o.(*api.Cluster); !ok {
-			return fmt.Errorf("unexpected object type for Cluster %s: %T", clusterDescription, o)
-		}
-	}
-	// Hack to force usage of NodeupConfig
-	c.cluster.Name = "use NodeupConfig.ClusterName instead"
-
 	var nodeupConfig nodeup.Config
 	var nodeupConfigHash [32]byte
 	if nodeConfig != nil {
@@ -186,8 +155,10 @@ func (c *NodeUpCommand) Run(out io.Writer) error {
 		return fmt.Errorf("no instance group defined in nodeup config")
 	}
 
-	if want, got := bootConfig.NodeupConfigHash, base64.StdEncoding.EncodeToString(nodeupConfigHash[:]); got != want {
-		return fmt.Errorf("nodeup config hash mismatch (was %q, expected %q)", got, want)
+	if bootConfig.NodeupConfigHash != "" {
+		if want, got := bootConfig.NodeupConfigHash, base64.StdEncoding.EncodeToString(nodeupConfigHash[:]); got != want {
+			return fmt.Errorf("nodeup config hash mismatch (was %q, expected %q)", got, want)
+		}
 	}
 
 	err = evaluateSpec(&nodeupConfig, bootConfig.CloudProvider)
@@ -228,7 +199,6 @@ func (c *NodeUpCommand) Run(out io.Writer) error {
 		Cloud:        cloud,
 		Architecture: architecture,
 		Assets:       assetStore,
-		Cluster:      c.cluster,
 		ConfigBase:   configBase,
 		Distribution: distribution,
 		BootConfig:   &bootConfig,
@@ -239,9 +209,9 @@ func (c *NodeUpCommand) Run(out io.Writer) error {
 	var keyStore fi.KeystoreReader
 	if nodeConfig != nil {
 		modelContext.SecretStore = configserver.NewSecretStore(nodeConfig.NodeSecrets)
-	} else if c.cluster.Spec.SecretStore != "" {
-		klog.Infof("Building SecretStore at %q", c.cluster.Spec.SecretStore)
-		p, err := vfs.Context.BuildVfsPath(c.cluster.Spec.SecretStore)
+	} else if nodeupConfig.ConfigStore != nil && nodeupConfig.ConfigStore.Secrets != "" {
+		klog.Infof("Building SecretStore at %q", nodeupConfig.ConfigStore.Secrets)
+		p, err := vfs.Context.BuildVfsPath(nodeupConfig.ConfigStore.Secrets)
 		if err != nil {
 			return fmt.Errorf("error building secret store path: %v", err)
 		}
@@ -254,9 +224,9 @@ func (c *NodeUpCommand) Run(out io.Writer) error {
 
 	if nodeConfig != nil {
 		modelContext.KeyStore = configserver.NewKeyStore()
-	} else if c.cluster.Spec.KeyStore != "" {
-		klog.Infof("Building KeyStore at %q", c.cluster.Spec.KeyStore)
-		p, err := vfs.Context.BuildVfsPath(c.cluster.Spec.KeyStore)
+	} else if nodeupConfig.ConfigStore.Keypairs != "" {
+		klog.Infof("Building KeyStore at %q", nodeupConfig.ConfigStore.Keypairs)
+		p, err := vfs.Context.BuildVfsPath(nodeupConfig.ConfigStore.Keypairs)
 		if err != nil {
 			return fmt.Errorf("error building key store path: %v", err)
 		}
@@ -278,12 +248,15 @@ func (c *NodeUpCommand) Run(out io.Writer) error {
 		}
 		modelContext.InstanceID = string(instanceIDBytes)
 
-		modelContext.ConfigurationMode, err = getAWSConfigurationMode(modelContext)
-		if err != nil {
-			return err
+		// Check if WarmPool is enabled first, to avoid additional API calls
+		if len(modelContext.NodeupConfig.WarmPoolImages) > 0 {
+			modelContext.ConfigurationMode, err = getAWSConfigurationMode(ctx, modelContext)
+			if err != nil {
+				return err
+			}
 		}
 
-		modelContext.MachineType, err = getMachineType()
+		modelContext.MachineType, err = getMachineType(ctx)
 		if err != nil {
 			return fmt.Errorf("failed to get machine type: %w", err)
 		}
@@ -293,7 +266,7 @@ func (c *NodeUpCommand) Run(out io.Writer) error {
 		if nvidia != nil && fi.ValueOf(nvidia.Enabled) {
 			awsCloud := cloud.(awsup.AWSCloud)
 			// Get the instance type's detailed information.
-			instanceType, err := awsup.GetMachineTypeInfo(awsCloud, modelContext.MachineType)
+			instanceType, err := awsup.GetMachineTypeInfo(awsCloud, ec2types.InstanceType(modelContext.MachineType))
 			if err != nil {
 				return err
 			}
@@ -318,12 +291,10 @@ func (c *NodeUpCommand) Run(out io.Writer) error {
 	loader := &Loader{}
 	loader.Builders = append(loader.Builders, &model.EtcHostsBuilder{NodeupModelContext: modelContext})
 	loader.Builders = append(loader.Builders, &model.NTPBuilder{NodeupModelContext: modelContext})
-	loader.Builders = append(loader.Builders, &model.MiscUtilsBuilder{NodeupModelContext: modelContext})
 	loader.Builders = append(loader.Builders, &model.DirectoryBuilder{NodeupModelContext: modelContext})
 	loader.Builders = append(loader.Builders, &model.UpdateServiceBuilder{NodeupModelContext: modelContext})
 	loader.Builders = append(loader.Builders, &model.VolumesBuilder{NodeupModelContext: modelContext})
 	loader.Builders = append(loader.Builders, &model.ContainerdBuilder{NodeupModelContext: modelContext})
-	loader.Builders = append(loader.Builders, &model.DockerBuilder{NodeupModelContext: modelContext})
 	loader.Builders = append(loader.Builders, &model.ProtokubeBuilder{NodeupModelContext: modelContext})
 	loader.Builders = append(loader.Builders, &model.CloudConfigBuilder{NodeupModelContext: modelContext})
 	loader.Builders = append(loader.Builders, &model.FileAssetsBuilder{NodeupModelContext: modelContext})
@@ -345,10 +316,14 @@ func (c *NodeUpCommand) Run(out io.Writer) error {
 	loader.Builders = append(loader.Builders, &model.KopsControllerBuilder{NodeupModelContext: modelContext})
 	loader.Builders = append(loader.Builders, &model.WarmPoolBuilder{NodeupModelContext: modelContext})
 	loader.Builders = append(loader.Builders, &model.PrefixBuilder{NodeupModelContext: modelContext})
+	loader.Builders = append(loader.Builders, &model.NerdctlBuilder{NodeupModelContext: modelContext})
+	loader.Builders = append(loader.Builders, &model.CrictlBuilder{NodeupModelContext: modelContext})
 
 	loader.Builders = append(loader.Builders, &networking.CommonBuilder{NodeupModelContext: modelContext})
 	loader.Builders = append(loader.Builders, &networking.CalicoBuilder{NodeupModelContext: modelContext})
 	loader.Builders = append(loader.Builders, &networking.CiliumBuilder{NodeupModelContext: modelContext})
+	loader.Builders = append(loader.Builders, &networking.KindnetBuilder{NodeupModelContext: modelContext})
+	loader.Builders = append(loader.Builders, &networking.AmazonVPCRoutedENIBuilder{NodeupModelContext: modelContext})
 	loader.Builders = append(loader.Builders, &networking.KuberouterBuilder{NodeupModelContext: modelContext})
 
 	loader.Builders = append(loader.Builders, &model.BootstrapClientBuilder{NodeupModelContext: modelContext})
@@ -361,7 +336,6 @@ func (c *NodeUpCommand) Run(out io.Writer) error {
 		taskMap["LoadImage."+strconv.Itoa(i)] = &nodetasks.LoadImageTask{
 			Sources: image.Sources,
 			Hash:    image.Hash,
-			Runtime: nodeupConfig.ContainerRuntime,
 		}
 	}
 	// Protokube load image task is in ProtokubeBuilder
@@ -375,7 +349,7 @@ func (c *NodeUpCommand) Run(out io.Writer) error {
 			Cloud:    cloud,
 		}
 	case "dryrun":
-		assetBuilder := assets.NewAssetBuilder(c.cluster.Spec.Assets, c.cluster.Spec.KubernetesVersion, false)
+		assetBuilder := assets.NewAssetBuilder(vfs.Context, nil, false)
 		target = fi.NewNodeupDryRunTarget(assetBuilder, out)
 	default:
 		return fmt.Errorf("unsupported target type %q", c.Target)
@@ -401,7 +375,7 @@ func (c *NodeUpCommand) Run(out io.Writer) error {
 
 	if nodeupConfig.EnableLifecycleHook {
 		if bootConfig.CloudProvider == api.CloudProviderAWS {
-			err := completeWarmingLifecycleAction(cloud.(awsup.AWSCloud), modelContext)
+			err := completeWarmingLifecycleAction(ctx, cloud.(awsup.AWSCloud), modelContext)
 			if err != nil {
 				return fmt.Errorf("failed to complete lifecylce action: %w", err)
 			}
@@ -410,28 +384,36 @@ func (c *NodeUpCommand) Run(out io.Writer) error {
 	return nil
 }
 
-func getMachineType() (string, error) {
-	config := aws.NewConfig()
-	config = config.WithCredentialsChainVerboseErrors(true)
+func getMachineType(ctx context.Context) (string, error) {
+	config, err := awsconfig.LoadDefaultConfig(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to load AWS config: %w", err)
+	}
 
-	sess := session.Must(session.NewSession(config))
-	metadata := ec2metadata.New(sess)
+	metadata := imds.NewFromConfig(config)
 
 	// Get the actual instance type by querying the EC2 instance metadata service.
-	instanceTypeName, err := metadata.GetMetadata("instance-type")
+	result, err := metadata.GetMetadata(ctx, &imds.GetMetadataInput{
+		Path: "instance-type",
+	})
 	if err != nil {
 		return "", fmt.Errorf("failed to get instance metadata type: %w", err)
 	}
-	return instanceTypeName, err
+	defer result.Content.Close()
+	instanceTypeName, err := io.ReadAll(result.Content)
+	if err != nil {
+		return "", fmt.Errorf("failed to read instance metadata response: %w", err)
+	}
+	return string(instanceTypeName), err
 }
 
-func completeWarmingLifecycleAction(cloud awsup.AWSCloud, modelContext *model.NodeupModelContext) error {
+func completeWarmingLifecycleAction(ctx context.Context, cloud awsup.AWSCloud, modelContext *model.NodeupModelContext) error {
 	asgName := modelContext.BootConfig.InstanceGroupName + "." + modelContext.NodeupConfig.ClusterName
 	hookName := "kops-warmpool"
 	svc := cloud.Autoscaling()
-	hooks, err := svc.DescribeLifecycleHooks(&autoscaling.DescribeLifecycleHooksInput{
+	hooks, err := svc.DescribeLifecycleHooks(ctx, &autoscaling.DescribeLifecycleHooksInput{
 		AutoScalingGroupName: &asgName,
-		LifecycleHookNames:   []*string{&hookName},
+		LifecycleHookNames:   []string{hookName},
 	})
 	if err != nil {
 		return fmt.Errorf("failed to find lifecycle hook %q: %w", hookName, err)
@@ -439,7 +421,7 @@ func completeWarmingLifecycleAction(cloud awsup.AWSCloud, modelContext *model.No
 
 	if len(hooks.LifecycleHooks) > 0 {
 		klog.Info("Found ASG lifecycle hook")
-		_, err := svc.CompleteLifecycleAction(&autoscaling.CompleteLifecycleActionInput{
+		_, err := svc.CompleteLifecycleAction(ctx, &autoscaling.CompleteLifecycleActionInput{
 			AutoScalingGroupName:  &asgName,
 			InstanceId:            &modelContext.InstanceID,
 			LifecycleHookName:     &hookName,
@@ -456,7 +438,7 @@ func completeWarmingLifecycleAction(cloud awsup.AWSCloud, modelContext *model.No
 }
 
 func evaluateSpec(nodeupConfig *nodeup.Config, cloudProvider api.CloudProviderID) error {
-	hostnameOverride, err := evaluateHostnameOverride(cloudProvider, nodeupConfig.UseInstanceIDForNodeName)
+	hostnameOverride, err := evaluateHostnameOverride(cloudProvider)
 	if err != nil {
 		return err
 	}
@@ -471,59 +453,18 @@ func evaluateSpec(nodeupConfig *nodeup.Config, cloudProvider api.CloudProviderID
 		}
 	}
 
-	if nodeupConfig.ContainerRuntime == "docker" {
-		err = evaluateDockerSpecStorage(nodeupConfig.Docker)
-		if err != nil {
-			return err
-		}
-	}
-
 	return nil
 }
 
-func evaluateHostnameOverride(cloudProvider api.CloudProviderID, useInstanceIDForNodeName bool) (string, error) {
+func evaluateHostnameOverride(cloudProvider api.CloudProviderID) (string, error) {
 	switch cloudProvider {
 	case api.CloudProviderAWS:
 		instanceIDBytes, err := vfs.Context.ReadFile("metadata://aws/meta-data/instance-id")
 		if err != nil {
 			return "", fmt.Errorf("error reading instance-id from AWS metadata: %v", err)
 		}
-		instanceID := string(instanceIDBytes)
 
-		if useInstanceIDForNodeName {
-			return instanceID, nil
-		}
-
-		azBytes, err := vfs.Context.ReadFile("metadata://aws/meta-data/placement/availability-zone")
-		if err != nil {
-			return "", fmt.Errorf("error reading availability zone from AWS metadata: %v", err)
-		}
-
-		config := aws.NewConfig()
-		config = config.WithCredentialsChainVerboseErrors(true)
-
-		s, err := session.NewSession(config)
-		if err != nil {
-			return "", fmt.Errorf("error starting new AWS session: %v", err)
-		}
-
-		svc := ec2.New(s, config.WithRegion(string(azBytes[:len(azBytes)-1])))
-
-		result, err := svc.DescribeInstances(&ec2.DescribeInstancesInput{
-			InstanceIds: []*string{&instanceID},
-		})
-		if err != nil {
-			return "", fmt.Errorf("error describing instances: %v", err)
-		}
-
-		if len(result.Reservations) > 1 {
-			return "", fmt.Errorf("too many reservations returned for the single instance-id")
-		}
-		if len(result.Reservations[0].Instances) > 1 {
-			return "", fmt.Errorf("too many instances returned for the single instance-id")
-		}
-
-		return *(result.Reservations[0].Instances[0].PrivateDnsName), nil
+		return string(instanceIDBytes), nil
 
 	case api.CloudProviderGCE:
 		// This lets us tolerate broken hostnames (i.e. systemd)
@@ -584,56 +525,6 @@ func evaluateBindAddress(bindAddress string) (string, error) {
 	return bindAddress, nil
 }
 
-// evaluateDockerSpec selects the first supported storage mode, if it is a list
-func evaluateDockerSpecStorage(spec *api.DockerConfig) error {
-	storage := fi.ValueOf(spec.Storage)
-	if strings.Contains(fi.ValueOf(spec.Storage), ",") {
-		precedence := strings.Split(storage, ",")
-		for _, opt := range precedence {
-			fs := opt
-			if fs == "overlay2" {
-				fs = "overlay"
-			}
-			supported, err := kernelHasFilesystem(fs)
-			if err != nil {
-				klog.Warningf("error checking if %q filesystem is supported: %v", fs, err)
-				continue
-			}
-
-			if !supported {
-				// overlay -> overlay
-				// aufs -> aufs
-				module := fs
-				if err = modprobe(fs); err != nil {
-					klog.Warningf("error running `modprobe %q`: %v", module, err)
-				}
-			}
-
-			supported, err = kernelHasFilesystem(fs)
-			if err != nil {
-				klog.Warningf("error checking if %q filesystem is supported: %v", fs, err)
-				continue
-			}
-
-			if supported {
-				klog.Infof("Using supported docker storage %q", opt)
-				spec.Storage = fi.PtrTo(opt)
-				return nil
-			}
-
-			klog.Warningf("%q docker storage was specified, but filesystem is not supported", opt)
-		}
-
-		// Just in case we don't recognize the driver?
-		// TODO: Is this the best behaviour
-		klog.Warningf("No storage module was supported from %q, will default to %q", storage, precedence[0])
-		spec.Storage = fi.PtrTo(precedence[0])
-		return nil
-	}
-
-	return nil
-}
-
 // kernelHasFilesystem checks if /proc/filesystems contains the specified filesystem
 func kernelHasFilesystem(fs string) (bool, error) {
 	contents, err := os.ReadFile("/proc/filesystems")
@@ -669,12 +560,20 @@ func modprobe(module string) error {
 }
 
 // loadKernelModules is a hack to force br_netfilter to be loaded
+// and used by some components to load its recommended modules.
 // TODO: Move to tasks architecture
 func loadKernelModules(context *model.NodeupModelContext) error {
-	err := modprobe("br_netfilter")
-	if err != nil {
-		// TODO: Return error in 1.11 (too risky for 1.10)
-		klog.Warningf("error loading br_netfilter module: %v", err)
+	if context.NodeupConfig.Networking.Kindnet != nil {
+		err := modprobe("nfnetlink_queue")
+		if err != nil {
+			klog.Warningf("error loading nfnetlink_queue module: %v", err)
+		}
+	} else {
+		err := modprobe("br_netfilter")
+		if err != nil {
+			// TODO: Return error in 1.11 (too risky for 1.10)
+			klog.Warningf("error loading br_netfilter module: %v", err)
+		}
 	}
 	// TODO: Add to /etc/modules-load.d/ ?
 	return nil
@@ -699,14 +598,15 @@ func getRegion(ctx context.Context, bootConfig *nodeup.BootConfig) (string, erro
 func seedRNG(ctx context.Context, bootConfig *nodeup.BootConfig, region string) error {
 	switch bootConfig.CloudProvider {
 	case api.CloudProviderAWS:
-		config := aws.NewConfig().WithCredentialsChainVerboseErrors(true).WithRegion(region)
-		sess, err := session.NewSession(config)
+		cfg, err := awsconfig.LoadDefaultConfig(context.TODO(),
+			awsconfig.WithRegion(region),
+		)
 		if err != nil {
 			return err
 		}
 
-		random, err := kms.New(sess, config).GenerateRandom(&kms.GenerateRandomInput{
-			NumberOfBytes: aws.Int64(64),
+		random, err := kms.NewFromConfig(cfg).GenerateRandom(ctx, &kms.GenerateRandomInput{
+			NumberOfBytes: aws.Int32(64),
 		})
 		if err != nil {
 			return fmt.Errorf("generating random seed: %v", err)
@@ -731,11 +631,10 @@ func seedRNG(ctx context.Context, bootConfig *nodeup.BootConfig, region string) 
 // getNodeConfigFromServers queries kops-controllers for our node's configuration.
 func getNodeConfigFromServers(ctx context.Context, bootConfig *nodeup.BootConfig, region string) (*nodeup.BootstrapResponse, error) {
 	var authenticator bootstrap.Authenticator
-	var resolver resolver.Resolver
 
 	switch bootConfig.CloudProvider {
 	case api.CloudProviderAWS:
-		a, err := awsup.NewAWSAuthenticator(region)
+		a, err := awsup.NewAWSAuthenticator(ctx, region)
 		if err != nil {
 			return nil, err
 		}
@@ -746,12 +645,6 @@ func getNodeConfigFromServers(ctx context.Context, bootConfig *nodeup.BootConfig
 			return nil, err
 		}
 		authenticator = a
-
-		discovery, err := gcediscovery.New()
-		if err != nil {
-			return nil, err
-		}
-		resolver = discovery
 	case api.CloudProviderHetzner:
 		a, err := hetzner.NewHetznerAuthenticator()
 		if err != nil {
@@ -776,6 +669,20 @@ func getNodeConfigFromServers(ctx context.Context, bootConfig *nodeup.BootConfig
 			return nil, err
 		}
 		authenticator = a
+	case api.CloudProviderAzure:
+		a, err := azure.NewAzureAuthenticator()
+		if err != nil {
+			return nil, err
+		}
+		authenticator = a
+
+	case "metal":
+		a, err := pkibootstrap.NewAuthenticatorFromFile("/etc/kubernetes/kops/pki/machine/private.pem")
+		if err != nil {
+			return nil, err
+		}
+		authenticator = a
+
 	default:
 		return nil, fmt.Errorf("unsupported cloud provider for node configuration %s", bootConfig.CloudProvider)
 	}
@@ -799,9 +706,9 @@ func getNodeConfigFromServers(ctx context.Context, bootConfig *nodeup.BootConfig
 
 	client := &kopscontrollerclient.Client{
 		Authenticator: authenticator,
-		Resolver:      resolver,
 		CAs:           []byte(bootConfig.ConfigServer.CACertificates),
 	}
+	defer client.Close()
 
 	var merr error
 	for _, server := range bootConfig.ConfigServer.Servers {
@@ -832,7 +739,12 @@ func getNodeConfigFromServers(ctx context.Context, bootConfig *nodeup.BootConfig
 	return nil, merr
 }
 
-func getAWSConfigurationMode(c *model.NodeupModelContext) (string, error) {
+func getAWSConfigurationMode(ctx context.Context, c *model.NodeupModelContext) (string, error) {
+	// Check if WarmPool is enabled first, to avoid additional API calls
+	if len(c.NodeupConfig.WarmPoolImages) == 0 {
+		return "", nil
+	}
+
 	// Only worker nodes and apiservers can actually autoscale.
 	// We are not adding describe permissions to the other roles
 	role := c.BootConfig.InstanceGroupRole
@@ -840,20 +752,16 @@ func getAWSConfigurationMode(c *model.NodeupModelContext) (string, error) {
 		return "", nil
 	}
 
-	svc := c.Cloud.(awsup.AWSCloud).Autoscaling()
-
-	result, err := svc.DescribeAutoScalingInstances(&autoscaling.DescribeAutoScalingInstancesInput{
-		InstanceIds: []*string{&c.InstanceID},
-	})
+	targetLifecycleState, err := vfs.Context.ReadFile("metadata://aws/meta-data/autoscaling/target-lifecycle-state")
 	if err != nil {
-		return "", fmt.Errorf("error describing instances: %v", err)
+		var awsErr *awshttp.ResponseError
+		if errors.As(err, &awsErr) && awsErr.HTTPStatusCode() == http.StatusNotFound {
+			return "", nil
+		}
+		return "", fmt.Errorf("error reading target-lifecycle-state from instance metadata: %v", err)
 	}
-	// If the instance is not a part of an ASG, it won't be in a warm pool either.
-	if len(result.AutoScalingInstances) < 1 {
-		return "", nil
-	}
-	lifecycle := fi.ValueOf(result.AutoScalingInstances[0].LifecycleState)
-	if strings.HasPrefix(lifecycle, "Warmed:") {
+
+	if strings.HasPrefix(string(targetLifecycleState), "Warmed:") {
 		klog.Info("instance is entering warm pool")
 		return model.ConfigurationModeWarming, nil
 	} else {

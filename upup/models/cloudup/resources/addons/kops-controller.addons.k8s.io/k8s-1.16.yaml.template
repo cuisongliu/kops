@@ -32,10 +32,8 @@ spec:
         k8s-addon: kops-controller.addons.k8s.io
         k8s-app: kops-controller
         version: v{{ KopsVersion }}
-{{ if UseKopsControllerForNodeBootstrap }}
       annotations:
         dns.alpha.kubernetes.io/internal: kops-controller.internal.{{ ClusterName }}
-{{ end }}
     spec:
       affinity:
         nodeAffinity:
@@ -86,10 +84,10 @@ spec:
         env:
         - name: KUBERNETES_SERVICE_HOST
           value: "127.0.0.1"
-{{- if KopsSystemEnv }}
-{{ range $var := KopsSystemEnv }}
-        - name: {{ $var.Name }}
-          value: {{ $var.Value }}
+{{- if KopsControllerEnv }}
+{{ range $var := KopsControllerEnv }}
+        - name: "{{ $var.Name }}"
+          value: "{{ $var.Value }}"
 {{ end }}
 {{- end }}
         resources:

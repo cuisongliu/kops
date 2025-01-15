@@ -17,9 +17,11 @@ limitations under the License.
 package awstasks
 
 import (
+	"context"
 	"fmt"
 
-	"github.com/aws/aws-sdk-go/service/autoscaling"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/autoscaling"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awsup"
@@ -40,7 +42,7 @@ type AutoscalingLifecycleHook struct {
 
 	AutoscalingGroup    *AutoscalingGroup
 	DefaultResult       *string
-	HeartbeatTimeout    *int64
+	HeartbeatTimeout    *int32
 	LifecycleTransition *string
 
 	Enabled *bool
@@ -53,14 +55,15 @@ func (h *AutoscalingLifecycleHook) CompareWithID() *string {
 }
 
 func (h *AutoscalingLifecycleHook) Find(c *fi.CloudupContext) (*AutoscalingLifecycleHook, error) {
-	cloud := c.T.Cloud.(awsup.AWSCloud)
+	ctx := c.Context()
+	cloud := awsup.GetCloud(c)
 
 	request := &autoscaling.DescribeLifecycleHooksInput{
 		AutoScalingGroupName: h.AutoscalingGroup.Name,
-		LifecycleHookNames:   []*string{h.GetHookName()},
+		LifecycleHookNames:   []string{aws.ToString(h.GetHookName())},
 	}
 
-	response, err := cloud.Autoscaling().DescribeLifecycleHooks(request)
+	response, err := cloud.Autoscaling().DescribeLifecycleHooks(ctx, request)
 	if err != nil {
 		return nil, fmt.Errorf("error listing ASG Lifecycle Hooks: %v", err)
 	}
@@ -109,6 +112,8 @@ func (_ *AutoscalingLifecycleHook) CheckChanges(a, e, changes *AutoscalingLifecy
 }
 
 func (*AutoscalingLifecycleHook) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *AutoscalingLifecycleHook) error {
+	ctx := context.TODO()
+
 	if changes != nil {
 		if fi.ValueOf(e.Enabled) {
 			request := &autoscaling.PutLifecycleHookInput{
@@ -118,7 +123,7 @@ func (*AutoscalingLifecycleHook) RenderAWS(t *awsup.AWSAPITarget, a, e, changes 
 				LifecycleHookName:    e.GetHookName(),
 				LifecycleTransition:  e.LifecycleTransition,
 			}
-			_, err := t.Cloud.Autoscaling().PutLifecycleHook(request)
+			_, err := t.Cloud.Autoscaling().PutLifecycleHook(ctx, request)
 			if err != nil {
 				return err
 			}
@@ -127,7 +132,7 @@ func (*AutoscalingLifecycleHook) RenderAWS(t *awsup.AWSAPITarget, a, e, changes 
 				AutoScalingGroupName: e.AutoscalingGroup.Name,
 				LifecycleHookName:    e.GetHookName(),
 			}
-			_, err := t.Cloud.Autoscaling().DeleteLifecycleHook(request)
+			_, err := t.Cloud.Autoscaling().DeleteLifecycleHook(ctx, request)
 			if err != nil {
 				return err
 			}
@@ -141,7 +146,7 @@ type terraformASGLifecycleHook struct {
 	Name                 *string                  `cty:"name"`
 	AutoScalingGroupName *terraformWriter.Literal `cty:"autoscaling_group_name"`
 	DefaultResult        *string                  `cty:"default_result"`
-	HeartbeatTimeout     *int64                   `cty:"heartbeat_timeout"`
+	HeartbeatTimeout     *int32                   `cty:"heartbeat_timeout"`
 	LifecycleTransition  *string                  `cty:"lifecycle_transition"`
 }
 

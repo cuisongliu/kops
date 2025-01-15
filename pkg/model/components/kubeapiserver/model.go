@@ -62,9 +62,10 @@ func (b *KubeApiserverBuilder) Build(c *fi.CloudupModelBuilderContext) error {
 	})
 
 	b.AssetBuilder.StaticManifests = append(b.AssetBuilder.StaticManifests, &assets.StaticManifest{
-		Key:   key,
-		Path:  location,
-		Roles: []kops.InstanceGroupRole{kops.InstanceGroupRoleControlPlane, kops.InstanceGroupRoleAPIServer},
+		Key:      key,
+		Path:     location,
+		Contents: manifestYAML,
+		Roles:    []kops.InstanceGroupRole{kops.InstanceGroupRoleControlPlane, kops.InstanceGroupRoleAPIServer},
 	})
 	return nil
 }
@@ -79,7 +80,7 @@ kind: Pod
 spec:
   containers:
   - name: healthcheck
-    image: registry.k8s.io/kops/kube-apiserver-healthcheck:1.28.0-alpha.1
+    image: registry.k8s.io/kops/kube-apiserver-healthcheck:1.31.0-beta.1
     livenessProbe:
       httpGet:
         # The sidecar serves a healthcheck on the same port,

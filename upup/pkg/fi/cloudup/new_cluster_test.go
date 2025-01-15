@@ -20,6 +20,7 @@ import (
 	"reflect"
 	"testing"
 
+	"k8s.io/kops/util/pkg/vfs"
 	"sigs.k8s.io/yaml"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -86,7 +87,6 @@ func TestCreateEtcdCluster(t *testing.T) {
 func TestSetupNetworking(t *testing.T) {
 	tests := []struct {
 		options  NewClusterOptions
-		actual   api.Cluster
 		expected api.Cluster
 	}{
 		{
@@ -313,6 +313,18 @@ func TestSetupNetworking(t *testing.T) {
 				},
 			},
 		},
+		{
+			options: NewClusterOptions{
+				Networking: "kindnet",
+			},
+			expected: api.Cluster{
+				Spec: api.ClusterSpec{
+					Networking: api.NetworkingSpec{
+						Kindnet: &api.KindnetNetworkingSpec{},
+					},
+				},
+			},
+		},
 	}
 
 	for _, test := range tests {
@@ -336,6 +348,102 @@ func TestSetupNetworking(t *testing.T) {
 	}
 }
 
+func TestSetupTopology(t *testing.T) {
+	tests := []struct {
+		options  NewClusterOptions
+		skeleton api.Cluster
+		expected api.Cluster
+	}{
+		{
+			options: NewClusterOptions{
+				Topology: api.TopologyPrivate,
+				Bastion:  true,
+			},
+			skeleton: api.Cluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test",
+				},
+				Spec: api.ClusterSpec{
+					KubernetesVersion: "v1.29.0",
+					Networking: api.NetworkingSpec{
+						Topology: &api.TopologySpec{
+							DNS: api.DNSTypeNone,
+						},
+					},
+				},
+			},
+			expected: api.Cluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test",
+				},
+				Spec: api.ClusterSpec{
+					KubernetesVersion: "v1.29.0",
+					Networking: api.NetworkingSpec{
+						Topology: &api.TopologySpec{
+							DNS: api.DNSTypeNone,
+						},
+					},
+				},
+			},
+		},
+		{
+			options: NewClusterOptions{
+				Topology: api.TopologyPrivate,
+				DNSType:  string(api.DNSTypePublic),
+				Bastion:  true,
+			},
+			skeleton: api.Cluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test",
+				},
+				Spec: api.ClusterSpec{
+					KubernetesVersion: "v1.29.0",
+					Networking: api.NetworkingSpec{
+						Topology: &api.TopologySpec{
+							DNS: api.DNSTypePublic,
+						},
+					},
+				},
+			},
+			expected: api.Cluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test",
+				},
+				Spec: api.ClusterSpec{
+					KubernetesVersion: "v1.29.0",
+					Networking: api.NetworkingSpec{
+						Topology: &api.TopologySpec{
+							DNS: api.DNSTypePublic,
+							Bastion: &api.BastionSpec{
+								PublicName: "bastion.test",
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	for _, test := range tests {
+		_, err := setupTopology(&test.options, &test.skeleton, nil)
+		if err != nil {
+			t.Errorf("error during topology setup: %v", err)
+		}
+		expectedYaml, err := yaml.Marshal(test.expected)
+		if err != nil {
+			t.Errorf("error converting expected cluster spec to yaml: %v", err)
+		}
+		actualYaml, err := yaml.Marshal(&test.skeleton)
+		if err != nil {
+			t.Errorf("error converting actual cluster spec to yaml: %v", err)
+		}
+		if string(expectedYaml) != string(actualYaml) {
+			diffString := diff.FormatDiff(string(expectedYaml), string(actualYaml))
+			t.Errorf("unexpected cluster topology setup:\n%s", diffString)
+		}
+	}
+}
+
 func TestDefaultImage(t *testing.T) {
 	tests := []struct {
 		cluster      *api.Cluster
@@ -345,7 +453,7 @@ func TestDefaultImage(t *testing.T) {
 		{
 			cluster: &api.Cluster{
 				Spec: api.ClusterSpec{
-					KubernetesVersion: "v1.25.0",
+					KubernetesVersion: "v1.32.0",
 					CloudProvider: api.CloudProviderSpec{
 						AWS: &api.AWSSpec{},
 					},
@@ -357,7 +465,7 @@ func TestDefaultImage(t *testing.T) {
 		{
 			cluster: &api.Cluster{
 				Spec: api.ClusterSpec{
-					KubernetesVersion: "v1.25.0",
+					KubernetesVersion: "v1.32.0",
 					CloudProvider: api.CloudProviderSpec{
 						AWS: &api.AWSSpec{},
 					},
@@ -369,7 +477,7 @@ func TestDefaultImage(t *testing.T) {
 		{
 			cluster: &api.Cluster{
 				Spec: api.ClusterSpec{
-					KubernetesVersion: "v1.25.0",
+					KubernetesVersion: "v1.32.0",
 					CloudProvider: api.CloudProviderSpec{
 						Azure: &api.AzureSpec{},
 					},
@@ -381,7 +489,7 @@ func TestDefaultImage(t *testing.T) {
 		{
 			cluster: &api.Cluster{
 				Spec: api.ClusterSpec{
-					KubernetesVersion: "v1.25.0",
+					KubernetesVersion: "v1.32.0",
 					CloudProvider: api.CloudProviderSpec{
 						GCE: &api.GCESpec{},
 					},
@@ -393,78 +501,42 @@ func TestDefaultImage(t *testing.T) {
 		{
 			cluster: &api.Cluster{
 				Spec: api.ClusterSpec{
-					KubernetesVersion: "v1.25.0",
+					KubernetesVersion: "v1.32.0",
 					CloudProvider: api.CloudProviderSpec{
 						DO: &api.DOSpec{},
 					},
 				},
 			},
 			architecture: architectures.ArchitectureAmd64,
-			expected:     defaultDOImageFocal,
+			expected:     defaultDOImageNoble,
 		},
 		{
 			cluster: &api.Cluster{
 				Spec: api.ClusterSpec{
-					KubernetesVersion: "v1.27.0",
-					CloudProvider: api.CloudProviderSpec{
-						DO: &api.DOSpec{},
-					},
-				},
-			},
-			architecture: architectures.ArchitectureAmd64,
-			expected:     defaultDOImageJammy,
-		},
-		{
-			cluster: &api.Cluster{
-				Spec: api.ClusterSpec{
-					KubernetesVersion: "v1.25.0",
+					KubernetesVersion: "v1.32.0",
 					CloudProvider: api.CloudProviderSpec{
 						Hetzner: &api.HetznerSpec{},
 					},
 				},
 			},
 			architecture: architectures.ArchitectureAmd64,
-			expected:     defaultHetznerImageFocal,
+			expected:     defaultHetznerImageNoble,
 		},
 		{
 			cluster: &api.Cluster{
 				Spec: api.ClusterSpec{
-					KubernetesVersion: "v1.27.0",
-					CloudProvider: api.CloudProviderSpec{
-						Hetzner: &api.HetznerSpec{},
-					},
-				},
-			},
-			architecture: architectures.ArchitectureAmd64,
-			expected:     defaultHetznerImageJammy,
-		},
-		{
-			cluster: &api.Cluster{
-				Spec: api.ClusterSpec{
-					KubernetesVersion: "v1.25.0",
+					KubernetesVersion: "v1.32.0",
 					CloudProvider: api.CloudProviderSpec{
 						Scaleway: &api.ScalewaySpec{},
 					},
 				},
 			},
 			architecture: architectures.ArchitectureAmd64,
-			expected:     defaultScalewayImageFocal,
-		},
-		{
-			cluster: &api.Cluster{
-				Spec: api.ClusterSpec{
-					KubernetesVersion: "v1.27.0",
-					CloudProvider: api.CloudProviderSpec{
-						Scaleway: &api.ScalewaySpec{},
-					},
-				},
-			},
-			architecture: architectures.ArchitectureAmd64,
-			expected:     defaultScalewayImageJammy,
+			expected:     defaultScalewayImageNoble,
 		},
 	}
 
-	channel, err := api.LoadChannel("file://tests/channels/channel.yaml")
+	channel, err := api.LoadChannel(vfs.NewTestingVFSContext(), "file://tests/channels/channel.yaml")
 	if err != nil {
 		t.Fatalf("unable to load test channel: %v", err)
 	}

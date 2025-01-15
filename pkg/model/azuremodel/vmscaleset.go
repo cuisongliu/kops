@@ -20,8 +20,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2022-08-01/compute"
-	"github.com/Azure/go-autorest/autorest/to"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
+	compute "github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/compute/armcompute"
 	"k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/pkg/model"
 	"k8s.io/kops/pkg/model/defaults"
@@ -41,6 +41,19 @@ var _ fi.CloudupModelBuilder = &VMScaleSetModelBuilder{}
 
 // Build is responsible for constructing the VM ScaleSet from the kops spec.
 func (b *VMScaleSetModelBuilder) Build(c *fi.CloudupModelBuilderContext) error {
+	c.AddTask(&azuretasks.ApplicationSecurityGroup{
+		Name:          fi.PtrTo(b.NameForApplicationSecurityGroupControlPlane()),
+		Lifecycle:     b.Lifecycle,
+		ResourceGroup: b.LinkToResourceGroup(),
+		Tags:          map[string]*string{},
+	})
+	c.AddTask(&azuretasks.ApplicationSecurityGroup{
+		Name:          fi.PtrTo(b.NameForApplicationSecurityGroupNodes()),
+		Lifecycle:     b.Lifecycle,
+		ResourceGroup: b.LinkToResourceGroup(),
+		Tags:          map[string]*string{},
+	})
+
 	for _, ig := range b.InstanceGroups {
 		name := b.AutoscalingGroupName(ig)
 		vmss, err := b.buildVMScaleSetTask(c, name, ig)
@@ -49,17 +62,29 @@ func (b *VMScaleSetModelBuilder) Build(c *fi.CloudupModelBuilderContext) error {
 		}
 		c.AddTask(vmss)
 
-		// Create tasks for assigning built-in roles to VM Scale Sets.
-		// See https://docs.microsoft.com/en-us/azure/role-based-access-control/built-in-roles
-		// for the ID definitions.
-		roleDefIDs := map[string]string{
-			// Owner
-			"owner": "8e3af657-a8ff-443c-a75c-2fe8c4bcb635",
-			// Storage Blob Data Contributor
-			"blob": "ba92f5b4-2d11-453d-a403-e96b0029c9fe",
-		}
-		for k, roleDefID := range roleDefIDs {
-			c.AddTask(b.buildRoleAssignmentTask(vmss, k, roleDefID))
+		if ig.IsControlPlane() || b.Cluster.UsesLegacyGossip() {
+			// Create tasks for assigning built-in roles to VM Scale Sets.
+			// See https://docs.microsoft.com/en-us/azure/role-based-access-control/built-in-roles
+			resourceGroupID := fmt.Sprintf("/subscriptions/%s/resourceGroups/%s",
+				b.Cluster.Spec.CloudProvider.Azure.SubscriptionID,
+				b.Cluster.Spec.CloudProvider.Azure.ResourceGroupName,
+			)
+			c.AddTask(&azuretasks.RoleAssignment{
+				Name:       to.Ptr(fmt.Sprintf("%s-%s", *vmss.Name, "owner")),
+				Lifecycle:  b.Lifecycle,
+				Scope:      to.Ptr(resourceGroupID),
+				VMScaleSet: vmss,
+				// Owner
+				RoleDefID: to.Ptr("8e3af657-a8ff-443c-a75c-2fe8c4bcb635"),
+			})
+			c.AddTask(&azuretasks.RoleAssignment{
+				Name:       to.Ptr(fmt.Sprintf("%s-%s", *vmss.Name, "blob")),
+				Lifecycle:  b.Lifecycle,
+				Scope:      to.Ptr(b.Cluster.Spec.CloudProvider.Azure.StorageAccountID),
+				VMScaleSet: vmss,
+				// Storage Blob Data Contributor
+				RoleDefID: to.Ptr("ba92f5b4-2d11-453d-a403-e96b0029c9fe"),
+			})
 		}
 	}
 
@@ -71,13 +96,13 @@ func (b *VMScaleSetModelBuilder) buildVMScaleSetTask(
 	name string,
 	ig *kops.InstanceGroup,
 ) (*azuretasks.VMScaleSet, error) {
-	var azNumbers []string
+	var azNumbers []*string
 	for _, zone := range ig.Spec.Zones {
 		az, err := azure.ZoneToAvailabilityZoneNumber(zone)
 		if err != nil {
 			return nil, err
 		}
-		azNumbers = append(azNumbers, az)
+		azNumbers = append(azNumbers, &az)
 	}
 	t := &azuretasks.VMScaleSet{
 		Name:               fi.PtrTo(name),
@@ -88,6 +113,15 @@ func (b *VMScaleSetModelBuilder) buildVMScaleSetTask(
 		ComputerNamePrefix: fi.PtrTo(ig.Name),
 		AdminUser:          fi.PtrTo(b.Cluster.Spec.CloudProvider.Azure.AdminUser),
 		Zones:              azNumbers,
+	}
+
+	switch ig.Spec.Role {
+	case kops.InstanceGroupRoleControlPlane:
+		t.ApplicationSecurityGroups = append(t.ApplicationSecurityGroups, b.LinkToApplicationSecurityGroupControlPlane())
+	case kops.InstanceGroupRoleNode:
+		t.ApplicationSecurityGroups = append(t.ApplicationSecurityGroups, b.LinkToApplicationSecurityGroupNodes())
+	default:
+		return nil, fmt.Errorf("unexpected instance group role for instance group: %q, %q", ig.Name, ig.Spec.Role)
 	}
 
 	var err error
@@ -138,7 +172,7 @@ func (b *VMScaleSetModelBuilder) buildVMScaleSetTask(
 
 	if ig.Spec.Role == kops.InstanceGroupRoleControlPlane && b.Cluster.Spec.API.LoadBalancer != nil {
 		t.LoadBalancer = &azuretasks.LoadBalancer{
-			Name: to.StringPtr(b.NameForLoadBalancer()),
+			Name: to.Ptr(b.NameForLoadBalancer()),
 		}
 	}
 
@@ -183,7 +217,7 @@ func getStorageProfile(spec *kops.InstanceGroupSpec) (*compute.VirtualMachineSca
 	if spec.RootVolume != nil && spec.RootVolume.Type != nil {
 		storageAccountType = compute.StorageAccountTypes(*spec.RootVolume.Type)
 	} else {
-		storageAccountType = compute.StorageAccountTypesPremiumLRS
+		storageAccountType = compute.StorageAccountTypesStandardSSDLRS
 	}
 
 	imageReference, err := parseImage(spec.Image)
@@ -192,16 +226,15 @@ func getStorageProfile(spec *kops.InstanceGroupSpec) (*compute.VirtualMachineSca
 	}
 
 	return &compute.VirtualMachineScaleSetStorageProfile{
-		DiskControllerType: fi.PtrTo(string(compute.SCSI)),
-		ImageReference:     imageReference,
-		OsDisk: &compute.VirtualMachineScaleSetOSDisk{
-			OsType:       compute.OperatingSystemTypes(compute.Linux),
-			CreateOption: compute.DiskCreateOptionTypesFromImage,
-			DiskSizeGB:   to.Int32Ptr(volumeSize),
+		ImageReference: imageReference,
+		OSDisk: &compute.VirtualMachineScaleSetOSDisk{
+			OSType:       to.Ptr(compute.OperatingSystemTypesLinux),
+			CreateOption: to.Ptr(compute.DiskCreateOptionTypesFromImage),
+			DiskSizeGB:   to.Ptr(volumeSize),
 			ManagedDisk: &compute.VirtualMachineScaleSetManagedDiskParameters{
-				StorageAccountType: storageAccountType,
+				StorageAccountType: &storageAccountType,
 			},
-			Caching: compute.CachingTypes(compute.HostCachingReadWrite),
+			Caching: to.Ptr(compute.CachingTypesReadWrite),
 		},
 	}, nil
 }
@@ -209,7 +242,7 @@ func getStorageProfile(spec *kops.InstanceGroupSpec) (*compute.VirtualMachineSca
 func parseImage(image string) (*compute.ImageReference, error) {
 	if strings.HasPrefix(image, "/subscriptions/") {
 		return &compute.ImageReference{
-			ID: to.StringPtr(image),
+			ID: to.Ptr(image),
 		}, nil
 	}
 
@@ -218,20 +251,9 @@ func parseImage(image string) (*compute.ImageReference, error) {
 		return nil, fmt.Errorf("malformed format of image urn: %s", image)
 	}
 	return &compute.ImageReference{
-		Publisher: to.StringPtr(l[0]),
-		Offer:     to.StringPtr(l[1]),
-		Sku:       to.StringPtr(l[2]),
-		Version:   to.StringPtr(l[3]),
+		Publisher: to.Ptr(l[0]),
+		Offer:     to.Ptr(l[1]),
+		SKU:       to.Ptr(l[2]),
+		Version:   to.Ptr(l[3]),
 	}, nil
-}
-
-func (b *VMScaleSetModelBuilder) buildRoleAssignmentTask(vmss *azuretasks.VMScaleSet, roleKey, roleDefID string) *azuretasks.RoleAssignment {
-	name := fmt.Sprintf("%s-%s", *vmss.Name, roleKey)
-	return &azuretasks.RoleAssignment{
-		Name:          to.StringPtr(name),
-		Lifecycle:     b.Lifecycle,
-		ResourceGroup: b.LinkToResourceGroup(),
-		VMScaleSet:    vmss,
-		RoleDefID:     to.StringPtr(roleDefID),
-	}
 }

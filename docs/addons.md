@@ -71,8 +71,10 @@ spec:
     enabled: true
     expander: least-waste
     balanceSimilarNodeGroups: false
+    emitPerNodegroupMetrics: false
     awsUseStaticInstanceList: false
     scaleDownUtilizationThreshold: 0.5
+    skipNodesWithCustomControllerPods: true
     skipNodesWithLocalStorage: true
     skipNodesWithSystemPods: true
     newPodScaleUpDelay: 0s
@@ -279,6 +281,7 @@ spec:
     enableSQSTerminationDraining: true
     managedASGTag: "aws-node-termination-handler/managed"
     prometheusEnable: true
+    webhookURL: "https://hooks.slack.com/services/YOUR/SLACK/URL"
 ```
 
 ##### Queue Processor Mode

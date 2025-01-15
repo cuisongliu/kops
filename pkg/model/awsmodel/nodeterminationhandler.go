@@ -18,29 +18,20 @@ package awsmodel
 
 import (
 	"fmt"
-	"strings"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/eventbridge"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/eventbridge"
 	"k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/pkg/model"
+	"k8s.io/kops/pkg/model/iam"
+	"k8s.io/kops/pkg/util/stringorset"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awstasks"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awsup"
 )
 
 const (
-	NTHTemplate = `{
-		"Version": "2012-10-17",
-		"Statement": [{                     
-			"Effect": "Allow",
-			"Principal": {
-				"Service": ["events.amazonaws.com", "sqs.amazonaws.com"]
-			},
-			"Action": "sqs:SendMessage",
-			"Resource": "arn:{{ AWS_PARTITION }}:sqs:{{ AWS_REGION }}:{{ ACCOUNT_ID }}:{{ SQS_QUEUE_NAME }}"
-		}]
-	}`
 	DefaultMessageRetentionPeriod = 300
 )
 
@@ -111,7 +102,7 @@ func (b *NodeTerminationHandlerBuilder) configureASG(c *fi.CloudupModelBuilderCo
 		Lifecycle:           b.Lifecycle,
 		AutoscalingGroup:    b.LinkToAutoscalingGroup(ig),
 		DefaultResult:       aws.String("CONTINUE"),
-		HeartbeatTimeout:    aws.Int64(DefaultMessageRetentionPeriod),
+		HeartbeatTimeout:    aws.Int32(DefaultMessageRetentionPeriod),
 		LifecycleTransition: aws.String("autoscaling:EC2_INSTANCE_TERMINATING"),
 		Enabled:             aws.Bool(true),
 	}
@@ -123,15 +114,33 @@ func (b *NodeTerminationHandlerBuilder) configureASG(c *fi.CloudupModelBuilderCo
 
 func (b *NodeTerminationHandlerBuilder) build(c *fi.CloudupModelBuilderContext) error {
 	queueName := model.QueueNamePrefix(b.ClusterName()) + "-nth"
-	policy := strings.ReplaceAll(NTHTemplate, "{{ AWS_REGION }}", b.Region)
-	policy = strings.ReplaceAll(policy, "{{ AWS_PARTITION }}", b.AWSPartition)
-	policy = strings.ReplaceAll(policy, "{{ ACCOUNT_ID }}", b.AWSAccountID)
-	policy = strings.ReplaceAll(policy, "{{ SQS_QUEUE_NAME }}", queueName)
+
+	policy := iam.NewPolicy(b.ClusterName(), b.AWSPartition)
+	arn := arn.ARN{
+		Partition: b.AWSPartition,
+		Service:   "sqs",
+		Region:    b.Region,
+		AccountID: b.AWSAccountID,
+		Resource:  queueName,
+	}
+
+	policy.Statement = append(policy.Statement, &iam.Statement{
+		Effect: iam.StatementEffectAllow,
+		Principal: iam.Principal{
+			Service: fi.PtrTo(stringorset.Of("events.amazonaws.com", "sqs.amazonaws.com")),
+		},
+		Action:   stringorset.Of("sqs:SendMessage"),
+		Resource: stringorset.String(arn.String()),
+	})
+	policyJSON, err := policy.AsJSON()
+	if err != nil {
+		return fmt.Errorf("rendering policy as json: %w", err)
+	}
 
 	queue := &awstasks.SQS{
 		Name:                   aws.String(queueName),
 		Lifecycle:              b.Lifecycle,
-		Policy:                 fi.NewStringResource(policy),
+		Policy:                 fi.NewStringResource(policyJSON),
 		MessageRetentionPeriod: DefaultMessageRetentionPeriod,
 		Tags:                   b.CloudTags(queueName, false),
 	}
@@ -191,7 +200,7 @@ func (b *NodeTerminationHandlerBuilder) FindDeletions(c *fi.CloudupModelBuilderC
 	request := &eventbridge.ListRulesInput{
 		NamePrefix: ruleName,
 	}
-	response, err := eventBridge.ListRules(request)
+	response, err := eventBridge.ListRules(c.Context(), request)
 	if err != nil {
 		return fmt.Errorf("listing EventBridge rules: %w", err)
 	}
@@ -204,7 +213,7 @@ func (b *NodeTerminationHandlerBuilder) FindDeletions(c *fi.CloudupModelBuilderC
 
 	rule := response.Rules[0]
 
-	tagResponse, err := eventBridge.ListTagsForResource(&eventbridge.ListTagsForResourceInput{ResourceARN: rule.Arn})
+	tagResponse, err := eventBridge.ListTagsForResource(c.Context(), &eventbridge.ListTagsForResourceInput{ResourceARN: rule.Arn})
 	if err != nil {
 		return fmt.Errorf("listing tags for EventBridge rule: %w", err)
 	}

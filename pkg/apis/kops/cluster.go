@@ -28,6 +28,10 @@ import (
 	"k8s.io/kops/upup/pkg/fi/utils"
 )
 
+// AlphaLabelCloudProvider lets us experiment with a cloud provider,
+// before adding it to the API.
+const AlphaLabelCloudProvider = "alpha.kops.k8s.io/cloud"
+
 // +genclient
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
@@ -55,25 +59,16 @@ type ClusterSpec struct {
 	Channel string `json:"channel,omitempty"`
 	// Additional addons that should be installed on the cluster
 	Addons []AddonSpec `json:"addons,omitempty"`
-	// ConfigBase is the path where we store configuration for the cluster
-	// This might be different than the location where the cluster spec itself is stored,
-	// both because this must be accessible to the cluster,
-	// and because it might be on a different cloud or storage system (etcd vs S3)
-	ConfigBase string `json:"configBase,omitempty"`
+	// ConfigStore configures the stores that nodes use to get their configuration.
+	ConfigStore ConfigStoreSpec `json:"configStore"`
 	// CloudProvider configures the cloud provider to use.
 	CloudProvider CloudProviderSpec `json:"cloudProvider,omitempty"`
 	// GossipConfig for the cluster assuming the use of gossip DNS
 	GossipConfig *GossipConfig `json:"gossipConfig,omitempty"`
-	// Container runtime to use for Kubernetes
-	ContainerRuntime string `json:"containerRuntime,omitempty"`
+	// ContainerRuntime was removed.
+	ContainerRuntime string `json:"-"`
 	// The version of kubernetes to install (optional, and can be a "spec" like stable)
 	KubernetesVersion string `json:"kubernetesVersion,omitempty"`
-	// SecretStore is the VFS path to where secrets are stored
-	SecretStore string `json:"secretStore,omitempty"`
-	// KeyStore is the VFS path to where SSL keys and certificates are stored
-	KeyStore string `json:"keyStore,omitempty"`
-	// ConfigStore is the VFS path to where the configuration (Cluster, InstanceGroups etc) is stored
-	ConfigStore string `json:"configStore,omitempty"`
 	// DNSZone is the DNS zone we should use when configuring DNS
 	// This is because some clouds let us define a managed zone foo.bar, and then have
 	// kubernetes.dev.foo.bar, without needing to define dev.foo.bar as a hosted zone.
@@ -104,9 +99,10 @@ type ClusterSpec struct {
 	FileAssets []FileAssetSpec `json:"fileAssets,omitempty"`
 	// EtcdClusters stores the configuration for each cluster
 	EtcdClusters []EtcdClusterSpec `json:"etcdClusters,omitempty"`
+	// Docker was removed.
+	Docker *DockerConfig `json:"-"`
 	// Component configurations
 	Containerd                     *ContainerdConfig             `json:"containerd,omitempty"`
-	Docker                         *DockerConfig                 `json:"docker,omitempty"`
 	KubeDNS                        *KubeDNSConfig                `json:"kubeDNS,omitempty"`
 	KubeAPIServer                  *KubeAPIServerConfig          `json:"kubeAPIServer,omitempty"`
 	KubeControllerManager          *KubeControllerManagerConfig  `json:"kubeControllerManager,omitempty"`
@@ -122,6 +118,8 @@ type ClusterSpec struct {
 	CloudConfig         *CloudConfiguration `json:"cloudConfig,omitempty"`
 	ExternalDNS         *ExternalDNSConfig  `json:"externalDNS,omitempty"`
 	NTP                 *NTPConfig          `json:"ntp,omitempty"`
+	// Packages specifies additional packages to be installed.
+	Packages []string `json:"packages,omitempty"`
 
 	// NodeProblemDetector determines the node problem detector configuration.
 	NodeProblemDetector *NodeProblemDetectorConfig `json:"nodeProblemDetector,omitempty"`
@@ -168,6 +166,19 @@ type ClusterSpec struct {
 	SnapshotController *SnapshotControllerConfig `json:"snapshotController,omitempty"`
 	// Karpenter defines the Karpenter configuration.
 	Karpenter *KarpenterConfig `json:"karpenter,omitempty"`
+}
+
+// ConfigStoreSpec configures the stores that nodes use to get their configuration.
+type ConfigStoreSpec struct {
+	// Base is the VFS path where we store configuration for the cluster
+	// This might be different than the location where the cluster spec itself is stored,
+	// both because this must be accessible to the cluster,
+	// and because it might be on a different cloud or storage system (etcd vs S3).
+	Base string `json:"base,omitempty"`
+	// Keypairs is the VFS path to where certificates and corresponding private keys are stored.
+	Keypairs string `json:"keypairs,omitempty"`
+	// Secrets is the VFS path to where secrets are stored.
+	Secrets string `json:"secrets,omitempty"`
 }
 
 // PodIdentityWebhookSpec configures an EKS Pod Identity Webhook.
@@ -222,7 +233,7 @@ type AWSSpec struct {
 	SpotinstOrientation *string `json:"spotinstOrientation,omitempty"`
 
 	// BinariesLocation is the location of the AWS cloud provider binaries.
-	BinariesLocation *string `json:"binaryLocation,omitempty"`
+	BinariesLocation *string `json:"binariesLocation,omitempty"`
 }
 
 // DOSpec configures the Digital Ocean cloud provider.
@@ -239,6 +250,11 @@ type GCESpec struct {
 	NodeInstancePrefix *string `json:"nodeInstancePrefix,omitempty"`
 	// PDCSIDriver is the config for the PD CSI driver.
 	PDCSIDriver *PDCSIDriver `json:"pdCSIDriver,omitempty"`
+	// UseStartupScript specifies enables using startup-script instead of user-data metadata.
+	UseStartupScript *bool `json:"useStartupScript,omitempty"`
+
+	// BinariesLocation is the location of the GCE cloud provider binaries.
+	BinariesLocation *string `json:"binariesLocation,omitempty"`
 }
 
 // HetznerSpec configures the Hetzner cloud provider.
@@ -249,7 +265,13 @@ type ScalewaySpec struct {
 }
 
 type KarpenterConfig struct {
-	Enabled bool `json:"enabled,omitempty"`
+	Enabled       bool               `json:"enabled,omitempty"`
+	LogEncoding   string             `json:"logFormat,omitempty"`
+	LogLevel      string             `json:"logLevel,omitempty"`
+	Image         string             `json:"image,omitempty"`
+	MemoryLimit   *resource.Quantity `json:"memoryLimit,omitempty"`
+	MemoryRequest *resource.Quantity `json:"memoryRequest,omitempty"`
+	CPURequest    *resource.Quantity `json:"cpuRequest,omitempty"`
 }
 
 // ServiceAccountIssuerDiscoveryConfig configures an OIDC Issuer.
@@ -330,11 +352,11 @@ type FileAssetSpec struct {
 
 // AssetsSpec defines the privately hosted assets
 type AssetsSpec struct {
-	// ContainerRegistry is a url for to a docker registry
+	// ContainerRegistry is a url for to a container registry.
 	ContainerRegistry *string `json:"containerRegistry,omitempty"`
 	// FileRepository is the url for a private file serving repository
 	FileRepository *string `json:"fileRepository,omitempty"`
-	// ContainerProxy is a url for a pull-through proxy of a docker registry
+	// ContainerProxy is a url for a pull-through proxy of a container registry.
 	ContainerProxy *string `json:"containerProxy,omitempty"`
 }
 
@@ -374,7 +396,7 @@ type HookSpec struct {
 
 // ExecContainerAction defines an hood action
 type ExecContainerAction struct {
-	// Image is the docker image
+	// Image is the container image.
 	Image string `json:"image,omitempty"`
 	// Command is the command supplied to the above image
 	Command []string `json:"command,omitempty"`
@@ -395,7 +417,7 @@ func (s *AuthenticationSpec) IsEmpty() bool {
 type KopeioAuthenticationSpec struct{}
 
 type AWSAuthenticationSpec struct {
-	// Image is the AWS IAM Authenticator docker image to use
+	// Image is the AWS IAM Authenticator container image to use.
 	Image string `json:"image,omitempty"`
 	// BackendMode is the AWS IAM Authenticator backend to use. Default MountedFile
 	BackendMode string `json:"backendMode,omitempty"`
@@ -587,7 +609,7 @@ type NodeLocalDNSConfig struct {
 	ExternalCoreFile string `json:"externalCoreFile,omitempty"`
 	// AdditionalConfig is used to provide additional config for node local dns by the user - it will include the original CoreFile made by kOps.
 	AdditionalConfig string `json:"additionalConfig,omitempty"`
-	// Image overrides the default docker image used for node-local-dns addon.
+	// Image overrides the default container image used for node-local-dns addon.
 	Image *string `json:"image,omitempty"`
 	// Local listen IP address. It can be any IP in the 169.254.20.0/16 space or any other IP address that can be guaranteed to not collide with any existing IP.
 	LocalIP string `json:"localIP,omitempty"`
@@ -645,7 +667,7 @@ type EtcdClusterSpec struct {
 	LeaderElectionTimeout *metav1.Duration `json:"leaderElectionTimeout,omitempty"`
 	// HeartbeatInterval is the time (in milliseconds) for an etcd heartbeat interval
 	HeartbeatInterval *metav1.Duration `json:"heartbeatInterval,omitempty"`
-	// Image is the etcd docker image to use. Setting this will ignore the Version specified.
+	// Image is the etcd container image to use. Setting this will ignore the Version specified.
 	Image string `json:"image,omitempty"`
 	// Backups describes how we do backups of etcd
 	Backups *EtcdBackupSpec `json:"backups,omitempty"`
@@ -810,7 +832,7 @@ func (t *TerraformSpec) IsEmpty() bool {
 func (c *Cluster) FillDefaults() error {
 	// Topology support
 	if c.Spec.Networking.Topology == nil {
-		c.Spec.Networking.Topology = &TopologySpec{ControlPlane: TopologyPublic, Nodes: TopologyPublic, DNS: DNSTypePublic}
+		c.Spec.Networking.Topology = &TopologySpec{DNS: DNSTypePublic}
 	}
 
 	if c.Spec.Channel == "" {
@@ -862,9 +884,8 @@ func (c *Cluster) IsSharedAzureResourceGroup() bool {
 
 // AzureResourceGroupName returns the name of the resource group where the cluster is built.
 func (c *Cluster) AzureResourceGroupName() string {
-	r := c.Spec.CloudProvider.Azure.ResourceGroupName
-	if r != "" {
-		return r
+	if c.Spec.CloudProvider.Azure.ResourceGroupName != "" {
+		return c.Spec.CloudProvider.Azure.ResourceGroupName
 	}
 	return c.Name
 }
@@ -872,6 +893,14 @@ func (c *Cluster) AzureResourceGroupName() string {
 // IsSharedAzureRouteTable returns true if the route table is shared.
 func (c *Cluster) IsSharedAzureRouteTable() bool {
 	return c.Spec.CloudProvider.Azure.RouteTableName != ""
+}
+
+// AzureRouteTableName returns the name of the route table used by the cluster.
+func (c *Cluster) AzureRouteTableName() string {
+	if c.Spec.CloudProvider.Azure.RouteTableName != "" {
+		return c.Spec.CloudProvider.Azure.RouteTableName
+	}
+	return c.Name
 }
 
 func (c *Cluster) PublishesDNSRecords() bool {
@@ -909,6 +938,12 @@ func (c *Cluster) UsesNoneDNS() bool {
 	return false
 }
 
+func (c *Cluster) InstallCNIAssets() bool {
+	return c.Spec.Networking.AmazonVPC == nil &&
+		c.Spec.Networking.Calico == nil &&
+		c.Spec.Networking.Cilium == nil
+}
+
 func (c *Cluster) APIInternalName() string {
 	return "api.internal." + c.ObjectMeta.Name
 }
@@ -921,20 +956,25 @@ func (c *ClusterSpec) IsKopsControllerIPAM() bool {
 	return c.IsIPv6Only()
 }
 
-func (c *ClusterSpec) GetCloudProvider() CloudProviderID {
-	if c.CloudProvider.AWS != nil {
+func (c *Cluster) GetCloudProvider() CloudProviderID {
+	if c.Labels[AlphaLabelCloudProvider] == "metal" {
+		return CloudProviderMetal
+	}
+
+	spec := c.Spec
+	if spec.CloudProvider.AWS != nil {
 		return CloudProviderAWS
-	} else if c.CloudProvider.Azure != nil {
+	} else if spec.CloudProvider.Azure != nil {
 		return CloudProviderAzure
-	} else if c.CloudProvider.DO != nil {
+	} else if spec.CloudProvider.DO != nil {
 		return CloudProviderDO
-	} else if c.CloudProvider.GCE != nil {
+	} else if spec.CloudProvider.GCE != nil {
 		return CloudProviderGCE
-	} else if c.CloudProvider.Hetzner != nil {
+	} else if spec.CloudProvider.Hetzner != nil {
 		return CloudProviderHetzner
-	} else if c.CloudProvider.Openstack != nil {
+	} else if spec.CloudProvider.Openstack != nil {
 		return CloudProviderOpenstack
-	} else if c.CloudProvider.Scaleway != nil {
+	} else if spec.CloudProvider.Scaleway != nil {
 		return CloudProviderScaleway
 	}
 	return ""

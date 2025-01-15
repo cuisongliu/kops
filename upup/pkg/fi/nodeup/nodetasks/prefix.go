@@ -17,16 +17,18 @@ limitations under the License.
 package nodetasks
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"path"
 	"strings"
 
-	"github.com/aws/aws-sdk-go/aws/awserr"
-	"github.com/aws/aws-sdk-go/aws/ec2metadata"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/ec2"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/feature/ec2/imds"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	smithyhttp "github.com/aws/smithy-go/transport/http"
 	"k8s.io/klog/v2"
 	"k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/upup/pkg/fi"
@@ -54,12 +56,12 @@ func (e *Prefix) Find(c *fi.NodeupContext) (*Prefix, error) {
 		return nil, fmt.Errorf("unsupported cloud provider: %s", c.T.BootConfig.CloudProvider)
 	}
 
-	mac, err := getInstanceMetadataFirstValue("mac")
+	mac, err := getInstanceMetadataFirstValue(c.Context(), "mac")
 	if err != nil {
 		return nil, err
 	}
 
-	prefixes, err := getInstanceMetadataList(path.Join("network/interfaces/macs/", mac, "/ipv6-prefix"))
+	prefixes, err := getInstanceMetadataList(c.Context(), path.Join("network/interfaces/macs/", mac, "/ipv6-prefix"))
 	if err != nil {
 		return nil, err
 	}
@@ -83,30 +85,31 @@ func (_ *Prefix) CheckChanges(a, e, changes *Prefix) error {
 }
 
 func (_ *Prefix) RenderLocal(t *local.LocalTarget, a, e, changes *Prefix) error {
-	mac, err := getInstanceMetadataFirstValue("mac")
+	ctx := context.TODO()
+	mac, err := getInstanceMetadataFirstValue(ctx, "mac")
 	if err != nil {
 		return err
 	}
 
-	interfaceId, err := getInstanceMetadataFirstValue(path.Join("network/interfaces/macs/", mac, "/interface-id"))
+	interfaceId, err := getInstanceMetadataFirstValue(ctx, path.Join("network/interfaces/macs/", mac, "/interface-id"))
 	if err != nil {
 		return err
 	}
 
-	response, err := t.Cloud.(awsup.AWSCloud).EC2().AssignIpv6Addresses(&ec2.AssignIpv6AddressesInput{
-		Ipv6PrefixCount:    fi.PtrTo(int64(1)),
+	response, err := t.Cloud.(awsup.AWSCloud).EC2().AssignIpv6Addresses(ctx, &ec2.AssignIpv6AddressesInput{
+		Ipv6PrefixCount:    fi.PtrTo(int32(1)),
 		NetworkInterfaceId: fi.PtrTo(interfaceId),
 	})
 	if err != nil {
 		return fmt.Errorf("failed to assign prefix: %w", err)
 	}
-	klog.V(2).Infof("assigned prefix to primary network interface: %q", fi.ValueOf(response.AssignedIpv6Prefixes[0]))
+	klog.V(2).Infof("assigned prefix to primary network interface: %q", response.AssignedIpv6Prefixes[0])
 
 	return nil
 }
 
-func getInstanceMetadataFirstValue(category string) (string, error) {
-	values, err := getInstanceMetadataList(category)
+func getInstanceMetadataFirstValue(ctx context.Context, category string) (string, error) {
+	values, err := getInstanceMetadataList(ctx, category)
 	if err != nil {
 		return "", err
 	}
@@ -117,21 +120,29 @@ func getInstanceMetadataFirstValue(category string) (string, error) {
 	return values[0], nil
 }
 
-func getInstanceMetadataList(category string) ([]string, error) {
-	sess := session.Must(session.NewSession())
-	metadata := ec2metadata.New(sess)
-	linesStr, err := metadata.GetMetadata(category)
+func getInstanceMetadataList(ctx context.Context, category string) ([]string, error) {
+	cfg, err := awsconfig.LoadDefaultConfig(ctx)
 	if err != nil {
-		var aerr awserr.RequestFailure
-		if errors.As(err, &aerr) && aerr.StatusCode() == http.StatusNotFound {
+		return nil, fmt.Errorf("failed to load aws config: %v", err)
+	}
+	metadata := imds.NewFromConfig(cfg)
+	resp, err := metadata.GetMetadata(ctx, &imds.GetMetadataInput{Path: category})
+	if err != nil {
+		var awsErr *smithyhttp.ResponseError
+		if errors.As(err, &awsErr) && awsErr.HTTPStatusCode() == http.StatusNotFound {
 			return nil, nil
 		} else {
 			return nil, fmt.Errorf("failed to get %q from ec2 meta-data: %v", category, err)
 		}
 	}
+	defer resp.Content.Close()
+	lines, err := io.ReadAll(resp.Content)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read %q from ec2 meta-data: %v", category, err)
+	}
 
 	var values []string
-	for _, line := range strings.Split(linesStr, "\n") {
+	for _, line := range strings.Split(string(lines), "\n") {
 		line = strings.TrimSpace(line)
 		if len(line) > 0 {
 			values = append(values, line)

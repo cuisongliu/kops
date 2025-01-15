@@ -24,11 +24,12 @@ import (
 	"k8s.io/klog/v2"
 	"k8s.io/kops/pkg/resources"
 	awsresources "k8s.io/kops/pkg/resources/aws"
+	gceresources "k8s.io/kops/pkg/resources/gce"
 	"k8s.io/kops/upup/pkg/fi"
 )
 
 // DeleteResources deletes the resources, as previously collected by ListResources
-func DeleteResources(cloud fi.Cloud, resourceMap map[string]*resources.Resource) error {
+func DeleteResources(cloud fi.Cloud, resourceMap map[string]*resources.Resource, count int, interval, wait time.Duration) error {
 	depMap := make(map[string][]string)
 
 	done := make(map[string]*resources.Resource)
@@ -52,9 +53,12 @@ func DeleteResources(cloud fi.Cloud, resourceMap map[string]*resources.Resource)
 		klog.V(2).Infof("\t%s\t%v", k, v)
 	}
 
+	timeout := time.Now().Add(wait)
 	iterationsWithNoProgress := 0
 	for {
-		// TODO: Some form of default ordering based on types?
+		if wait > 0 && time.Now().After(timeout) {
+			return fmt.Errorf("wait time exceeded during resources deletion")
+		}
 
 		failed := make(map[string]*resources.Resource)
 
@@ -125,7 +129,7 @@ func DeleteResources(cloud fi.Cloud, resourceMap map[string]*resources.Resource)
 					}
 					if err != nil {
 						mutex.Lock()
-						if awsresources.IsDependencyViolation(err) {
+						if awsresources.IsDependencyViolation(err) || gceresources.IsDependencyViolation(err) {
 							fmt.Printf("%s\tstill has dependencies, will retry\n", human)
 							klog.V(4).Infof("resource %q generated a dependency error: %v", human, err)
 						} else {
@@ -167,10 +171,10 @@ func DeleteResources(cloud fi.Cloud, resourceMap map[string]*resources.Resource)
 		}
 
 		iterationsWithNoProgress++
-		if iterationsWithNoProgress > 42 {
+		if iterationsWithNoProgress > count && count != 0 {
 			return fmt.Errorf("not making progress deleting resources; giving up")
 		}
 
-		time.Sleep(10 * time.Second)
+		time.Sleep(interval)
 	}
 }

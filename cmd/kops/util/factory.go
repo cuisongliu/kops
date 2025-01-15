@@ -17,26 +17,28 @@ limitations under the License.
 package util
 
 import (
+	"context"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strings"
+	"sync"
+	"time"
 
-	certmanager "github.com/cert-manager/cert-manager/pkg/client/clientset/versioned"
 	"k8s.io/apimachinery/pkg/util/validation/field"
-	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/client-go/dynamic"
-	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
-	"k8s.io/client-go/restmapper"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/klog/v2"
-	channelscmd "k8s.io/kops/channels/pkg/cmd"
+
 	gceacls "k8s.io/kops/pkg/acls/gce"
-	s3acls "k8s.io/kops/pkg/acls/s3"
+	"k8s.io/kops/pkg/apis/kops"
 	kopsclient "k8s.io/kops/pkg/client/clientset_generated/clientset"
 	"k8s.io/kops/pkg/client/simple"
 	"k8s.io/kops/pkg/client/simple/api"
 	"k8s.io/kops/pkg/client/simple/vfsclientset"
+	"k8s.io/kops/pkg/kubeconfig"
+	"k8s.io/kops/upup/pkg/fi/cloudup"
 	"k8s.io/kops/util/pkg/vfs"
 )
 
@@ -45,24 +47,37 @@ type FactoryOptions struct {
 }
 
 type Factory struct {
-	ConfigFlags genericclioptions.ConfigFlags
-	options     *FactoryOptions
-	clientset   simple.Clientset
+	options   *FactoryOptions
+	clientset simple.Clientset
 
-	kubernetesClient  kubernetes.Interface
-	certManagerClient certmanager.Interface
+	vfsContext *vfs.VFSContext
 
-	cachedRESTConfig *rest.Config
-	dynamicClient    dynamic.Interface
-	restMapper       *restmapper.DeferredDiscoveryRESTMapper
+	// mutex protects access to the clusters map
+	mutex sync.Mutex
+	// clusters holds REST connection configuration for connecting to clusters
+	clusters map[string]*clusterInfo
+}
+
+// clusterInfo holds REST connection configuration for connecting to a cluster
+type clusterInfo struct {
+	factory *Factory
+	cluster *kops.Cluster
+
+	cachedHTTPClient    *http.Client
+	cachedRESTConfig    *rest.Config
+	cachedDynamicClient dynamic.Interface
 }
 
 func NewFactory(options *FactoryOptions) *Factory {
 	gceacls.Register()
-	s3acls.Register()
+
+	if options == nil {
+		options = &FactoryOptions{}
+	}
 
 	return &Factory{
-		options: options,
+		options:  options,
+		clusters: make(map[string]*clusterInfo),
 	}
 }
 
@@ -112,14 +127,15 @@ func (f *Factory) KopsClient() (simple.Clientset, error) {
 				return nil, fmt.Errorf("error building kops API client: %v", err)
 			}
 
-			f.clientset = &api.RESTClientset{
-				BaseURL: &url.URL{
+			f.clientset = api.NewRESTClientset(
+				f.VFSContext(),
+				&url.URL{
 					Scheme: "k8s",
 				},
-				KopsClient: kopsClient.Kops(),
-			}
+				kopsClient.Kops(),
+			)
 		} else {
-			basePath, err := vfs.Context.BuildVfsPath(registryPath)
+			basePath, err := f.VFSContext().BuildVfsPath(registryPath)
 			if err != nil {
 				return nil, fmt.Errorf("error building path for %q: %v", registryPath, err)
 			}
@@ -128,7 +144,7 @@ func (f *Factory) KopsClient() (simple.Clientset, error) {
 				return nil, field.Invalid(field.NewPath("State Store"), registryPath, INVALID_STATE_ERROR)
 			}
 
-			f.clientset = vfsclientset.NewVFSClientset(basePath)
+			f.clientset = vfsclientset.NewVFSClientset(f.VFSContext(), basePath)
 		}
 		if strings.HasPrefix(registryPath, "file://") {
 			klog.Warning("The local filesystem state store is not functional for running clusters")
@@ -143,81 +159,137 @@ func (f *Factory) KopsStateStore() string {
 	return f.options.RegistryPath
 }
 
-var _ channelscmd.Factory = &Factory{}
+func (f *Factory) getClusterInfo(cluster *kops.Cluster) *clusterInfo {
+	f.mutex.Lock()
+	defer f.mutex.Unlock()
 
-func (f *Factory) restConfig() (*rest.Config, error) {
+	key := cluster.ObjectMeta.Name
+	if clusterInfo, ok := f.clusters[key]; ok {
+		return clusterInfo
+	}
+	clusterInfo := &clusterInfo{
+		factory: f,
+		cluster: cluster,
+	}
+	f.clusters[key] = clusterInfo
+	return clusterInfo
+}
+
+func (f *Factory) RESTConfig(cluster *kops.Cluster) (*rest.Config, error) {
+	clusterInfo := f.getClusterInfo(cluster)
+	return clusterInfo.RESTConfig()
+}
+
+func (f *clusterInfo) RESTConfig() (*rest.Config, error) {
+	ctx := context.Background()
+
 	if f.cachedRESTConfig == nil {
-		restConfig, err := f.ConfigFlags.ToRESTConfig()
+		restConfig, err := f.factory.buildRESTConfig(ctx, f.cluster)
 		if err != nil {
-			return nil, fmt.Errorf("cannot load kubecfg settings: %w", err)
+			return nil, err
 		}
+
 		restConfig.UserAgent = "kops"
 		restConfig.Burst = 50
 		restConfig.QPS = 20
+
 		f.cachedRESTConfig = restConfig
 	}
 	return f.cachedRESTConfig, nil
 }
 
-func (f *Factory) KubernetesClient() (kubernetes.Interface, error) {
-	if f.kubernetesClient == nil {
-		restConfig, err := f.restConfig()
+func (f *Factory) HTTPClient(cluster *kops.Cluster) (*http.Client, error) {
+	clusterInfo := f.getClusterInfo(cluster)
+	return clusterInfo.HTTPClient()
+}
+
+func (f *clusterInfo) HTTPClient() (*http.Client, error) {
+	if f.cachedHTTPClient == nil {
+		restConfig, err := f.RESTConfig()
 		if err != nil {
 			return nil, err
 		}
-		k8sClient, err := kubernetes.NewForConfig(restConfig)
+		httpClient, err := rest.HTTPClientFor(restConfig)
 		if err != nil {
-			return nil, fmt.Errorf("cannot build kube client: %w", err)
+			return nil, fmt.Errorf("building http client: %w", err)
 		}
-		f.kubernetesClient = k8sClient
+		f.cachedHTTPClient = httpClient
 	}
-
-	return f.kubernetesClient, nil
+	return f.cachedHTTPClient, nil
 }
 
-func (f *Factory) DynamicClient() (dynamic.Interface, error) {
-	if f.dynamicClient == nil {
-		restConfig, err := f.restConfig()
-		if err != nil {
-			return nil, fmt.Errorf("cannot load kubecfg settings: %w", err)
-		}
-		dynamicClient, err := dynamic.NewForConfig(restConfig)
-		if err != nil {
-			return nil, fmt.Errorf("cannot build dynamicClient client: %v", err)
-		}
-		f.dynamicClient = dynamicClient
-	}
-
-	return f.dynamicClient, nil
+// DynamicClient returns a dynamic client
+func (f *Factory) DynamicClient(cluster *kops.Cluster) (dynamic.Interface, error) {
+	clusterInfo := f.getClusterInfo(cluster)
+	return clusterInfo.DynamicClient()
 }
 
-func (f *Factory) CertManagerClient() (certmanager.Interface, error) {
-	if f.certManagerClient == nil {
-		restConfig, err := f.restConfig()
-		if err != nil {
-			return nil, err
-		}
-		certManagerClient, err := certmanager.NewForConfig(restConfig)
-		if err != nil {
-			return nil, fmt.Errorf("cannot build kube client: %v", err)
-		}
-		f.certManagerClient = certManagerClient
-	}
-
-	return f.certManagerClient, nil
-}
-
-func (f *Factory) RESTMapper() (*restmapper.DeferredDiscoveryRESTMapper, error) {
-	if f.restMapper == nil {
-		discoveryClient, err := f.ConfigFlags.ToDiscoveryClient()
+func (f *clusterInfo) DynamicClient() (dynamic.Interface, error) {
+	if f.cachedDynamicClient == nil {
+		restConfig, err := f.RESTConfig()
 		if err != nil {
 			return nil, err
 		}
 
-		restMapper := restmapper.NewDeferredDiscoveryRESTMapper(discoveryClient)
+		httpClient, err := f.HTTPClient()
+		if err != nil {
+			return nil, err
+		}
 
-		f.restMapper = restMapper
+		dynamicClient, err := dynamic.NewForConfigAndClient(restConfig, httpClient)
+		if err != nil {
+			return nil, fmt.Errorf("building dynamic client: %w", err)
+		}
+		f.cachedDynamicClient = dynamicClient
+	}
+	return f.cachedDynamicClient, nil
+}
+
+func (f *Factory) VFSContext() *vfs.VFSContext {
+	if f.vfsContext == nil {
+		// TODO vfs.NewVFSContext()
+		f.vfsContext = vfs.Context
+	}
+	return f.vfsContext
+}
+
+func (f *Factory) buildRESTConfig(ctx context.Context, cluster *kops.Cluster) (*rest.Config, error) {
+	clientset, err := f.KopsClient()
+	if err != nil {
+		return nil, err
 	}
 
-	return f.restMapper, nil
+	keyStore, err := clientset.KeyStore(cluster)
+	if err != nil {
+		return nil, err
+	}
+
+	secretStore, err := clientset.SecretStore(cluster)
+	if err != nil {
+		return nil, err
+	}
+
+	cloud, err := cloudup.BuildCloud(cluster)
+	if err != nil {
+		return nil, err
+	}
+
+	// Generate a relatively short-lived certificate / kubeconfig
+	createKubecfgOptions := kubeconfig.CreateKubecfgOptions{
+		Admin: 1 * time.Hour,
+	}
+
+	conf, err := kubeconfig.BuildKubecfg(
+		ctx,
+		cluster,
+		keyStore,
+		secretStore,
+		cloud,
+		createKubecfgOptions,
+		f.KopsStateStore())
+	if err != nil {
+		return nil, err
+	}
+
+	return conf.ToRESTConfig()
 }

@@ -78,7 +78,7 @@ func (r *GCEIPAMReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	node := &corev1.Node{}
 	if err := r.client.Get(ctx, req.NamespacedName, node); err != nil {
-		klog.Warningf("unable to fetch node %s: %w", node.Name, err)
+		klog.Warningf("unable to fetch node %s: %v", node.Name, err)
 		if apierrors.IsNotFound(err) {
 			// we'll ignore not-found errors, since they can't be fixed by an immediate
 			// requeue (we'll need to wait for a new notification), and we can get them
@@ -134,7 +134,8 @@ func (r *GCEIPAMReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		}
 
 		ipv6Address := ipv6Addresses[0]
-		if err := patchNodePodCIDRs(r.coreV1Client, ctx, node, ipv6Address); err != nil {
+		podCIDRs := []string{ipv6Address}
+		if err := patchNodePodCIDRs(r.coreV1Client, ctx, node, podCIDRs); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -144,6 +145,7 @@ func (r *GCEIPAMReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 func (r *GCEIPAMReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
+		Named("gce_ipam").
 		For(&corev1.Node{}).
 		Complete(r)
 }

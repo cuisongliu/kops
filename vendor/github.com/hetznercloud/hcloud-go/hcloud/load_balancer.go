@@ -238,6 +238,7 @@ func (lb *LoadBalancer) GetDNSPtrForIP(ip net.IP) (string, error) {
 // LoadBalancerClient is a client for the Load Balancers API.
 type LoadBalancerClient struct {
 	client *Client
+	Action *ResourceActionClient
 }
 
 // GetByID retrieves a Load Balancer by its ID. If the Load Balancer does not exist, nil is returned.
@@ -287,7 +288,7 @@ type LoadBalancerListOpts struct {
 }
 
 func (l LoadBalancerListOpts) values() url.Values {
-	vals := l.ListOpts.values()
+	vals := l.ListOpts.Values()
 	if l.Name != "" {
 		vals.Add("name", l.Name)
 	}
@@ -327,7 +328,7 @@ func (c *LoadBalancerClient) All(ctx context.Context) ([]*LoadBalancer, error) {
 
 // AllWithOpts returns all Load Balancers for the given options.
 func (c *LoadBalancerClient) AllWithOpts(ctx context.Context, opts LoadBalancerListOpts) ([]*LoadBalancer, error) {
-	var allLoadBalancers []*LoadBalancer
+	allLoadBalancers := []*LoadBalancer{}
 
 	err := c.client.all(func(page int) (*Response, error) {
 		opts.Page = page

@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/cloudresourcemanager/v1"
@@ -86,6 +87,7 @@ func (c *gceCloudImplementation) ProviderID() kops.CloudProviderID {
 }
 
 var gceCloudInstances map[string]GCECloud = make(map[string]GCECloud)
+var gceCloudInstancesMapMutex = sync.RWMutex{}
 
 // DefaultProject returns the current project configured in the gcloud SDK, ("", nil) if no project was set
 func DefaultProject() (string, error) {
@@ -119,7 +121,9 @@ func DefaultProject() (string, error) {
 }
 
 func NewGCECloud(region string, project string, labels map[string]string) (GCECloud, error) {
+	gceCloudInstancesMapMutex.RLock()
 	i := gceCloudInstances[region+"::"+project]
+	gceCloudInstancesMapMutex.RUnlock()
 	if i != nil {
 		return i.(gceCloudInternal).WithLabels(labels), nil
 	}
@@ -179,6 +183,8 @@ func NewGCECloud(region string, project string, labels map[string]string) (GCECl
 }
 
 func CacheGCECloudInstance(region string, project string, c GCECloud) {
+	gceCloudInstancesMapMutex.Lock()
+	defer gceCloudInstancesMapMutex.Unlock()
 	gceCloudInstances[region+"::"+project] = c
 }
 
@@ -307,9 +313,11 @@ func (c *gceCloudImplementation) WaitForOp(op *compute.Operation) error {
 }
 
 func (c *gceCloudImplementation) GetApiIngressStatus(cluster *kops.Cluster) ([]fi.ApiIngressStatus, error) {
+	// TODO: Add context to GetApiIngressStatus
+
 	var ingresses []fi.ApiIngressStatus
 
-	klog.V(2).Infof("Querying GCE to find ForwardingRules for API")
+	klog.V(2).Infof("Querying GCE to find forwardingRules for API")
 	// These are the ingress rules, so we search for them in the network project.
 	_, project, err := ParseNameAndProjectFromNetworkID(cluster.Spec.Networking.NetworkID)
 	if err != nil {
@@ -323,20 +331,38 @@ func (c *gceCloudImplementation) GetApiIngressStatus(cluster *kops.Cluster) ([]f
 		if !IsNotFound(err) {
 			forwardingRules = nil
 		} else {
-			return nil, fmt.Errorf("error listing ForwardingRules: %v", err)
+			return nil, fmt.Errorf("error listing forwardingRules: %v", err)
 		}
 	}
+
+	clusterLabel := LabelForCluster(cluster.Name)
 
 	for _, forwardingRule := range forwardingRules {
 		if !strings.HasPrefix(forwardingRule.Name, "api-") {
 			continue
 		}
+
+		if clusterLabel.Value != forwardingRule.Labels[clusterLabel.Key] {
+			continue
+		}
+
 		if forwardingRule.IPAddress == "" {
-			return nil, fmt.Errorf("found forward rule %q, but it did not have an IPAddress", forwardingRule.Name)
+			return nil, fmt.Errorf("found forwardingRule %q, but it did not have an IPAddress", forwardingRule.Name)
+		}
+
+		internalEndpoint := false
+		switch forwardingRule.LoadBalancingScheme {
+		case "INTERNAL", "INTERNAL_MANAGED", "INTERNAL_SELF_MANAGED":
+			internalEndpoint = true
+		case "EXTERNAL", "EXTERNAL_MANAGED":
+			internalEndpoint = false
+		default:
+			return nil, fmt.Errorf("found forwardingRule %q, but it has unknown loadBalancingScheme=%q", forwardingRule.Name, forwardingRule.LoadBalancingScheme)
 		}
 
 		ingresses = append(ingresses, fi.ApiIngressStatus{
-			IP: forwardingRule.IPAddress,
+			InternalEndpoint: internalEndpoint,
+			IP:               forwardingRule.IPAddress,
 		})
 	}
 

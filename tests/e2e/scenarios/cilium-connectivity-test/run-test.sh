@@ -18,7 +18,7 @@ REPO_ROOT=$(git rev-parse --show-toplevel);
 source "${REPO_ROOT}"/tests/e2e/scenarios/lib/common.sh
 
 export KOPS_BASE_URL
-KOPS_BASE_URL="$(curl -s https://storage.googleapis.com/kops-ci/bin/latest-ci-updown-green.txt)"
+KOPS_BASE_URL="$(curl -s https://storage.googleapis.com/k8s-staging-kops/kops/releases/markers/master/latest-ci-updown-green.txt)"
 KOPS=$(kops-download-from-base)
 
 ARGS="--set=cluster.spec.networking.cilium.hubble.enabled=true --set=cluster.spec.certManager.enabled=true"
@@ -35,12 +35,12 @@ fi
 
 ${KUBETEST2} \
     --up \
-    --kubernetes-version="1.21.0" \
+    --kubernetes-version="1.27.0" \
     --kops-binary-path="${KOPS}" \
     --create-args="--networking cilium $ARGS"
 
 kubectl port-forward -n kube-system deployment/hubble-relay 4245:4245 &
 
-wget -qO- https://github.com/cilium/cilium-cli/releases/download/v0.7/cilium-linux-amd64.tar.gz | tar xz -C "${WORKSPACE}"
+wget -qO- https://github.com/cilium/cilium-cli/releases/download/v0.14.8/cilium-linux-amd64.tar.gz | tar xz -C "${WORKSPACE}"
 
 cilium connectivity test --all-flows

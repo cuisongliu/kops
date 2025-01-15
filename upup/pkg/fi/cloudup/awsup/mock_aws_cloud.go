@@ -17,22 +17,13 @@ limitations under the License.
 package awsup
 
 import (
+	"context"
 	"fmt"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/autoscaling/autoscalingiface"
-	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/aws/aws-sdk-go/service/ec2/ec2iface"
-	"github.com/aws/aws-sdk-go/service/elb"
-	"github.com/aws/aws-sdk-go/service/elb/elbiface"
-	"github.com/aws/aws-sdk-go/service/elbv2"
-	"github.com/aws/aws-sdk-go/service/elbv2/elbv2iface"
-	"github.com/aws/aws-sdk-go/service/eventbridge/eventbridgeiface"
-	"github.com/aws/aws-sdk-go/service/iam/iamiface"
-	"github.com/aws/aws-sdk-go/service/route53/route53iface"
-	"github.com/aws/aws-sdk-go/service/sqs/sqsiface"
-	"github.com/aws/aws-sdk-go/service/ssm/ssmiface"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	elbtypes "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancing/types"
+	elbv2types "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2/types"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 	"k8s.io/kops/dnsprovider/pkg/dnsprovider"
@@ -41,6 +32,7 @@ import (
 	"k8s.io/kops/pkg/cloudinstances"
 	"k8s.io/kops/pkg/resources/spotinst"
 	"k8s.io/kops/upup/pkg/fi"
+	"k8s.io/kops/util/pkg/awsinterfaces"
 )
 
 type MockAWSCloud struct {
@@ -48,7 +40,7 @@ type MockAWSCloud struct {
 	region string
 	tags   map[string]string
 
-	zones []*ec2.AvailabilityZone
+	zones []ec2types.AvailabilityZone
 }
 
 var _ fi.Cloud = (*MockAWSCloud)(nil)
@@ -56,7 +48,7 @@ var _ fi.Cloud = (*MockAWSCloud)(nil)
 func InstallMockAWSCloud(region string, zoneLetters string) *MockAWSCloud {
 	i := BuildMockAWSCloud(region, zoneLetters)
 	updateAwsCloudInstances(region, i)
-	allRegions = []*ec2.Region{
+	allRegions = []ec2types.Region{
 		{RegionName: aws.String(region)},
 	}
 	return i
@@ -66,10 +58,10 @@ func BuildMockAWSCloud(region string, zoneLetters string) *MockAWSCloud {
 	i := &MockAWSCloud{region: region}
 	for _, c := range zoneLetters {
 		azName := fmt.Sprintf("%s%c", region, c)
-		az := &ec2.AvailabilityZone{
+		az := ec2types.AvailabilityZone{
 			RegionName: aws.String(region),
 			ZoneName:   aws.String(azName),
-			State:      aws.String("available"),
+			State:      ec2types.AvailabilityZoneStateAvailable,
 		}
 		i.zones = append(i.zones, az)
 	}
@@ -77,24 +69,26 @@ func BuildMockAWSCloud(region string, zoneLetters string) *MockAWSCloud {
 }
 
 type MockCloud struct {
-	MockAutoscaling autoscalingiface.AutoScalingAPI
-	MockEC2         ec2iface.EC2API
-	MockIAM         iamiface.IAMAPI
-	MockRoute53     route53iface.Route53API
-	MockELB         elbiface.ELBAPI
-	MockELBV2       elbv2iface.ELBV2API
+	MockAutoscaling awsinterfaces.AutoScalingAPI
+	MockEC2         awsinterfaces.EC2API
+	MockIAM         awsinterfaces.IAMAPI
+	MockRoute53     awsinterfaces.Route53API
+	MockELB         awsinterfaces.ELBAPI
+	MockELBV2       awsinterfaces.ELBV2API
 	MockSpotinst    spotinst.Cloud
-	MockSQS         sqsiface.SQSAPI
-	MockEventBridge eventbridgeiface.EventBridgeAPI
-	MockSSM         ssmiface.SSMAPI
+	MockSQS         awsinterfaces.SQSAPI
+	MockEventBridge awsinterfaces.EventBridgeAPI
+	MockSSM         awsinterfaces.SSMAPI
 }
 
 func (c *MockAWSCloud) DeleteGroup(g *cloudinstances.CloudInstanceGroup) error {
-	return deleteGroup(c, g)
+	ctx := context.TODO()
+
+	return deleteGroup(ctx, c, g)
 }
 
 func (c *MockAWSCloud) DeleteInstance(i *cloudinstances.CloudInstance) error {
-	return deleteInstance(c, i)
+	return deleteInstance(context.TODO(), c, i)
 }
 
 func (c *MockAWSCloud) DeregisterInstance(i *cloudinstances.CloudInstance) error {
@@ -102,11 +96,14 @@ func (c *MockAWSCloud) DeregisterInstance(i *cloudinstances.CloudInstance) error
 }
 
 func (c *MockAWSCloud) DetachInstance(i *cloudinstances.CloudInstance) error {
-	return detachInstance(c, i)
+	ctx := context.TODO()
+
+	return detachInstance(ctx, c, i)
 }
 
 func (c *MockAWSCloud) GetCloudGroups(cluster *kops.Cluster, instancegroups []*kops.InstanceGroup, warnUnmatched bool, nodes []v1.Node) (map[string]*cloudinstances.CloudInstanceGroup, error) {
-	return getCloudGroups(c, cluster, instancegroups, warnUnmatched, nodes)
+	ctx := context.TODO()
+	return getCloudGroups(ctx, c, cluster, instancegroups, warnUnmatched, nodes)
 }
 
 func (c *MockCloud) ProviderID() kops.CloudProviderID {
@@ -124,7 +121,7 @@ func (c *MockAWSCloud) Region() string {
 	return c.region
 }
 
-func (c *MockAWSCloud) DescribeAvailabilityZones() ([]*ec2.AvailabilityZone, error) {
+func (c *MockAWSCloud) DescribeAvailabilityZones() ([]ec2types.AvailabilityZone, error) {
 	return c.zones, nil
 }
 
@@ -137,7 +134,7 @@ func (c *MockAWSCloud) AddTags(name *string, tags map[string]string) {
 	}
 }
 
-func (c *MockAWSCloud) BuildFilters(name *string) []*ec2.Filter {
+func (c *MockAWSCloud) BuildFilters(name *string) []ec2types.Filter {
 	return buildFilters(c.tags, name)
 }
 
@@ -197,36 +194,32 @@ func (c *MockAWSCloud) RemoveELBV2Tags(ResourceArn string, tags map[string]strin
 	return removeELBV2Tags(c, ResourceArn, tags)
 }
 
-func (c *MockAWSCloud) FindELBByNameTag(findNameTag string) (*elb.LoadBalancerDescription, error) {
+func (c *MockAWSCloud) FindELBByNameTag(findNameTag string) (*elbtypes.LoadBalancerDescription, error) {
 	return findELBByNameTag(c, findNameTag)
 }
 
-func (c *MockAWSCloud) DescribeELBTags(loadBalancerNames []string) (map[string][]*elb.Tag, error) {
+func (c *MockAWSCloud) DescribeELBTags(loadBalancerNames []string) (map[string][]elbtypes.Tag, error) {
 	return describeELBTags(c, loadBalancerNames)
 }
 
-func (c *MockAWSCloud) FindELBV2ByNameTag(findNameTag string) (*elbv2.LoadBalancer, error) {
-	return findELBV2ByNameTag(c, findNameTag)
-}
-
-func (c *MockAWSCloud) DescribeELBV2Tags(loadBalancerArns []string) (map[string][]*elbv2.Tag, error) {
+func (c *MockAWSCloud) DescribeELBV2Tags(loadBalancerArns []string) (map[string][]elbv2types.Tag, error) {
 	return describeELBV2Tags(c, loadBalancerArns)
 }
 
-func (c *MockAWSCloud) FindELBV2NetworkInterfacesByName(vpcID, loadBalancerName string) ([]*ec2.NetworkInterface, error) {
+func (c *MockAWSCloud) FindELBV2NetworkInterfacesByName(vpcID, loadBalancerName string) ([]ec2types.NetworkInterface, error) {
 	return nil, nil
 }
 
-func (c *MockAWSCloud) DescribeInstance(instanceID string) (*ec2.Instance, error) {
+func (c *MockAWSCloud) DescribeInstance(instanceID string) (*ec2types.Instance, error) {
 	return nil, fmt.Errorf("MockAWSCloud DescribeInstance not implemented")
 }
 
-func (c *MockAWSCloud) DescribeVPC(vpcID string) (*ec2.Vpc, error) {
+func (c *MockAWSCloud) DescribeVPC(vpcID string) (*ec2types.Vpc, error) {
 	return describeVPC(c, vpcID)
 }
 
-func (c *MockAWSCloud) ResolveImage(name string) (*ec2.Image, error) {
-	return resolveImage(c.MockSSM, c.MockEC2, name)
+func (c *MockAWSCloud) ResolveImage(name string) (*ec2types.Image, error) {
+	return resolveImage(context.TODO(), c.MockSSM, c.MockEC2, name)
 }
 
 func (c *MockAWSCloud) WithTags(tags map[string]string) AWSCloud {
@@ -236,42 +229,42 @@ func (c *MockAWSCloud) WithTags(tags map[string]string) AWSCloud {
 	return m
 }
 
-func (c *MockAWSCloud) EC2() ec2iface.EC2API {
+func (c *MockAWSCloud) EC2() awsinterfaces.EC2API {
 	if c.MockEC2 == nil {
 		klog.Fatalf("MockAWSCloud MockEC2 not set")
 	}
 	return c.MockEC2
 }
 
-func (c *MockAWSCloud) IAM() iamiface.IAMAPI {
+func (c *MockAWSCloud) IAM() awsinterfaces.IAMAPI {
 	if c.MockIAM == nil {
 		klog.Fatalf("MockAWSCloud MockIAM not set")
 	}
 	return c.MockIAM
 }
 
-func (c *MockAWSCloud) ELB() elbiface.ELBAPI {
+func (c *MockAWSCloud) ELB() awsinterfaces.ELBAPI {
 	if c.MockELB == nil {
 		klog.Fatalf("MockAWSCloud MockELB not set")
 	}
 	return c.MockELB
 }
 
-func (c *MockAWSCloud) ELBV2() elbv2iface.ELBV2API {
+func (c *MockAWSCloud) ELBV2() awsinterfaces.ELBV2API {
 	if c.MockELBV2 == nil {
 		klog.Fatalf("MockAWSCloud MockELBV2 not set")
 	}
 	return c.MockELBV2
 }
 
-func (c *MockAWSCloud) Autoscaling() autoscalingiface.AutoScalingAPI {
+func (c *MockAWSCloud) Autoscaling() awsinterfaces.AutoScalingAPI {
 	if c.MockAutoscaling == nil {
 		klog.Fatalf("MockAWSCloud Autoscaling not set")
 	}
 	return c.MockAutoscaling
 }
 
-func (c *MockAWSCloud) Route53() route53iface.Route53API {
+func (c *MockAWSCloud) Route53() awsinterfaces.Route53API {
 	if c.MockRoute53 == nil {
 		klog.Fatalf("MockRoute53 not set")
 	}
@@ -285,21 +278,21 @@ func (c *MockAWSCloud) Spotinst() spotinst.Cloud {
 	return c.MockSpotinst
 }
 
-func (c *MockAWSCloud) SQS() sqsiface.SQSAPI {
+func (c *MockAWSCloud) SQS() awsinterfaces.SQSAPI {
 	if c.MockSQS == nil {
 		klog.Fatalf("MockSQS not set")
 	}
 	return c.MockSQS
 }
 
-func (c *MockAWSCloud) EventBridge() eventbridgeiface.EventBridgeAPI {
+func (c *MockAWSCloud) EventBridge() awsinterfaces.EventBridgeAPI {
 	if c.MockEventBridge == nil {
 		klog.Fatalf("MockEventBridgess not set")
 	}
 	return c.MockEventBridge
 }
 
-func (c *MockAWSCloud) SSM() ssmiface.SSMAPI {
+func (c *MockAWSCloud) SSM() awsinterfaces.SSMAPI {
 	if c.MockSSM == nil {
 		klog.Fatalf("MockSSM not set")
 	}
@@ -329,27 +322,27 @@ func (c *MockAWSCloud) DefaultInstanceType(cluster *kops.Cluster, ig *kops.Insta
 }
 
 // DescribeInstanceType calls ec2.DescribeInstanceType to get information for a particular instance type
-func (c *MockAWSCloud) DescribeInstanceType(instanceType string) (*ec2.InstanceTypeInfo, error) {
+func (c *MockAWSCloud) DescribeInstanceType(instanceType string) (*ec2types.InstanceTypeInfo, error) {
 	if instanceType == "t2.invalidType" {
 		return nil, fmt.Errorf("invalid instance type %q specified", "t2.invalidType")
 	}
-	info := &ec2.InstanceTypeInfo{
-		NetworkInfo: &ec2.NetworkInfo{
-			MaximumNetworkInterfaces:  aws.Int64(1),
-			Ipv4AddressesPerInterface: aws.Int64(1),
+	info := &ec2types.InstanceTypeInfo{
+		NetworkInfo: &ec2types.NetworkInfo{
+			MaximumNetworkInterfaces:  aws.Int32(1),
+			Ipv4AddressesPerInterface: aws.Int32(1),
 		},
-		MemoryInfo: &ec2.MemoryInfo{
+		MemoryInfo: &ec2types.MemoryInfo{
 			SizeInMiB: aws.Int64(1024),
 		},
-		VCpuInfo: &ec2.VCpuInfo{
-			DefaultVCpus: aws.Int64(2),
+		VCpuInfo: &ec2types.VCpuInfo{
+			DefaultVCpus: aws.Int32(2),
 		},
 	}
 	if instanceType == "m3.medium" {
-		info.InstanceStorageInfo = &ec2.InstanceStorageInfo{
-			Disks: []*ec2.DiskInfo{
+		info.InstanceStorageInfo = &ec2types.InstanceStorageInfo{
+			Disks: []ec2types.DiskInfo{
 				{
-					Count:    aws.Int64(1),
+					Count:    aws.Int32(1),
 					SizeInGB: aws.Int64(1024),
 				},
 			},
@@ -358,41 +351,41 @@ func (c *MockAWSCloud) DescribeInstanceType(instanceType string) (*ec2.InstanceT
 
 	switch instanceType {
 	case "c5.large", "m3.medium", "m4.large", "m5.large", "m5.xlarge", "t3.micro", "t3.medium", "t3.large", "c4.large":
-		info.ProcessorInfo = &ec2.ProcessorInfo{
-			SupportedArchitectures: []*string{
-				aws.String(ec2.ArchitectureTypeX8664),
+		info.ProcessorInfo = &ec2types.ProcessorInfo{
+			SupportedArchitectures: []ec2types.ArchitectureType{
+				ec2types.ArchitectureTypeX8664,
 			},
 		}
 	case "a1.large", "m6g.xlarge":
-		info.ProcessorInfo = &ec2.ProcessorInfo{
-			SupportedArchitectures: []*string{
-				aws.String(ec2.ArchitectureTypeArm64),
+		info.ProcessorInfo = &ec2types.ProcessorInfo{
+			SupportedArchitectures: []ec2types.ArchitectureType{
+				ec2types.ArchitectureTypeArm64,
 			},
 		}
 	case "t2.micro", "t2.medium":
-		info.ProcessorInfo = &ec2.ProcessorInfo{
-			SupportedArchitectures: []*string{
-				aws.String(ec2.ArchitectureTypeI386),
-				aws.String(ec2.ArchitectureTypeX8664),
+		info.ProcessorInfo = &ec2types.ProcessorInfo{
+			SupportedArchitectures: []ec2types.ArchitectureType{
+				ec2types.ArchitectureTypeI386,
+				ec2types.ArchitectureTypeX8664,
 			},
 		}
 	case "g4dn.xlarge", "g4ad.16xlarge":
-		info.ProcessorInfo = &ec2.ProcessorInfo{
-			SupportedArchitectures: []*string{
-				aws.String(ec2.ArchitectureTypeX8664),
+		info.ProcessorInfo = &ec2types.ProcessorInfo{
+			SupportedArchitectures: []ec2types.ArchitectureType{
+				ec2types.ArchitectureTypeX8664,
 			},
 		}
-		info.GpuInfo = &ec2.GpuInfo{}
+		info.GpuInfo = &ec2types.GpuInfo{}
 	}
 
 	return info, nil
 }
 
 // AccountInfo returns the AWS account ID and AWS partition that we are deploying into
-func (c *MockAWSCloud) AccountInfo() (string, string, error) {
+func (c *MockAWSCloud) AccountInfo(ctx context.Context) (string, string, error) {
 	return "123456789012", "aws-test", nil
 }
 
-func (c *MockAWSCloud) Session() (*session.Session, error) {
-	return nil, nil
+func (c *MockAWSCloud) Config() aws.Config {
+	return aws.Config{}
 }

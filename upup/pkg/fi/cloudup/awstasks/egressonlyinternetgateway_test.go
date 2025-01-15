@@ -21,8 +21,9 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"k8s.io/kops/cloudmock/aws/mockec2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awsup"
@@ -36,15 +37,15 @@ func TestSharedEgressOnlyInternetGatewayDoesNotRename(t *testing.T) {
 	cloud.MockEC2 = c
 
 	// Pre-create the vpc / subnet
-	vpc, err := c.CreateVpc(&ec2.CreateVpcInput{
+	vpc, err := c.CreateVpc(ctx, &ec2.CreateVpcInput{
 		CidrBlock: aws.String("172.20.0.0/16"),
 	})
 	if err != nil {
 		t.Fatalf("error creating test VPC: %v", err)
 	}
-	_, err = c.CreateTags(&ec2.CreateTagsInput{
-		Resources: []*string{vpc.Vpc.VpcId},
-		Tags: []*ec2.Tag{
+	_, err = c.CreateTags(ctx, &ec2.CreateTagsInput{
+		Resources: []string{aws.ToString(vpc.Vpc.VpcId)},
+		Tags: []ec2types.Tag{
 			{
 				Key:   aws.String("Name"),
 				Value: aws.String("ExistingVPC"),
@@ -55,9 +56,9 @@ func TestSharedEgressOnlyInternetGatewayDoesNotRename(t *testing.T) {
 		t.Fatalf("error tagging test vpc: %v", err)
 	}
 
-	internetGateway, err := c.CreateEgressOnlyInternetGateway(&ec2.CreateEgressOnlyInternetGatewayInput{
+	internetGateway, err := c.CreateEgressOnlyInternetGateway(ctx, &ec2.CreateEgressOnlyInternetGatewayInput{
 		VpcId: vpc.Vpc.VpcId,
-		TagSpecifications: awsup.EC2TagSpecification(ec2.ResourceTypeEgressOnlyInternetGateway, map[string]string{
+		TagSpecifications: awsup.EC2TagSpecification(ec2types.ResourceTypeEgressOnlyInternetGateway, map[string]string{
 			"Name": "ExistingInternetGateway",
 		}),
 	})
@@ -94,18 +95,7 @@ func TestSharedEgressOnlyInternetGatewayDoesNotRename(t *testing.T) {
 		allTasks := buildTasks()
 		eigw1 := allTasks["eigw1"].(*EgressOnlyInternetGateway)
 
-		target := &awsup.AWSAPITarget{
-			Cloud: cloud,
-		}
-
-		context, err := fi.NewCloudupContext(ctx, target, nil, cloud, nil, nil, nil, allTasks)
-		if err != nil {
-			t.Fatalf("error building context: %v", err)
-		}
-
-		if err := context.RunTasks(testRunTasksOptions); err != nil {
-			t.Fatalf("unexpected error during Run: %v", err)
-		}
+		runTasks(t, cloud, allTasks)
 
 		if fi.ValueOf(eigw1.ID) == "" {
 			t.Fatalf("ID not set after create")
@@ -119,12 +109,12 @@ func TestSharedEgressOnlyInternetGatewayDoesNotRename(t *testing.T) {
 		if actual == nil {
 			t.Fatalf("EgressOnlyInternetGateway created but then not found")
 		}
-		expected := &ec2.EgressOnlyInternetGateway{
+		expected := &ec2types.EgressOnlyInternetGateway{
 			EgressOnlyInternetGatewayId: aws.String("eigw-1"),
 			Tags: buildTags(map[string]string{
 				"Name": "ExistingInternetGateway",
 			}),
-			Attachments: []*ec2.InternetGatewayAttachment{
+			Attachments: []ec2types.InternetGatewayAttachment{
 				{
 					VpcId: vpc.Vpc.VpcId,
 				},
@@ -142,5 +132,23 @@ func TestSharedEgressOnlyInternetGatewayDoesNotRename(t *testing.T) {
 	{
 		allTasks := buildTasks()
 		checkNoChanges(t, ctx, cloud, allTasks)
+	}
+}
+
+func runTasks(t *testing.T, cloud awsup.AWSCloud, allTasks map[string]fi.CloudupTask) {
+	t.Helper()
+	ctx := context.TODO()
+
+	target := &awsup.AWSAPITarget{
+		Cloud: cloud,
+	}
+
+	context, err := fi.NewCloudupContext(ctx, fi.DeletionProcessingModeDeleteIncludingDeferred, target, nil, cloud, nil, nil, nil, allTasks)
+	if err != nil {
+		t.Fatalf("error building context: %v", err)
+	}
+
+	if err := context.RunTasks(testRunTasksOptions); err != nil {
+		t.Fatalf("unexpected error during Run: %v", err)
 	}
 }

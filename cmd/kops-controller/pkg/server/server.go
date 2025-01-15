@@ -36,10 +36,12 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/klog/v2"
 	"k8s.io/kops/cmd/kops-controller/pkg/config"
+	"k8s.io/kops/cmd/kops-controller/pkg/controllerclientset"
 	"k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/pkg/apis/kops/model"
 	"k8s.io/kops/pkg/apis/nodeup"
 	"k8s.io/kops/pkg/bootstrap"
+	"k8s.io/kops/pkg/client/simple"
 	"k8s.io/kops/pkg/pki"
 	"k8s.io/kops/pkg/rbac"
 	"k8s.io/kops/upup/pkg/fi"
@@ -51,12 +53,14 @@ import (
 
 type Server struct {
 	opt         *config.Options
-	certNames   sets.String
+	certNames   sets.Set[string]
 	keypairIDs  map[string]string
 	server      *http.Server
 	verifier    bootstrap.Verifier
-	keystore    pki.Keystore
+	keystore    *keystore
 	secretStore fi.SecretStore
+
+	clientset simple.Clientset
 
 	// configBase is the base of the configuration storage.
 	configBase vfs.Path
@@ -70,39 +74,44 @@ type Server struct {
 
 var _ manager.LeaderElectionRunnable = &Server{}
 
-func NewServer(opt *config.Options, verifier bootstrap.Verifier, uncachedClient client.Client) (*Server, error) {
+func NewServer(vfsContext *vfs.VFSContext, opt *config.Options, verifier bootstrap.Verifier, uncachedClient client.Client) (*Server, error) {
 	server := &http.Server{
 		Addr: opt.Server.Listen,
 		TLSConfig: &tls.Config{
-			MinVersion:               tls.VersionTLS12,
-			PreferServerCipherSuites: true,
+			MinVersion: tls.VersionTLS12,
 		},
 	}
 
 	s := &Server{
 		opt:            opt,
-		certNames:      sets.NewString(opt.Server.CertNames...),
+		certNames:      sets.New(opt.Server.CertNames...),
 		server:         server,
 		verifier:       verifier,
 		uncachedClient: uncachedClient,
 	}
 
-	configBase, err := vfs.Context.BuildVfsPath(opt.ConfigBase)
+	configBase, err := vfsContext.BuildVfsPath(opt.ConfigBase)
 	if err != nil {
 		return nil, fmt.Errorf("cannot parse ConfigBase %q: %w", opt.ConfigBase, err)
 	}
 	s.configBase = configBase
 
-	p, err := vfs.Context.BuildVfsPath(opt.SecretStore)
+	s.keystore, s.keypairIDs, err = newKeystore(opt.Server.CABasePath, opt.Server.SigningCAs)
+	if err != nil {
+		return nil, err
+	}
+
+	p, err := vfsContext.BuildVfsPath(opt.SecretStore)
 	if err != nil {
 		return nil, fmt.Errorf("cannot parse SecretStore %q: %w", opt.SecretStore, err)
 	}
 	s.secretStore = secrets.NewVFSSecretStore(nil, p)
 
-	s.keystore, s.keypairIDs, err = newKeystore(opt.Server.CABasePath, opt.Server.SigningCAs)
+	clientset, err := controllerclientset.New(vfsContext, configBase, opt.ClusterName, s.keystore, s.secretStore)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("building controller clientset: %w", err)
 	}
+	s.clientset = clientset
 
 	challengeClient, err := bootstrap.NewChallengeClient(s.keystore)
 	if err != nil {
@@ -158,7 +167,7 @@ func (s *Server) bootstrap(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
-	id, err := s.verifier.VerifyToken(ctx, r, r.Header.Get("Authorization"), body, s.opt.Server.UseInstanceIDForNodeName)
+	id, err := s.verifier.VerifyToken(ctx, r, r.Header.Get("Authorization"), body)
 	if err != nil {
 		// means that we should exit nodeup gracefully
 		if err == bootstrap.ErrAlreadyExists {
@@ -211,6 +220,12 @@ func (s *Server) bootstrap(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if model.UseChallengeCallback(kops.CloudProviderID(s.opt.Cloud)) {
+		if id.ChallengeEndpoint == "" {
+			klog.Infof("cannot determine endpoint for bootstrap callback challenge from %q", r.RemoteAddr)
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte("callback failed"))
+			return
+		}
 		if err := s.challengeClient.DoCallbackChallenge(ctx, s.opt.ClusterName, id.ChallengeEndpoint, req); err != nil {
 			klog.Infof("bootstrap %s callback challenge failed: %v", r.RemoteAddr, err)
 			w.WriteHeader(http.StatusBadRequest)

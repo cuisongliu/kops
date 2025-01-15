@@ -17,13 +17,15 @@ limitations under the License.
 package awstasks
 
 import (
+	"context"
 	"fmt"
 	"reflect"
 	"sort"
 	"strings"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/autoscaling"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/autoscaling"
+	autoscalingtypes "github.com/aws/aws-sdk-go-v2/service/autoscaling/types"
 	"k8s.io/klog/v2"
 
 	"k8s.io/kops/upup/pkg/fi"
@@ -60,13 +62,13 @@ type AutoscalingGroup struct {
 	// LoadBalancers is a list of elastic load balancer names to add to the autoscaling group
 	LoadBalancers []*ClassicLoadBalancer
 	// MaxInstanceLifetime is the maximum amount of time, in seconds, that an instance can be in service.
-	MaxInstanceLifetime *int64
+	MaxInstanceLifetime *int32
 	// MaxSize is the max number of nodes in asg
-	MaxSize *int64
+	MaxSize *int32
 	// Metrics is a collection of metrics to monitor
 	Metrics []string
 	// MinSize is the smallest number of nodes in the asg
-	MinSize *int64
+	MinSize *int32
 	// MixedInstanceOverrides is a collection of instance types to use with fleet policy
 	MixedInstanceOverrides []string
 	// InstanceRequirements is a list of requirements for any instance type we are willing to run in the EC2 fleet.
@@ -75,17 +77,17 @@ type AutoscalingGroup struct {
 	MixedOnDemandAllocationStrategy *string
 	// MixedOnDemandBase is percentage split of On-Demand Instances and Spot Instances for your
 	// additional capacity beyond the base portion
-	MixedOnDemandBase *int64
+	MixedOnDemandBase *int32
 	// MixedOnDemandAboveBase is the percentage split of On-Demand Instances and Spot Instances
 	// for your additional capacity beyond the base portion.
-	MixedOnDemandAboveBase *int64
+	MixedOnDemandAboveBase *int32
 	// MixedSpotAllocationStrategy diversifies your Spot capacity across multiple instance types to
 	// find the best pricing. Higher Spot availability may result from a larger number of
 	// instance types to choose from.
 	MixedSpotAllocationStrategy *string
 	// MixedSpotInstancePools is the number of Spot pools to use to allocate your Spot capacity (defaults to 2)
 	// pools are determined from the different instance types in the Overrides array of LaunchTemplate
-	MixedSpotInstancePools *int64
+	MixedSpotInstancePools *int32
 	// MixedSpotMaxPrice is the maximum price per unit hour you are willing to pay for a Spot Instance
 	MixedSpotMaxPrice *string
 	// Subnets is a collection of subnets to attach the nodes to
@@ -100,8 +102,11 @@ type AutoscalingGroup struct {
 	CapacityRebalance *bool
 	// WarmPool is the WarmPool config for the ASG
 	WarmPool *WarmPool
+
+	deletions []fi.CloudupDeletion
 }
 
+var _ fi.CloudupProducesDeletions = &AutoscalingGroup{}
 var _ fi.CompareWithID = &AutoscalingGroup{}
 var _ fi.CloudupTaskNormalize = &AutoscalingGroup{}
 
@@ -110,11 +115,38 @@ func (e *AutoscalingGroup) CompareWithID() *string {
 	return e.Name
 }
 
+// Track dependencies here to explicitly ignore WarmPool
+// because the WarmPool should be created after the ASG, not the other way around.
+// The WarmPool struct field is only used for RenderTerraform.
+func (e *AutoscalingGroup) GetDependencies(tasks map[string]fi.CloudupTask) []fi.CloudupTask {
+	var deps []fi.CloudupTask
+
+	for _, lb := range e.LoadBalancers {
+		deps = append(deps, lb)
+	}
+
+	for _, tg := range e.TargetGroups {
+		deps = append(deps, tg)
+	}
+
+	for _, subnet := range e.Subnets {
+		deps = append(deps, subnet)
+	}
+
+	if e.LaunchTemplate != nil {
+		deps = append(deps, e.LaunchTemplate)
+	}
+
+	return deps
+}
+
 // Find is used to discover the ASG in the cloud provider
 func (e *AutoscalingGroup) Find(c *fi.CloudupContext) (*AutoscalingGroup, error) {
-	cloud := c.T.Cloud.(awsup.AWSCloud)
+	ctx := c.Context()
 
-	g, err := findAutoscalingGroup(cloud, fi.ValueOf(e.Name))
+	cloud := awsup.GetCloud(c)
+
+	g, err := findAutoscalingGroup(ctx, cloud, fi.ValueOf(e.Name))
 	if err != nil {
 		return nil, err
 	}
@@ -131,7 +163,7 @@ func (e *AutoscalingGroup) Find(c *fi.CloudupContext) (*AutoscalingGroup, error)
 
 	// Use 0 as default value when api returns nil (same as model)
 	if g.MaxInstanceLifetime == nil {
-		actual.MaxInstanceLifetime = fi.PtrTo(int64(0))
+		actual.MaxInstanceLifetime = fi.PtrTo(int32(0))
 	} else {
 		actual.MaxInstanceLifetime = g.MaxInstanceLifetime
 	}
@@ -139,8 +171,8 @@ func (e *AutoscalingGroup) Find(c *fi.CloudupContext) (*AutoscalingGroup, error)
 	actual.LoadBalancers = []*ClassicLoadBalancer{}
 	for _, lb := range g.LoadBalancerNames {
 		actual.LoadBalancers = append(actual.LoadBalancers, &ClassicLoadBalancer{
-			Name:             aws.String(*lb),
-			LoadBalancerName: aws.String(*lb),
+			Name:             aws.String(lb),
+			LoadBalancerName: aws.String(lb),
 		})
 	}
 
@@ -167,14 +199,14 @@ func (e *AutoscalingGroup) Find(c *fi.CloudupContext) (*AutoscalingGroup, error)
 			}
 		}
 		if apiLBTask != nil && len(actual.LoadBalancers) > 0 {
-			apiLBDesc, err := c.T.Cloud.(awsup.AWSCloud).FindELBByNameTag(fi.ValueOf(apiLBTask.Name))
+			apiLBDesc, err := awsup.GetCloud(c).FindELBByNameTag(fi.ValueOf(apiLBTask.Name))
 			if err != nil {
 				return nil, err
 			}
 			if apiLBDesc != nil {
 				for i := 0; i < len(actual.LoadBalancers); i++ {
 					lb := actual.LoadBalancers[i]
-					if aws.StringValue(apiLBDesc.LoadBalancerName) == aws.StringValue(lb.Name) {
+					if aws.ToString(apiLBDesc.LoadBalancerName) == aws.ToString(lb.Name) {
 						actual.LoadBalancers[i] = apiLBTask
 					}
 				}
@@ -184,13 +216,21 @@ func (e *AutoscalingGroup) Find(c *fi.CloudupContext) (*AutoscalingGroup, error)
 	sort.Stable(OrderLoadBalancersByName(actual.LoadBalancers))
 
 	actual.TargetGroups = []*TargetGroup{}
-	if len(g.TargetGroupARNs) > 0 {
-		for _, tg := range g.TargetGroupARNs {
-			targetGroupName, err := awsup.GetTargetGroupNameFromARN(fi.ValueOf(tg))
-			if err != nil {
-				return nil, err
+	{
+		byARN := make(map[string]*TargetGroup)
+		for _, tg := range e.TargetGroups {
+			if tg.info != nil {
+				byARN[tg.info.ARN] = tg
 			}
-			actual.TargetGroups = append(actual.TargetGroups, &TargetGroup{ARN: aws.String(*tg), Name: aws.String(targetGroupName)})
+		}
+		for _, arn := range g.TargetGroupARNs {
+			tg := byARN[arn]
+			if tg != nil {
+				actual.TargetGroups = append(actual.TargetGroups, tg)
+				continue
+			}
+			actual.TargetGroups = append(actual.TargetGroups, &TargetGroup{ARN: aws.String(arn)})
+			e.deletions = append(e.deletions, buildDeleteAutoscalingTargetGroupAttachment(aws.ToString(g.AutoScalingGroupName), arn))
 		}
 	}
 	sort.Stable(OrderTargetGroupsByName(actual.TargetGroups))
@@ -203,7 +243,7 @@ func (e *AutoscalingGroup) Find(c *fi.CloudupContext) (*AutoscalingGroup, error)
 	}
 
 	for _, enabledMetric := range g.EnabledMetrics {
-		actual.Metrics = append(actual.Metrics, aws.StringValue(enabledMetric.Metric))
+		actual.Metrics = append(actual.Metrics, aws.ToString(enabledMetric.Metric))
 		actual.Granularity = enabledMetric.Granularity
 	}
 	sort.Strings(actual.Metrics)
@@ -211,10 +251,10 @@ func (e *AutoscalingGroup) Find(c *fi.CloudupContext) (*AutoscalingGroup, error)
 	if len(g.Tags) != 0 {
 		actual.Tags = make(map[string]string)
 		for _, tag := range g.Tags {
-			if strings.HasPrefix(aws.StringValue(tag.Key), "aws:cloudformation:") {
+			if strings.HasPrefix(aws.ToString(tag.Key), "aws:cloudformation:") {
 				continue
 			}
-			actual.Tags[aws.StringValue(tag.Key)] = aws.StringValue(tag.Value)
+			actual.Tags[aws.ToString(tag.Key)] = aws.ToString(tag.Value)
 		}
 	}
 
@@ -280,14 +320,19 @@ func (e *AutoscalingGroup) Find(c *fi.CloudupContext) (*AutoscalingGroup, error)
 }
 
 // findAutoscalingGroup is responsible for finding all the autoscaling groups for us
-func findAutoscalingGroup(cloud awsup.AWSCloud, name string) (*autoscaling.Group, error) {
+func findAutoscalingGroup(ctx context.Context, cloud awsup.AWSCloud, name string) (*autoscalingtypes.AutoScalingGroup, error) {
 	request := &autoscaling.DescribeAutoScalingGroupsInput{
-		AutoScalingGroupNames: []*string{&name},
+		AutoScalingGroupNames: []string{name},
 	}
 
-	var found []*autoscaling.Group
-	err := cloud.Autoscaling().DescribeAutoScalingGroupsPages(request, func(p *autoscaling.DescribeAutoScalingGroupsOutput, lastPage bool) (shouldContinue bool) {
-		for _, g := range p.AutoScalingGroups {
+	var found []*autoscalingtypes.AutoScalingGroup
+	paginator := autoscaling.NewDescribeAutoScalingGroupsPaginator(cloud.Autoscaling(), request)
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("error listing AutoScalingGroups: %v", err)
+		}
+		for _, g := range page.AutoScalingGroups {
 			// Check for "Delete in progress" (the only use .Status). We won't be able to update or create while
 			// this is true, but filtering it out here makes the messages slightly clearer.
 			if g.Status != nil {
@@ -295,17 +340,12 @@ func findAutoscalingGroup(cloud awsup.AWSCloud, name string) (*autoscaling.Group
 				continue
 			}
 
-			if aws.StringValue(g.AutoScalingGroupName) == name {
-				found = append(found, g)
+			if aws.ToString(g.AutoScalingGroupName) == name {
+				found = append(found, &g)
 			} else {
 				klog.Warningf("Got ASG with unexpected name %q", fi.ValueOf(g.AutoScalingGroupName))
 			}
 		}
-
-		return true
-	})
-	if err != nil {
-		return nil, fmt.Errorf("error listing AutoscalingGroups: %v", err)
 	}
 
 	switch len(found) {
@@ -320,7 +360,7 @@ func findAutoscalingGroup(cloud awsup.AWSCloud, name string) (*autoscaling.Group
 
 func (e *AutoscalingGroup) Normalize(c *fi.CloudupContext) error {
 	sort.Strings(e.Metrics)
-	c.T.Cloud.(awsup.AWSCloud).AddTags(e.Name, e.Tags)
+	awsup.GetCloud(c).AddTags(e.Name, e.Tags)
 
 	return nil
 }
@@ -343,6 +383,8 @@ func (e *AutoscalingGroup) CheckChanges(a, ex, changes *AutoscalingGroup) error 
 
 // RenderAWS is responsible for building the autoscaling group via AWS API
 func (v *AutoscalingGroup) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *AutoscalingGroup) error {
+	ctx := context.TODO()
+
 	// @step: did we find an autoscaling group?
 	if a == nil {
 		klog.V(2).Infof("Creating autoscaling group with name: %s", fi.ValueOf(e.Name))
@@ -373,28 +415,28 @@ func (v *AutoscalingGroup) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *Autos
 				if lbDesc == nil {
 					return fmt.Errorf("could not find load balancer to attach")
 				}
-				request.LoadBalancerNames = append(request.LoadBalancerNames, lbDesc.LoadBalancerName)
+				request.LoadBalancerNames = append(request.LoadBalancerNames, aws.ToString(lbDesc.LoadBalancerName))
 			} else {
-				request.LoadBalancerNames = append(request.LoadBalancerNames, k.LoadBalancerName)
+				request.LoadBalancerNames = append(request.LoadBalancerNames, aws.ToString(k.LoadBalancerName))
 			}
 		}
 
 		for _, tg := range e.TargetGroups {
-			request.TargetGroupARNs = append(request.TargetGroupARNs, tg.ARN)
+			request.TargetGroupARNs = append(request.TargetGroupARNs, aws.ToString(tg.ARN))
 		}
 
 		// @check are we using mixed instances policy, or launch template
 		if e.UseMixedInstancesPolicy() {
-			request.MixedInstancesPolicy = &autoscaling.MixedInstancesPolicy{
-				InstancesDistribution: &autoscaling.InstancesDistribution{
+			request.MixedInstancesPolicy = &autoscalingtypes.MixedInstancesPolicy{
+				InstancesDistribution: &autoscalingtypes.InstancesDistribution{
 					OnDemandPercentageAboveBaseCapacity: e.MixedOnDemandAboveBase,
 					OnDemandBaseCapacity:                e.MixedOnDemandBase,
 					SpotAllocationStrategy:              e.MixedSpotAllocationStrategy,
 					SpotInstancePools:                   e.MixedSpotInstancePools,
 					SpotMaxPrice:                        e.MixedSpotMaxPrice,
 				},
-				LaunchTemplate: &autoscaling.LaunchTemplate{
-					LaunchTemplateSpecification: &autoscaling.LaunchTemplateSpecification{
+				LaunchTemplate: &autoscalingtypes.LaunchTemplate{
+					LaunchTemplateSpecification: &autoscalingtypes.LaunchTemplateSpecification{
 						LaunchTemplateId: e.LaunchTemplate.ID,
 						Version:          aws.String("$Latest"),
 					},
@@ -402,7 +444,7 @@ func (v *AutoscalingGroup) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *Autos
 			}
 			p := request.MixedInstancesPolicy.LaunchTemplate
 			for _, x := range e.MixedInstanceOverrides {
-				p.Overrides = append(p.Overrides, &autoscaling.LaunchTemplateOverrides{
+				p.Overrides = append(p.Overrides, autoscalingtypes.LaunchTemplateOverrides{
 					InstanceType: fi.PtrTo(x),
 				},
 				)
@@ -411,7 +453,7 @@ func (v *AutoscalingGroup) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *Autos
 				p.Overrides = append(p.Overrides, overridesFromInstanceRequirements(e.InstanceRequirements))
 			}
 		} else if e.LaunchTemplate != nil {
-			request.LaunchTemplate = &autoscaling.LaunchTemplateSpecification{
+			request.LaunchTemplate = &autoscalingtypes.LaunchTemplateSpecification{
 				LaunchTemplateId: e.LaunchTemplate.ID,
 				Version:          aws.String("$Latest"),
 			}
@@ -420,7 +462,7 @@ func (v *AutoscalingGroup) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *Autos
 		}
 
 		// @step: attempt to create the autoscaling group for us
-		if _, err := t.Cloud.Autoscaling().CreateAutoScalingGroup(request); err != nil {
+		if _, err := t.Cloud.Autoscaling().CreateAutoScalingGroup(ctx, request); err != nil {
 			code := awsup.AWSErrorCode(err)
 			message := awsup.AWSErrorMessage(err)
 			if code == "ValidationError" && strings.Contains(message, "Invalid IAM Instance Profile name") {
@@ -431,25 +473,20 @@ func (v *AutoscalingGroup) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *Autos
 		}
 
 		// @step: attempt to enable the metrics for us
-		if _, err := t.Cloud.Autoscaling().EnableMetricsCollection(&autoscaling.EnableMetricsCollectionInput{
+		if _, err := t.Cloud.Autoscaling().EnableMetricsCollection(ctx, &autoscaling.EnableMetricsCollectionInput{
 			AutoScalingGroupName: e.Name,
 			Granularity:          e.Granularity,
-			Metrics:              aws.StringSlice(e.Metrics),
+			Metrics:              e.Metrics,
 		}); err != nil {
 			return fmt.Errorf("error enabling metrics collection for AutoscalingGroup: %v", err)
 		}
 
 		if len(*e.SuspendProcesses) > 0 {
-			toSuspend := []*string{}
-			for _, p := range *e.SuspendProcesses {
-				toSuspend = append(toSuspend, &p)
-			}
-
-			processQuery := &autoscaling.ScalingProcessQuery{}
+			processQuery := &autoscaling.SuspendProcessesInput{}
 			processQuery.AutoScalingGroupName = e.Name
-			processQuery.ScalingProcesses = toSuspend
+			processQuery.ScalingProcesses = *e.SuspendProcesses
 
-			if _, err := t.Cloud.Autoscaling().SuspendProcesses(processQuery); err != nil {
+			if _, err := t.Cloud.Autoscaling().SuspendProcesses(ctx, processQuery); err != nil {
 				return fmt.Errorf("error suspending processes: %v", err)
 			}
 		}
@@ -460,10 +497,10 @@ func (v *AutoscalingGroup) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *Autos
 			AutoScalingGroupName: e.Name,
 		}
 
-		setup := func(req *autoscaling.UpdateAutoScalingGroupInput) *autoscaling.MixedInstancesPolicy {
+		setup := func(req *autoscaling.UpdateAutoScalingGroupInput) *autoscalingtypes.MixedInstancesPolicy {
 			if req.MixedInstancesPolicy == nil {
-				req.MixedInstancesPolicy = &autoscaling.MixedInstancesPolicy{
-					InstancesDistribution: &autoscaling.InstancesDistribution{},
+				req.MixedInstancesPolicy = &autoscalingtypes.MixedInstancesPolicy{
+					InstancesDistribution: &autoscalingtypes.InstancesDistribution{},
 				}
 			}
 
@@ -472,12 +509,12 @@ func (v *AutoscalingGroup) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *Autos
 
 		// We have to update LaunchTemplate to remove mixedInstancesPolicy when it is removed from spec.
 		if changes.LaunchTemplate != nil || a.UseMixedInstancesPolicy() && !e.UseMixedInstancesPolicy() {
-			spec := &autoscaling.LaunchTemplateSpecification{
+			spec := &autoscalingtypes.LaunchTemplateSpecification{
 				LaunchTemplateId: e.LaunchTemplate.ID,
 				Version:          aws.String("$Latest"),
 			}
 			if e.UseMixedInstancesPolicy() {
-				setup(request).LaunchTemplate = &autoscaling.LaunchTemplate{LaunchTemplateSpecification: spec}
+				setup(request).LaunchTemplate = &autoscalingtypes.LaunchTemplate{LaunchTemplateSpecification: spec}
 			} else {
 				request.LaunchTemplate = spec
 			}
@@ -506,8 +543,8 @@ func (v *AutoscalingGroup) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *Autos
 		}
 		if changes.MixedInstanceOverrides != nil || changes.InstanceRequirements != nil {
 			if setup(request).LaunchTemplate == nil {
-				setup(request).LaunchTemplate = &autoscaling.LaunchTemplate{
-					LaunchTemplateSpecification: &autoscaling.LaunchTemplateSpecification{
+				setup(request).LaunchTemplate = &autoscalingtypes.LaunchTemplate{
+					LaunchTemplateSpecification: &autoscalingtypes.LaunchTemplateSpecification{
 						LaunchTemplateId: e.LaunchTemplate.ID,
 						Version:          aws.String("$Latest"),
 					},
@@ -517,7 +554,7 @@ func (v *AutoscalingGroup) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *Autos
 			if changes.MixedInstanceOverrides != nil {
 				p := request.MixedInstancesPolicy.LaunchTemplate
 				for _, x := range changes.MixedInstanceOverrides {
-					p.Overrides = append(p.Overrides, &autoscaling.LaunchTemplateOverrides{InstanceType: fi.PtrTo(x)})
+					p.Overrides = append(p.Overrides, autoscalingtypes.LaunchTemplateOverrides{InstanceType: fi.PtrTo(x)})
 				}
 				changes.MixedInstanceOverrides = nil
 			}
@@ -547,7 +584,7 @@ func (v *AutoscalingGroup) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *Autos
 			request.MaxInstanceLifetime = e.MaxInstanceLifetime
 			changes.MaxInstanceLifetime = nil
 		} else {
-			request.MaxInstanceLifetime = fi.PtrTo(int64(0))
+			request.MaxInstanceLifetime = fi.PtrTo(int32(0))
 		}
 
 		var updateTagsRequest *autoscaling.CreateOrUpdateTagsInput
@@ -582,7 +619,6 @@ func (v *AutoscalingGroup) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *Autos
 		}
 
 		var attachTGRequests []*autoscaling.AttachLoadBalancerTargetGroupsInput
-		var detachTGRequests []*autoscaling.DetachLoadBalancerTargetGroupsInput
 		if changes.TargetGroups != nil {
 			if e != nil && len(e.TargetGroups) > 0 {
 				for _, tgsChunkToAttach := range sliceChunks(e.AutoscalingTargetGroups(), attachLoadBalancerTargetGroupsMaxItems) {
@@ -593,24 +629,18 @@ func (v *AutoscalingGroup) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *Autos
 				}
 			}
 
-			if a != nil && len(a.TargetGroups) > 0 {
-				for _, tgsChunkToDetach := range sliceChunks(e.getTGsToDetach(a.TargetGroups), detachLoadBalancerTargetGroupsMaxItems) {
-					detachTGRequests = append(detachTGRequests, &autoscaling.DetachLoadBalancerTargetGroupsInput{
-						AutoScalingGroupName: e.Name,
-						TargetGroupARNs:      tgsChunkToDetach,
-					})
-				}
-			}
+			// Detaching is done in a deletion task
+
 			changes.TargetGroups = nil
 		}
 
 		if changes.Metrics != nil || changes.Granularity != nil {
 			// TODO: Support disabling metrics?
 			if len(e.Metrics) != 0 {
-				_, err := t.Cloud.Autoscaling().EnableMetricsCollection(&autoscaling.EnableMetricsCollectionInput{
+				_, err := t.Cloud.Autoscaling().EnableMetricsCollection(ctx, &autoscaling.EnableMetricsCollectionInput{
 					AutoScalingGroupName: e.Name,
 					Granularity:          e.Granularity,
-					Metrics:              aws.StringSlice(e.Metrics),
+					Metrics:              e.Metrics,
 				})
 				if err != nil {
 					return fmt.Errorf("error enabling metrics collection for AutoscalingGroup: %v", err)
@@ -625,21 +655,21 @@ func (v *AutoscalingGroup) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *Autos
 			toResume := processCompare(a.SuspendProcesses, e.SuspendProcesses)
 
 			if len(toSuspend) > 0 {
-				suspendProcessQuery := &autoscaling.ScalingProcessQuery{}
+				suspendProcessQuery := &autoscaling.SuspendProcessesInput{}
 				suspendProcessQuery.AutoScalingGroupName = e.Name
-				suspendProcessQuery.ScalingProcesses = toSuspend
+				suspendProcessQuery.ScalingProcesses = aws.ToStringSlice(toSuspend)
 
-				_, err := t.Cloud.Autoscaling().SuspendProcesses(suspendProcessQuery)
+				_, err := t.Cloud.Autoscaling().SuspendProcesses(ctx, suspendProcessQuery)
 				if err != nil {
 					return fmt.Errorf("error suspending processes: %v", err)
 				}
 			}
 			if len(toResume) > 0 {
-				resumeProcessQuery := &autoscaling.ScalingProcessQuery{}
+				resumeProcessQuery := &autoscaling.ResumeProcessesInput{}
 				resumeProcessQuery.AutoScalingGroupName = e.Name
-				resumeProcessQuery.ScalingProcesses = toResume
+				resumeProcessQuery.ScalingProcesses = aws.ToStringSlice(toResume)
 
-				_, err := t.Cloud.Autoscaling().ResumeProcesses(resumeProcessQuery)
+				_, err := t.Cloud.Autoscaling().ResumeProcesses(ctx, resumeProcessQuery)
 				if err != nil {
 					return fmt.Errorf("error resuming processes: %v", err)
 				}
@@ -664,41 +694,34 @@ func (v *AutoscalingGroup) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *Autos
 
 		klog.V(2).Infof("Updating autoscaling group %s", fi.ValueOf(e.Name))
 
-		if _, err := t.Cloud.Autoscaling().UpdateAutoScalingGroup(request); err != nil {
+		if _, err := t.Cloud.Autoscaling().UpdateAutoScalingGroup(ctx, request); err != nil {
 			return fmt.Errorf("error updating AutoscalingGroup: %v", err)
 		}
 
 		if deleteTagsRequest != nil && len(deleteTagsRequest.Tags) > 0 {
-			if _, err := t.Cloud.Autoscaling().DeleteTags(deleteTagsRequest); err != nil {
+			if _, err := t.Cloud.Autoscaling().DeleteTags(ctx, deleteTagsRequest); err != nil {
 				return fmt.Errorf("error deleting old AutoscalingGroup tags: %v", err)
 			}
 		}
 		if updateTagsRequest != nil {
-			if _, err := t.Cloud.Autoscaling().CreateOrUpdateTags(updateTagsRequest); err != nil {
+			if _, err := t.Cloud.Autoscaling().CreateOrUpdateTags(ctx, updateTagsRequest); err != nil {
 				return fmt.Errorf("error updating AutoscalingGroup tags: %v", err)
 			}
 		}
 
 		if detachLBRequest != nil {
-			if _, err := t.Cloud.Autoscaling().DetachLoadBalancers(detachLBRequest); err != nil {
+			if _, err := t.Cloud.Autoscaling().DetachLoadBalancers(ctx, detachLBRequest); err != nil {
 				return fmt.Errorf("error detatching LoadBalancers: %v", err)
 			}
 		}
 		if attachLBRequest != nil {
-			if _, err := t.Cloud.Autoscaling().AttachLoadBalancers(attachLBRequest); err != nil {
+			if _, err := t.Cloud.Autoscaling().AttachLoadBalancers(ctx, attachLBRequest); err != nil {
 				return fmt.Errorf("error attaching LoadBalancers: %v", err)
-			}
-		}
-		if len(detachTGRequests) > 0 {
-			for _, detachTGRequest := range detachTGRequests {
-				if _, err := t.Cloud.Autoscaling().DetachLoadBalancerTargetGroups(detachTGRequest); err != nil {
-					return fmt.Errorf("failed to detach target groups: %v", err)
-				}
 			}
 		}
 		if len(attachTGRequests) > 0 {
 			for _, attachTGRequest := range attachTGRequests {
-				if _, err := t.Cloud.Autoscaling().AttachLoadBalancerTargetGroups(attachTGRequest); err != nil {
+				if _, err := t.Cloud.Autoscaling().AttachLoadBalancerTargetGroups(ctx, attachTGRequest); err != nil {
 					return fmt.Errorf("failed to attach target groups: %v", err)
 				}
 			}
@@ -740,11 +763,11 @@ func (e *AutoscalingGroup) UseMixedInstancesPolicy() bool {
 }
 
 // AutoscalingGroupTags is responsible for generating the tagging for the asg
-func (e *AutoscalingGroup) AutoscalingGroupTags() []*autoscaling.Tag {
-	var list []*autoscaling.Tag
+func (e *AutoscalingGroup) AutoscalingGroupTags() []autoscalingtypes.Tag {
+	var list []autoscalingtypes.Tag
 
 	for k, v := range e.Tags {
-		list = append(list, &autoscaling.Tag{
+		list = append(list, autoscalingtypes.Tag{
 			Key:               aws.String(k),
 			Value:             aws.String(v),
 			ResourceId:        e.Name,
@@ -768,22 +791,22 @@ func (e *AutoscalingGroup) AutoscalingGroupSubnets() []string {
 }
 
 // AutoscalingLoadBalancers returns a list of LBs attatched to the ASG
-func (e *AutoscalingGroup) AutoscalingLoadBalancers() []*string {
-	var list []*string
+func (e *AutoscalingGroup) AutoscalingLoadBalancers() []string {
+	var list []string
 
 	for _, v := range e.LoadBalancers {
-		list = append(list, v.LoadBalancerName)
+		list = append(list, aws.ToString(v.LoadBalancerName))
 	}
 
 	return list
 }
 
 // AutoscalingTargetGroups returns a list of TGs attatched to the ASG
-func (e *AutoscalingGroup) AutoscalingTargetGroups() []*string {
-	var list []*string
+func (e *AutoscalingGroup) AutoscalingTargetGroups() []string {
+	var list []string
 
 	for _, v := range e.TargetGroups {
-		list = append(list, v.ARN)
+		list = append(list, aws.ToString(v.ARN))
 	}
 
 	return list
@@ -810,12 +833,12 @@ func processCompare(a *[]string, b *[]string) []*string {
 
 // getASGTagsToDelete loops through the currently set tags and builds a list of
 // tags to be deleted from the Autoscaling Group
-func (e *AutoscalingGroup) getASGTagsToDelete(currentTags map[string]string) []*autoscaling.Tag {
-	tagsToDelete := []*autoscaling.Tag{}
+func (e *AutoscalingGroup) getASGTagsToDelete(currentTags map[string]string) []autoscalingtypes.Tag {
+	tagsToDelete := []autoscalingtypes.Tag{}
 
 	for k, v := range currentTags {
 		if _, ok := e.Tags[k]; !ok {
-			tagsToDelete = append(tagsToDelete, &autoscaling.Tag{
+			tagsToDelete = append(tagsToDelete, autoscalingtypes.Tag{
 				Key:          aws.String(k),
 				Value:        aws.String(v),
 				ResourceId:   e.Name,
@@ -828,8 +851,8 @@ func (e *AutoscalingGroup) getASGTagsToDelete(currentTags map[string]string) []*
 
 // getLBsToDetach loops through the currently set LBs and builds a list of
 // LBs to be detached from the Autoscaling Group
-func (e *AutoscalingGroup) getLBsToDetach(currentLBs []*ClassicLoadBalancer) []*string {
-	lbsToDetach := []*string{}
+func (e *AutoscalingGroup) getLBsToDetach(currentLBs []*ClassicLoadBalancer) []string {
+	lbsToDetach := []string{}
 	desiredLBs := map[string]bool{}
 
 	for _, v := range e.LoadBalancers {
@@ -838,7 +861,7 @@ func (e *AutoscalingGroup) getLBsToDetach(currentLBs []*ClassicLoadBalancer) []*
 
 	for _, v := range currentLBs {
 		if _, ok := desiredLBs[*v.Name]; !ok {
-			lbsToDetach = append(lbsToDetach, v.Name)
+			lbsToDetach = append(lbsToDetach, aws.ToString(v.Name))
 		}
 	}
 	return lbsToDetach
@@ -863,10 +886,10 @@ func (e *AutoscalingGroup) getTGsToDetach(currentTGs []*TargetGroup) []*string {
 }
 
 // sliceChunks returns a chunked slice
-func sliceChunks(slice []*string, chunkSize int) [][]*string {
-	var chunks [][]*string
+func sliceChunks(slice []string, chunkSize int) [][]string {
+	var chunks [][]string
 	for i := 0; i < len(slice); i = i + chunkSize {
-		var chunk []*string
+		var chunk []string
 		if i+chunkSize < len(slice) {
 			chunk = slice[i : i+chunkSize]
 		} else {
@@ -913,13 +936,13 @@ type terraformAutoscalingInstanceDistribution struct {
 	// OnDemandAllocationStrategy
 	OnDemandAllocationStrategy *string `cty:"on_demand_allocation_strategy"`
 	// OnDemandBaseCapacity is the base ondemand requirement
-	OnDemandBaseCapacity *int64 `cty:"on_demand_base_capacity"`
+	OnDemandBaseCapacity *int32 `cty:"on_demand_base_capacity"`
 	// OnDemandPercentageAboveBaseCapacity is the percentage above base for on-demand instances
-	OnDemandPercentageAboveBaseCapacity *int64 `cty:"on_demand_percentage_above_base_capacity"`
+	OnDemandPercentageAboveBaseCapacity *int32 `cty:"on_demand_percentage_above_base_capacity"`
 	// SpotAllocationStrategy is the spot allocation stratergy
 	SpotAllocationStrategy *string `cty:"spot_allocation_strategy"`
 	// SpotInstancePool is the number of pools
-	SpotInstancePool *int64 `cty:"spot_instance_pools"`
+	SpotInstancePool *int32 `cty:"spot_instance_pools"`
 	// SpotMaxPrice is the max bid on spot instance, defaults to demand value
 	SpotMaxPrice *string `cty:"spot_max_price"`
 }
@@ -932,16 +955,16 @@ type terraformMixedInstancesPolicy struct {
 }
 
 type terraformWarmPool struct {
-	MinSize *int64 `cty:"min_size"`
-	MaxSize *int64 `cty:"max_group_prepared_capacity"`
+	MinSize *int32 `cty:"min_size"`
+	MaxSize *int32 `cty:"max_group_prepared_capacity"`
 }
 
 type terraformAutoscalingGroup struct {
 	Name                    *string                                          `cty:"name"`
 	LaunchConfigurationName *terraformWriter.Literal                         `cty:"launch_configuration"`
 	LaunchTemplate          *terraformAutoscalingLaunchTemplateSpecification `cty:"launch_template"`
-	MaxSize                 *int64                                           `cty:"max_size"`
-	MinSize                 *int64                                           `cty:"min_size"`
+	MaxSize                 *int32                                           `cty:"max_size"`
+	MinSize                 *int32                                           `cty:"min_size"`
 	MixedInstancesPolicy    []*terraformMixedInstancesPolicy                 `cty:"mixed_instances_policy"`
 	VPCZoneIdentifier       []*terraformWriter.Literal                       `cty:"vpc_zone_identifier"`
 	Tags                    []*terraformASGTag                               `cty:"tag"`
@@ -951,7 +974,7 @@ type terraformAutoscalingGroup struct {
 	InstanceProtection      *bool                                            `cty:"protect_from_scale_in"`
 	LoadBalancers           []*terraformWriter.Literal                       `cty:"load_balancers"`
 	TargetGroupARNs         []*terraformWriter.Literal                       `cty:"target_group_arns"`
-	MaxInstanceLifetime     *int64                                           `cty:"max_instance_lifetime"`
+	MaxInstanceLifetime     *int32                                           `cty:"max_instance_lifetime"`
 	CapacityRebalance       *bool                                            `cty:"capacity_rebalance"`
 	WarmPool                *terraformWarmPool                               `cty:"warm_pool"`
 }
@@ -1090,4 +1113,53 @@ func (_ *AutoscalingGroup) RenderTerraform(t *terraform.TerraformTarget, a, e, c
 // TerraformLink fills in the property
 func (e *AutoscalingGroup) TerraformLink() *terraformWriter.Literal {
 	return terraformWriter.LiteralProperty("aws_autoscaling_group", fi.ValueOf(e.Name), "id")
+}
+
+func (e *AutoscalingGroup) FindDeletions(context *fi.CloudupContext) ([]fi.CloudupDeletion, error) {
+	return e.deletions, nil
+}
+
+type deleteAutoscalingTargetGroupAttachment struct {
+	autoScalingGroupName string
+	targetGroupARN       string
+}
+
+var _ fi.CloudupDeletion = &deleteAutoscalingTargetGroupAttachment{}
+
+func buildDeleteAutoscalingTargetGroupAttachment(autoScalingGroupName string, targetGroupARN string) *deleteAutoscalingTargetGroupAttachment {
+	d := &deleteAutoscalingTargetGroupAttachment{}
+	d.autoScalingGroupName = autoScalingGroupName
+	d.targetGroupARN = targetGroupARN
+	return d
+}
+
+func (d *deleteAutoscalingTargetGroupAttachment) Delete(t fi.CloudupTarget) error {
+	ctx := context.TODO()
+
+	awsTarget, ok := t.(*awsup.AWSAPITarget)
+	if !ok {
+		return fmt.Errorf("unexpected target type for deletion: %T", t)
+	}
+
+	req := &autoscaling.DetachLoadBalancerTargetGroupsInput{
+		AutoScalingGroupName: aws.String(d.autoScalingGroupName),
+		TargetGroupARNs:      []string{d.targetGroupARN},
+	}
+	if _, err := awsTarget.Cloud.Autoscaling().DetachLoadBalancerTargetGroups(ctx, req); err != nil {
+		return fmt.Errorf("failed to detach target groups from autoscaling group: %v", err)
+	}
+
+	return nil
+}
+
+func (d *deleteAutoscalingTargetGroupAttachment) TaskName() string {
+	return "autoscaling-elb-attachment"
+
+}
+func (d *deleteAutoscalingTargetGroupAttachment) Item() string {
+	return d.autoScalingGroupName + ":" + d.targetGroupARN
+}
+
+func (d *deleteAutoscalingTargetGroupAttachment) DeferDeletion() bool {
+	return true
 }

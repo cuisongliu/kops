@@ -19,10 +19,12 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -34,6 +36,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
 	"k8s.io/kops/pkg/apis/kops"
+	"k8s.io/kops/pkg/apis/kops/util"
 	"k8s.io/kops/pkg/commands/commandutils"
 	"k8s.io/kops/pkg/dump"
 	"k8s.io/kops/pkg/resources"
@@ -53,6 +56,8 @@ var (
 	`))
 
 	toolboxDumpShort = i18n.T(`Dump cluster information`)
+
+	k8sResources = os.Getenv("KOPS_TOOLBOX_DUMP_K8S_RESOURCES")
 )
 
 type ToolboxDumpOptions struct {
@@ -60,15 +65,23 @@ type ToolboxDumpOptions struct {
 
 	ClusterName string
 
-	Dir        string
-	PrivateKey string
-	SSHUser    string
+	Dir          string
+	PrivateKey   string
+	SSHUser      string
+	MaxNodes     int
+	K8sResources bool
+
+	// CloudResources controls whether we dump the cloud resources
+	CloudResources bool
 }
 
 func (o *ToolboxDumpOptions) InitDefaults() {
 	o.Output = OutputYaml
 	o.PrivateKey = "~/.ssh/id_rsa"
 	o.SSHUser = "ubuntu"
+	o.MaxNodes = 500
+	o.K8sResources = k8sResources != ""
+	o.CloudResources = true
 }
 
 func NewCmdToolboxDump(f commandutils.Factory, out io.Writer) *cobra.Command {
@@ -94,6 +107,9 @@ func NewCmdToolboxDump(f commandutils.Factory, out io.Writer) *cobra.Command {
 
 	cmd.Flags().StringVar(&options.Dir, "dir", options.Dir, "Target directory; if specified will collect logs and other information.")
 	cmd.MarkFlagDirname("dir")
+	cmd.Flags().BoolVar(&options.K8sResources, "k8s-resources", options.K8sResources, "Include k8s resources in the dump")
+	cmd.Flags().BoolVar(&options.CloudResources, "cloud-resources", options.CloudResources, "Include cloud resources in the dump")
+	cmd.Flags().IntVar(&options.MaxNodes, "max-nodes", options.MaxNodes, "The maximum number of nodes from which to dump logs")
 	cmd.Flags().StringVar(&options.PrivateKey, "private-key", options.PrivateKey, "File containing private key to use for SSH access to instances")
 	cmd.Flags().StringVar(&options.SSHUser, "ssh-user", options.SSHUser, "The remote user for SSH access to instances")
 	cmd.RegisterFlagCompletionFunc("ssh-user", cobra.NoFileCompletions)
@@ -121,13 +137,17 @@ func RunToolboxDump(ctx context.Context, f commandutils.Factory, out io.Writer, 
 		return err
 	}
 
-	resourceMap, err := resourceops.ListResources(cloud, cluster)
-	if err != nil {
-		return err
-	}
-	d, err := resources.BuildDump(ctx, cloud, resourceMap)
-	if err != nil {
-		return err
+	var cloudResources *resources.Dump
+	if options.CloudResources {
+		resourceMap, err := resourceops.ListResources(cloud, cluster)
+		if err != nil {
+			return err
+		}
+		d, err := resources.BuildDump(ctx, cloud, resourceMap)
+		if err != nil {
+			return err
+		}
+		cloudResources = d
 	}
 
 	if options.Dir != "" {
@@ -156,11 +176,12 @@ func RunToolboxDump(ctx context.Context, f commandutils.Factory, out io.Writer, 
 
 		var nodes corev1.NodeList
 
-		config, err := clientGetter.ToRESTConfig()
+		// TODO: We should use the factory to get the kubeconfig
+		kubeConfig, err := clientGetter.ToRESTConfig()
 		if err != nil {
 			klog.Warningf("cannot load kubeconfig settings for %q: %v", contextName, err)
 		} else {
-			k8sClient, err := kubernetes.NewForConfig(config)
+			k8sClient, err := kubernetes.NewForConfig(kubeConfig)
 			if err != nil {
 				klog.Warningf("cannot build kube client for %q: %v", contextName, err)
 			} else {
@@ -172,6 +193,11 @@ func RunToolboxDump(ctx context.Context, f commandutils.Factory, out io.Writer, 
 					nodes = *nodeList
 				}
 			}
+		}
+
+		err = truncateNodeList(&nodes, options.MaxNodes)
+		if err != nil {
+			klog.Warningf("not limiting number of nodes dumped: %v", err)
 		}
 
 		sshConfig := &ssh.ClientConfig{
@@ -194,49 +220,106 @@ func RunToolboxDump(ctx context.Context, f commandutils.Factory, out io.Writer, 
 			return fmt.Errorf("adding key to SSH agent: %w", err)
 		}
 
-		dumper := dump.NewLogDumper(cluster.ObjectMeta.Name, sshConfig, keyRing, options.Dir)
+		// look for a bastion instance and use it if exists
+		// Prefer a bastion load balancer if exists
+		bastionAddress := ""
+		if cloudResources != nil {
+			for _, lb := range cloudResources.LoadBalancers {
+				if strings.Contains(lb.Name, "bastion") && lb.DNSName != "" {
+					bastionAddress = lb.DNSName
+				}
+			}
+			if bastionAddress == "" {
+				for _, instance := range cloudResources.Instances {
+					if strings.Contains(instance.Name, "bastion") {
+						bastionAddress = instance.PublicAddresses[0]
+					}
+				}
+			}
+		}
+		dumper := dump.NewLogDumper(bastionAddress, sshConfig, keyRing, options.Dir)
 
 		var additionalIPs []string
 		var additionalPrivateIPs []string
-		for _, instance := range d.Instances {
-			if len(instance.PublicAddresses) != 0 {
-				additionalIPs = append(additionalIPs, instance.PublicAddresses[0])
-			} else if len(instance.PrivateAddresses) != 0 {
-				additionalPrivateIPs = append(additionalPrivateIPs, instance.PrivateAddresses[0])
-			} else {
-				klog.Warningf("no IP for instance %q", instance.Name)
+		if cloudResources != nil {
+			for _, instance := range cloudResources.Instances {
+				if len(instance.PublicAddresses) != 0 {
+					additionalIPs = append(additionalIPs, instance.PublicAddresses[0])
+				} else if len(instance.PrivateAddresses) != 0 {
+					additionalPrivateIPs = append(additionalPrivateIPs, instance.PrivateAddresses[0])
+				} else {
+					klog.Warningf("no IP for instance %q", instance.Name)
+				}
 			}
 		}
 
-		if err := dumper.DumpAllNodes(ctx, nodes, additionalIPs, additionalPrivateIPs); err != nil {
-			return fmt.Errorf("error dumping nodes: %v", err)
+		if err := dumper.DumpAllNodes(ctx, nodes, options.MaxNodes, additionalIPs, additionalPrivateIPs); err != nil {
+			klog.Warningf("error dumping nodes: %v", err)
+		}
+
+		if kubeConfig != nil && options.K8sResources {
+			dumper, err := dump.NewResourceDumper(kubeConfig, options.Output, options.Dir)
+			if err != nil {
+				return fmt.Errorf("error creating resource dumper: %w", err)
+			}
+			if err := dumper.DumpResources(ctx); err != nil {
+				klog.Warningf("error dumping resources: %v", err)
+			}
+
+			logDumper, err := dump.NewPodLogDumper(kubeConfig, options.Dir)
+			if err != nil {
+				return fmt.Errorf("error creating pod log dumper: %w", err)
+			}
+			if err := logDumper.DumpLogs(ctx); err != nil {
+				klog.Warningf("error dumping pod logs: %v", err)
+			}
 		}
 	}
 
-	switch options.Output {
-	case OutputYaml:
-		b, err := kops.ToRawYaml(d)
-		if err != nil {
-			return fmt.Errorf("error marshaling yaml: %v", err)
-		}
-		_, err = out.Write(b)
-		if err != nil {
-			return fmt.Errorf("error writing to stdout: %v", err)
-		}
-		return nil
+	if cloudResources != nil {
+		switch options.Output {
+		case OutputYaml:
+			b, err := kops.ToRawYaml(cloudResources)
+			if err != nil {
+				return fmt.Errorf("error marshaling yaml: %v", err)
+			}
+			_, err = out.Write(b)
+			if err != nil {
+				return fmt.Errorf("error writing to stdout: %v", err)
+			}
+			return nil
 
-	case OutputJSON:
-		b, err := json.MarshalIndent(d, "", "  ")
-		if err != nil {
-			return fmt.Errorf("error marshaling json: %v", err)
-		}
-		_, err = out.Write(b)
-		if err != nil {
-			return fmt.Errorf("error writing to stdout: %v", err)
-		}
-		return nil
+		case OutputJSON:
+			b, err := json.MarshalIndent(cloudResources, "", "  ")
+			if err != nil {
+				return fmt.Errorf("error marshaling json: %v", err)
+			}
+			_, err = out.Write(b)
+			if err != nil {
+				return fmt.Errorf("error writing to stdout: %v", err)
+			}
+			return nil
 
-	default:
-		return fmt.Errorf("unsupported output format: %q", options.Output)
+		default:
+			return fmt.Errorf("unsupported output format: %q", options.Output)
+		}
 	}
+	return nil
+}
+
+func truncateNodeList(nodes *corev1.NodeList, max int) error {
+	if max < 0 {
+		return errors.New("--max-nodes must be greater than zero")
+	}
+	// Move control plane nodes to the start of the list and truncate the remainder
+	slices.SortFunc[[]corev1.Node](nodes.Items, func(a corev1.Node, e corev1.Node) int {
+		if role := util.GetNodeRole(&a); role == "control-plane" || role == "apiserver" {
+			return -1
+		}
+		return 1
+	})
+	if len(nodes.Items) > max {
+		nodes.Items = nodes.Items[:max]
+	}
+	return nil
 }

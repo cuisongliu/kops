@@ -6,7 +6,7 @@ spec:
   addons:
   - id: k8s-1.16
     manifest: kops-controller.addons.k8s.io/k8s-1.16.yaml
-    manifestHash: 22d82ee046285f96e0d283076dbabf6bbcd35a6e0e1a38cdb5247544e714f5af
+    manifestHash: 8b31eb8c878b14e96cc5c607a8bee33c844994241f7263d2a01188f6b619ee91
     name: kops-controller.addons.k8s.io
     needsRollingUpdate: control-plane
     selector:
@@ -14,7 +14,7 @@ spec:
     version: 9.99.0
   - id: k8s-1.12
     manifest: coredns.addons.k8s.io/k8s-1.12.yaml
-    manifestHash: d2bbb7cbee5835c3891fe80fbacf8963508359ef9159f8480325ce9a7174f14a
+    manifestHash: e3edf4d59baa037a5b2ffd48548c83d426a7e62380f4efc037402ebfb4b7c3c3
     name: coredns.addons.k8s.io
     selector:
       k8s-addon: coredns.addons.k8s.io
@@ -34,14 +34,14 @@ spec:
     version: 9.99.0
   - id: k8s-1.22
     manifest: hcloud-cloud-controller.addons.k8s.io/k8s-1.22.yaml
-    manifestHash: 6afe8a04e648a1df0a64e22dfe70f7f2b6b82a121c6595a3078f9bdcebbb7cd1
+    manifestHash: 734a1bfdeb92881a6fee5079b13805bb25a519ab7dc2b13f8b192c9107b1faa4
     name: hcloud-cloud-controller.addons.k8s.io
     selector:
       k8s-addon: hcloud-cloud-controller.addons.k8s.io
     version: 9.99.0
   - id: k8s-1.22
     manifest: hcloud-csi-driver.addons.k8s.io/k8s-1.22.yaml
-    manifestHash: f86445654ced20b614f6031d14a5fea5cf61fdc98f39968407af67a0ddb258e9
+    manifestHash: 17957f9bc33c605a2dca8ce3ff59844023fc8079bb1a4f08025eb5e18d0c2968
     name: hcloud-csi-driver.addons.k8s.io
     selector:
       k8s-addon: hcloud-csi-driver.addons.k8s.io

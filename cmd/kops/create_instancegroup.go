@@ -159,7 +159,7 @@ func RunCreateInstanceGroup(ctx context.Context, f *util.Factory, out io.Writer,
 		return err
 	}
 
-	channel, err := cloudup.ChannelForCluster(cluster)
+	channel, err := cloudup.ChannelForCluster(clientset.VFSContext(), cluster)
 	if err != nil {
 		klog.Warningf("%v", err)
 	}
@@ -199,7 +199,7 @@ func RunCreateInstanceGroup(ctx context.Context, f *util.Factory, out io.Writer,
 	}
 
 	ig.AddInstanceGroupNodeLabel()
-	if cluster.Spec.GetCloudProvider() == kopsapi.CloudProviderGCE {
+	if cluster.GetCloudProvider() == kopsapi.CloudProviderGCE {
 		fmt.Println("detected a GCE cluster; labeling nodes to receive metadata-proxy.")
 		ig.Spec.NodeLabels["cloud.google.com/metadata-proxy-ready"] = "true"
 	}

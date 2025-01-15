@@ -114,6 +114,10 @@ const (
 	// instance group to specify the cooldown period (in seconds) for scaling actions.
 	SpotInstanceGroupLabelAutoScalerCooldown = "spotinst.io/autoscaler-cooldown"
 
+	// SpotInstanceGroupLabelOtherArchitectureImages  Identifier of other architecture image in AWS.
+	//For each architecture type (amd64, arm64) only one AMI is allowed,first image is from  config.InstanceGroup.spec.image
+	SpotInstanceGroupLabelOtherArchitectureImages = "spotinst.io/other-architecture-images"
+
 	// SpotInstanceGroupLabelAutoScalerScaleDown* are the metadata labels used on the
 	// instance group to specify the scale down configuration used by the auto scaler.
 	SpotInstanceGroupLabelAutoScalerScaleDownMaxPercentage     = "spotinst.io/autoscaler-scale-down-max-percentage"
@@ -135,6 +139,14 @@ const (
 	// SpotClusterLabelStrategyClusterOrientationAvailabilityVsCost is the metadata label used on the
 	// instance group to specify how to optimize towards  continuity and/or cost-effective infrastructure
 	SpotClusterLabelStrategyClusterOrientationAvailabilityVsCost = "spotinst.io/strategy-cluster-orientation-availability-vs-cost"
+
+	// SpotClusterLabelResourceTagSpecificationVolumes
+	// Specify if Volume resources will be tagged with Virtual Node Group tags or Ocean tags.
+	SpotClusterLabelResourceTagSpecificationVolumes = "spotinst.io/resource-tag-specification-volumes"
+
+	// SpotClusterLabelAutoScalerAggressiveScaleDown
+	// configure the aggressive scale down feature, the default is false. cluster.autoScaler.down.aggressiveScaleDown.isEnabled
+	SpotClusterLabelAutoScalerAggressiveScaleDown = "spotinst.io/autoscaler-aggressive-scale-down"
 )
 
 // SpotInstanceGroupModelBuilder configures SpotInstanceGroup objects
@@ -210,6 +222,12 @@ func (b *SpotInstanceGroupModelBuilder) buildElastigroup(c *fi.CloudupModelBuild
 	if aws := b.Cluster.Spec.CloudProvider.AWS; aws != nil {
 		group.Product = aws.SpotinstProduct
 		group.Orientation = aws.SpotinstOrientation
+		nth := aws.NodeTerminationHandler
+		if nth != nil && nth.Enabled != nil && *nth.Enabled {
+			return fmt.Errorf("can't build elastigroup while nodeTerminationHandler flag is on. " +
+				"using nodeTerminationHandler will interfere with Ocean Kubernetes controller .\n" +
+				"Please add the following configuration to cluster config \n nodeTerminationHandler:\n   enabled: false ")
+		}
 	}
 
 	// Strategy.
@@ -387,6 +405,16 @@ func (b *SpotInstanceGroupModelBuilder) buildOcean(c *fi.CloudupModelBuilderCont
 			ocean.SpreadNodesBy = fi.PtrTo(v)
 		case SpotClusterLabelStrategyClusterOrientationAvailabilityVsCost:
 			ocean.AvailabilityVsCost = fi.PtrTo(string(spotinsttasks.NormalizeClusterOrientation(&v)))
+		case SpotClusterLabelResourceTagSpecificationVolumes:
+			ocean.ResourceTagSpecificationVolumes, err = parseBool(v)
+			if err != nil {
+				return err
+			}
+		case SpotClusterLabelAutoScalerAggressiveScaleDown:
+			ocean.AutoScalerAggressiveScaleDown, err = parseBool(v)
+			if err != nil {
+				return err
+			}
 		}
 	}
 
@@ -524,7 +552,7 @@ func (b *SpotInstanceGroupModelBuilder) buildOcean(c *fi.CloudupModelBuilderCont
 
 	klog.V(4).Infof("Adding task: Ocean/%s", fi.ValueOf(ocean.Name))
 	c.AddTask(ocean)
-
+	klog.V(4).Infof("Finish task: Ocean/%s", fi.ValueOf(ocean.Name))
 	return nil
 }
 
@@ -555,6 +583,12 @@ func (b *SpotInstanceGroupModelBuilder) buildLaunchSpec(c *fi.CloudupModelBuilde
 
 		case SpotInstanceGroupLabelRestrictScaleDown:
 			launchSpec.RestrictScaleDown, err = parseBool(v)
+			if err != nil {
+				return err
+			}
+
+		case SpotInstanceGroupLabelOtherArchitectureImages:
+			launchSpec.OtherArchitectureImages, err = parseStringSlice(v)
 			if err != nil {
 				return err
 			}
@@ -832,7 +866,7 @@ func (b *SpotInstanceGroupModelBuilder) buildLoadBalancers(c *fi.CloudupModelBui
 			c.EnsureTask(lb)
 		}
 		if extLB.TargetGroupARN != nil {
-			targetGroupName, err := awsup.GetTargetGroupNameFromARN(fi.ValueOf(extLB.TargetGroupARN))
+			targetGroupName, err := awsup.NameForExternalTargetGroup(fi.ValueOf(extLB.TargetGroupARN))
 			if err != nil {
 				return nil, nil, err
 			}

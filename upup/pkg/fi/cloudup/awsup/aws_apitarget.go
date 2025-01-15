@@ -20,7 +20,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
 	"k8s.io/klog/v2"
 
 	"k8s.io/kops/upup/pkg/fi"
@@ -36,10 +35,6 @@ func NewAWSAPITarget(cloud AWSCloud) *AWSAPITarget {
 	return &AWSAPITarget{
 		Cloud: cloud,
 	}
-}
-
-func (t *AWSAPITarget) ProcessDeletions() bool {
-	return true
 }
 
 func (t *AWSAPITarget) DefaultCheckExisting() bool {
@@ -189,7 +184,7 @@ func (t *AWSAPITarget) WaitForInstanceRunning(instanceID string) error {
 
 		state := "?"
 		if instance.State != nil {
-			state = aws.StringValue(instance.State.Name)
+			state = string(instance.State.Name)
 		}
 		if state == "running" {
 			return nil

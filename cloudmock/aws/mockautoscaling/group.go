@@ -17,34 +17,58 @@ limitations under the License.
 package mockautoscaling
 
 import (
+	"context"
 	"fmt"
+	"slices"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/request"
-	"github.com/aws/aws-sdk-go/service/autoscaling"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/autoscaling"
+	autoscalingtypes "github.com/aws/aws-sdk-go-v2/service/autoscaling/types"
 	"k8s.io/klog/v2"
 )
 
-func (m *MockAutoscaling) AttachInstances(input *autoscaling.AttachInstancesInput) (*autoscaling.AttachInstancesOutput, error) {
+func (m *MockAutoscaling) AttachInstances(ctx context.Context, input *autoscaling.AttachInstancesInput, optFns ...func(*autoscaling.Options)) (*autoscaling.AttachInstancesOutput, error) {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
 	klog.V(2).Infof("Mock AttachInstances %v", input)
 
-	g := m.Groups[aws.StringValue(input.AutoScalingGroupName)]
+	g := m.Groups[aws.ToString(input.AutoScalingGroupName)]
 	if g == nil {
 		return nil, fmt.Errorf("AutoScaling Group not found")
 	}
 
 	for _, instanceID := range input.InstanceIds {
-		g.Instances = append(g.Instances, &autoscaling.Instance{InstanceId: instanceID})
+		g.Instances = append(g.Instances, autoscalingtypes.Instance{InstanceId: aws.String(instanceID)})
 	}
 
 	return &autoscaling.AttachInstancesOutput{}, nil
 }
 
-func (m *MockAutoscaling) CreateAutoScalingGroup(input *autoscaling.CreateAutoScalingGroupInput) (*autoscaling.CreateAutoScalingGroupOutput, error) {
+func (m *MockAutoscaling) DetachInstances(ctx context.Context, input *autoscaling.DetachInstancesInput, optFns ...func(*autoscaling.Options)) (*autoscaling.DetachInstancesOutput, error) {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+
+	klog.V(2).Infof("Mock AttachInstances %v", input)
+
+	g := m.Groups[aws.ToString(input.AutoScalingGroupName)]
+	if g == nil {
+		return nil, fmt.Errorf("AutoScaling Group not found")
+	}
+
+	instances := make([]autoscalingtypes.Instance, 0)
+	for _, instance := range g.Instances {
+		if !slices.Contains(input.InstanceIds, aws.ToString(instance.InstanceId)) {
+			instances = append(instances, instance)
+		}
+	}
+	g.Instances = instances
+
+	return &autoscaling.DetachInstancesOutput{}, nil
+}
+
+func (m *MockAutoscaling) CreateAutoScalingGroup(ctx context.Context, input *autoscaling.CreateAutoScalingGroupInput, optFns ...func(*autoscaling.Options)) (*autoscaling.CreateAutoScalingGroupOutput, error) {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
@@ -52,7 +76,7 @@ func (m *MockAutoscaling) CreateAutoScalingGroup(input *autoscaling.CreateAutoSc
 
 	createdTime := time.Now().UTC()
 
-	g := &autoscaling.Group{
+	g := &autoscalingtypes.AutoScalingGroup{
 		AutoScalingGroupName: input.AutoScalingGroupName,
 		AvailabilityZones:    input.AvailabilityZones,
 		CreatedTime:          &createdTime,
@@ -61,7 +85,7 @@ func (m *MockAutoscaling) CreateAutoScalingGroup(input *autoscaling.CreateAutoSc
 		// EnabledMetrics:          input.EnabledMetrics,
 		HealthCheckGracePeriod:           input.HealthCheckGracePeriod,
 		HealthCheckType:                  input.HealthCheckType,
-		Instances:                        []*autoscaling.Instance{},
+		Instances:                        []autoscalingtypes.Instance{},
 		LaunchConfigurationName:          input.LaunchConfigurationName,
 		LaunchTemplate:                   input.LaunchTemplate,
 		LoadBalancerNames:                input.LoadBalancerNames,
@@ -70,7 +94,7 @@ func (m *MockAutoscaling) CreateAutoScalingGroup(input *autoscaling.CreateAutoSc
 		NewInstancesProtectedFromScaleIn: input.NewInstancesProtectedFromScaleIn,
 		PlacementGroup:                   input.PlacementGroup,
 		// Status:                           input.Status,
-		SuspendedProcesses:  make([]*autoscaling.SuspendedProcess, 0),
+		SuspendedProcesses:  make([]autoscalingtypes.SuspendedProcess, 0),
 		TargetGroupARNs:     input.TargetGroupARNs,
 		TerminationPolicies: input.TerminationPolicies,
 		VPCZoneIdentifier:   input.VPCZoneIdentifier,
@@ -85,7 +109,7 @@ func (m *MockAutoscaling) CreateAutoScalingGroup(input *autoscaling.CreateAutoSc
 	}
 
 	for _, tag := range input.Tags {
-		g.Tags = append(g.Tags, &autoscaling.TagDescription{
+		g.Tags = append(g.Tags, autoscalingtypes.TagDescription{
 			Key:               tag.Key,
 			PropagateAtLaunch: tag.PropagateAtLaunch,
 			ResourceId:        tag.ResourceId,
@@ -95,14 +119,14 @@ func (m *MockAutoscaling) CreateAutoScalingGroup(input *autoscaling.CreateAutoSc
 	}
 
 	if m.Groups == nil {
-		m.Groups = make(map[string]*autoscaling.Group)
+		m.Groups = make(map[string]*autoscalingtypes.AutoScalingGroup)
 	}
 	m.Groups[*g.AutoScalingGroupName] = g
 
 	return &autoscaling.CreateAutoScalingGroupOutput{}, nil
 }
 
-func (m *MockAutoscaling) UpdateAutoScalingGroup(request *autoscaling.UpdateAutoScalingGroupInput) (*autoscaling.UpdateAutoScalingGroupOutput, error) {
+func (m *MockAutoscaling) UpdateAutoScalingGroup(ctx context.Context, request *autoscaling.UpdateAutoScalingGroupInput, optFns ...func(*autoscaling.Options)) (*autoscaling.UpdateAutoScalingGroupOutput, error) {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 	klog.V(2).Infof("Mock UpdateAutoScalingGroup %v", request)
@@ -163,7 +187,7 @@ func (m *MockAutoscaling) UpdateAutoScalingGroup(request *autoscaling.UpdateAuto
 	return &autoscaling.UpdateAutoScalingGroupOutput{}, nil
 }
 
-func (m *MockAutoscaling) EnableMetricsCollection(request *autoscaling.EnableMetricsCollectionInput) (*autoscaling.EnableMetricsCollectionOutput, error) {
+func (m *MockAutoscaling) EnableMetricsCollection(ctx context.Context, request *autoscaling.EnableMetricsCollectionInput, optFns ...func(*autoscaling.Options)) (*autoscaling.EnableMetricsCollectionOutput, error) {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
@@ -174,20 +198,20 @@ func (m *MockAutoscaling) EnableMetricsCollection(request *autoscaling.EnableMet
 		return nil, fmt.Errorf("AutoScalingGroup not found")
 	}
 
-	metrics := make(map[string]*autoscaling.EnabledMetric)
+	metrics := make(map[string]*autoscalingtypes.EnabledMetric)
 	for _, m := range g.EnabledMetrics {
-		metrics[*m.Metric] = m
+		metrics[*m.Metric] = &m
 	}
 	for _, m := range request.Metrics {
-		metrics[*m] = &autoscaling.EnabledMetric{
-			Metric:      m,
+		metrics[m] = &autoscalingtypes.EnabledMetric{
+			Metric:      &m,
 			Granularity: request.Granularity,
 		}
 	}
 
 	g.EnabledMetrics = nil
 	for _, m := range metrics {
-		g.EnabledMetrics = append(g.EnabledMetrics, m)
+		g.EnabledMetrics = append(g.EnabledMetrics, *m)
 	}
 
 	response := &autoscaling.EnableMetricsCollectionOutput{}
@@ -195,7 +219,7 @@ func (m *MockAutoscaling) EnableMetricsCollection(request *autoscaling.EnableMet
 	return response, nil
 }
 
-func (m *MockAutoscaling) SuspendProcesses(input *autoscaling.ScalingProcessQuery) (*autoscaling.SuspendProcessesOutput, error) {
+func (m *MockAutoscaling) SuspendProcesses(ctx context.Context, input *autoscaling.SuspendProcessesInput, optFns ...func(*autoscaling.Options)) (*autoscaling.SuspendProcessesOutput, error) {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
@@ -209,13 +233,13 @@ func (m *MockAutoscaling) SuspendProcesses(input *autoscaling.ScalingProcessQuer
 	for _, p := range input.ScalingProcesses {
 		found := false
 		for _, asgProc := range g.SuspendedProcesses {
-			if aws.StringValue(asgProc.ProcessName) == aws.StringValue(p) {
+			if aws.ToString(asgProc.ProcessName) == p {
 				found = true
 			}
 		}
 		if !found {
-			g.SuspendedProcesses = append(g.SuspendedProcesses, &autoscaling.SuspendedProcess{
-				ProcessName: p,
+			g.SuspendedProcesses = append(g.SuspendedProcesses, autoscalingtypes.SuspendedProcess{
+				ProcessName: aws.String(p),
 			})
 		}
 	}
@@ -223,19 +247,19 @@ func (m *MockAutoscaling) SuspendProcesses(input *autoscaling.ScalingProcessQuer
 	return &autoscaling.SuspendProcessesOutput{}, nil
 }
 
-func (m *MockAutoscaling) DescribeAutoScalingGroups(input *autoscaling.DescribeAutoScalingGroupsInput) (*autoscaling.DescribeAutoScalingGroupsOutput, error) {
+func (m *MockAutoscaling) DescribeAutoScalingGroups(ctx context.Context, input *autoscaling.DescribeAutoScalingGroupsInput, optFns ...func(*autoscaling.Options)) (*autoscaling.DescribeAutoScalingGroupsOutput, error) {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
 	klog.V(2).Infof("Mock DescribeAutoScalingGroups: %v", input)
 
-	groups := []*autoscaling.Group{}
+	groups := []autoscalingtypes.AutoScalingGroup{}
 	for _, group := range m.Groups {
 		match := false
 
 		if len(input.AutoScalingGroupNames) > 0 {
 			for _, inputGroupName := range input.AutoScalingGroupNames {
-				if aws.StringValue(group.AutoScalingGroupName) == aws.StringValue(inputGroupName) {
+				if aws.ToString(group.AutoScalingGroupName) == inputGroupName {
 					match = true
 				}
 			}
@@ -244,7 +268,7 @@ func (m *MockAutoscaling) DescribeAutoScalingGroups(input *autoscaling.DescribeA
 		}
 
 		if match {
-			groups = append(groups, group)
+			groups = append(groups, *group)
 		}
 	}
 
@@ -253,13 +277,13 @@ func (m *MockAutoscaling) DescribeAutoScalingGroups(input *autoscaling.DescribeA
 	}, nil
 }
 
-func (m *MockAutoscaling) TerminateInstanceInAutoScalingGroup(input *autoscaling.TerminateInstanceInAutoScalingGroupInput) (*autoscaling.TerminateInstanceInAutoScalingGroupOutput, error) {
+func (m *MockAutoscaling) TerminateInstanceInAutoScalingGroup(ctx context.Context, input *autoscaling.TerminateInstanceInAutoScalingGroupInput, optFns ...func(*autoscaling.Options)) (*autoscaling.TerminateInstanceInAutoScalingGroupOutput, error) {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
 	for _, group := range m.Groups {
 		for i := range group.Instances {
-			if aws.StringValue(group.Instances[i].InstanceId) == aws.StringValue(input.InstanceId) {
+			if aws.ToString(group.Instances[i].InstanceId) == aws.ToString(input.InstanceId) {
 				group.Instances = append(group.Instances[:i], group.Instances[i+1:]...)
 				return &autoscaling.TerminateInstanceInAutoScalingGroupOutput{
 					Activity: nil, // TODO
@@ -268,7 +292,7 @@ func (m *MockAutoscaling) TerminateInstanceInAutoScalingGroup(input *autoscaling
 		}
 		wp := m.WarmPoolInstances[*group.AutoScalingGroupName]
 		for i := range wp {
-			if aws.StringValue(wp[i].InstanceId) == aws.StringValue(input.InstanceId) {
+			if aws.ToString(wp[i].InstanceId) == aws.ToString(input.InstanceId) {
 				m.WarmPoolInstances[*group.AutoScalingGroupName] = append(wp[:i], wp[i+1:]...)
 				return &autoscaling.TerminateInstanceInAutoScalingGroupOutput{
 					Activity: nil, // TODO
@@ -280,47 +304,13 @@ func (m *MockAutoscaling) TerminateInstanceInAutoScalingGroup(input *autoscaling
 	return nil, fmt.Errorf("Instance not found")
 }
 
-func (m *MockAutoscaling) DescribeAutoScalingGroupsWithContext(aws.Context, *autoscaling.DescribeAutoScalingGroupsInput, ...request.Option) (*autoscaling.DescribeAutoScalingGroupsOutput, error) {
-	klog.Fatalf("Not implemented")
-	return nil, nil
-}
-
-func (m *MockAutoscaling) DescribeAutoScalingGroupsRequest(*autoscaling.DescribeAutoScalingGroupsInput) (*request.Request, *autoscaling.DescribeAutoScalingGroupsOutput) {
-	klog.Fatalf("Not implemented")
-	return nil, nil
-}
-
-func (m *MockAutoscaling) DescribeAutoScalingGroupsPages(request *autoscaling.DescribeAutoScalingGroupsInput, callback func(*autoscaling.DescribeAutoScalingGroupsOutput, bool) bool) error {
-	if request.MaxRecords != nil {
-		klog.Fatalf("MaxRecords not implemented")
-	}
-	if request.NextToken != nil {
-		klog.Fatalf("NextToken not implemented")
-	}
-
-	// For the mock, we just send everything in one page
-	page, err := m.DescribeAutoScalingGroups(request)
-	if err != nil {
-		return err
-	}
-
-	callback(page, false)
-
-	return nil
-}
-
-func (m *MockAutoscaling) DescribeAutoScalingGroupsPagesWithContext(aws.Context, *autoscaling.DescribeAutoScalingGroupsInput, func(*autoscaling.DescribeAutoScalingGroupsOutput, bool) bool, ...request.Option) error {
-	klog.Fatalf("Not implemented")
-	return nil
-}
-
-func (m *MockAutoscaling) DeleteAutoScalingGroup(request *autoscaling.DeleteAutoScalingGroupInput) (*autoscaling.DeleteAutoScalingGroupOutput, error) {
+func (m *MockAutoscaling) DeleteAutoScalingGroup(ctx context.Context, request *autoscaling.DeleteAutoScalingGroupInput, optFns ...func(*autoscaling.Options)) (*autoscaling.DeleteAutoScalingGroupOutput, error) {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
 	klog.V(2).Infof("Mock DeleteAutoScalingGroup: %v", request)
 
-	id := aws.StringValue(request.AutoScalingGroupName)
+	id := aws.ToString(request.AutoScalingGroupName)
 	o := m.Groups[id]
 	if o == nil {
 		return nil, fmt.Errorf("AutoScalingGroup %q not found", id)
@@ -330,20 +320,10 @@ func (m *MockAutoscaling) DeleteAutoScalingGroup(request *autoscaling.DeleteAuto
 	return &autoscaling.DeleteAutoScalingGroupOutput{}, nil
 }
 
-func (m *MockAutoscaling) DeleteAutoScalingGroupWithContext(aws.Context, *autoscaling.DeleteAutoScalingGroupInput, ...request.Option) (*autoscaling.DeleteAutoScalingGroupOutput, error) {
-	klog.Fatalf("Not implemented")
-	return nil, nil
-}
-
-func (m *MockAutoscaling) DeleteAutoScalingGroupRequest(*autoscaling.DeleteAutoScalingGroupInput) (*request.Request, *autoscaling.DeleteAutoScalingGroupOutput) {
-	klog.Fatalf("Not implemented")
-	return nil, nil
-}
-
-func (m *MockAutoscaling) PutLifecycleHook(input *autoscaling.PutLifecycleHookInput) (*autoscaling.PutLifecycleHookOutput, error) {
+func (m *MockAutoscaling) PutLifecycleHook(ctx context.Context, input *autoscaling.PutLifecycleHookInput, optFns ...func(*autoscaling.Options)) (*autoscaling.PutLifecycleHookOutput, error) {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
-	hook := &autoscaling.LifecycleHook{
+	hook := &autoscalingtypes.LifecycleHook{
 		AutoScalingGroupName:  input.AutoScalingGroupName,
 		DefaultResult:         input.DefaultResult,
 		GlobalTimeout:         input.HeartbeatTimeout,
@@ -356,7 +336,7 @@ func (m *MockAutoscaling) PutLifecycleHook(input *autoscaling.PutLifecycleHookIn
 	}
 
 	if m.LifecycleHooks == nil {
-		m.LifecycleHooks = make(map[string]*autoscaling.LifecycleHook)
+		m.LifecycleHooks = make(map[string]*autoscalingtypes.LifecycleHook)
 	}
 	name := *input.AutoScalingGroupName + "::" + *input.LifecycleHookName
 	m.LifecycleHooks[name] = hook
@@ -364,17 +344,17 @@ func (m *MockAutoscaling) PutLifecycleHook(input *autoscaling.PutLifecycleHookIn
 	return &autoscaling.PutLifecycleHookOutput{}, nil
 }
 
-func (m *MockAutoscaling) DescribeLifecycleHooks(input *autoscaling.DescribeLifecycleHooksInput) (*autoscaling.DescribeLifecycleHooksOutput, error) {
+func (m *MockAutoscaling) DescribeLifecycleHooks(ctx context.Context, input *autoscaling.DescribeLifecycleHooksInput, optFns ...func(*autoscaling.Options)) (*autoscaling.DescribeLifecycleHooksOutput, error) {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
 	response := &autoscaling.DescribeLifecycleHooksOutput{}
 	for _, lifecycleHookName := range input.LifecycleHookNames {
-		name := *input.AutoScalingGroupName + "::" + *lifecycleHookName
+		name := *input.AutoScalingGroupName + "::" + lifecycleHookName
 
 		hook := m.LifecycleHooks[name]
 		if hook != nil {
-			response.LifecycleHooks = append(response.LifecycleHooks, hook)
+			response.LifecycleHooks = append(response.LifecycleHooks, *hook)
 		}
 	}
 	return response, nil

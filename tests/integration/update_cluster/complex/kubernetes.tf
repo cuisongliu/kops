@@ -241,6 +241,90 @@ resource "aws_autoscaling_group" "nodes-complex-example-com" {
   vpc_zone_identifier = [aws_subnet.us-test-1a-complex-example-com.id]
 }
 
+resource "aws_autoscaling_lifecycle_hook" "master-us-test-1a-NTHLifecycleHook" {
+  autoscaling_group_name = aws_autoscaling_group.master-us-test-1a-masters-complex-example-com.id
+  default_result         = "CONTINUE"
+  heartbeat_timeout      = 300
+  lifecycle_transition   = "autoscaling:EC2_INSTANCE_TERMINATING"
+  name                   = "master-us-test-1a-NTHLifecycleHook"
+}
+
+resource "aws_autoscaling_lifecycle_hook" "nodes-NTHLifecycleHook" {
+  autoscaling_group_name = aws_autoscaling_group.nodes-complex-example-com.id
+  default_result         = "CONTINUE"
+  heartbeat_timeout      = 300
+  lifecycle_transition   = "autoscaling:EC2_INSTANCE_TERMINATING"
+  name                   = "nodes-NTHLifecycleHook"
+}
+
+resource "aws_cloudwatch_event_rule" "complex-example-com-ASGLifecycle" {
+  event_pattern = file("${path.module}/data/aws_cloudwatch_event_rule_complex.example.com-ASGLifecycle_event_pattern")
+  name          = "complex.example.com-ASGLifecycle"
+  tags = {
+    "KubernetesCluster"                         = "complex.example.com"
+    "Name"                                      = "complex.example.com-ASGLifecycle"
+    "Owner"                                     = "John Doe"
+    "foo/bar"                                   = "fib+baz"
+    "kubernetes.io/cluster/complex.example.com" = "owned"
+  }
+}
+
+resource "aws_cloudwatch_event_rule" "complex-example-com-InstanceScheduledChange" {
+  event_pattern = file("${path.module}/data/aws_cloudwatch_event_rule_complex.example.com-InstanceScheduledChange_event_pattern")
+  name          = "complex.example.com-InstanceScheduledChange"
+  tags = {
+    "KubernetesCluster"                         = "complex.example.com"
+    "Name"                                      = "complex.example.com-InstanceScheduledChange"
+    "Owner"                                     = "John Doe"
+    "foo/bar"                                   = "fib+baz"
+    "kubernetes.io/cluster/complex.example.com" = "owned"
+  }
+}
+
+resource "aws_cloudwatch_event_rule" "complex-example-com-InstanceStateChange" {
+  event_pattern = file("${path.module}/data/aws_cloudwatch_event_rule_complex.example.com-InstanceStateChange_event_pattern")
+  name          = "complex.example.com-InstanceStateChange"
+  tags = {
+    "KubernetesCluster"                         = "complex.example.com"
+    "Name"                                      = "complex.example.com-InstanceStateChange"
+    "Owner"                                     = "John Doe"
+    "foo/bar"                                   = "fib+baz"
+    "kubernetes.io/cluster/complex.example.com" = "owned"
+  }
+}
+
+resource "aws_cloudwatch_event_rule" "complex-example-com-SpotInterruption" {
+  event_pattern = file("${path.module}/data/aws_cloudwatch_event_rule_complex.example.com-SpotInterruption_event_pattern")
+  name          = "complex.example.com-SpotInterruption"
+  tags = {
+    "KubernetesCluster"                         = "complex.example.com"
+    "Name"                                      = "complex.example.com-SpotInterruption"
+    "Owner"                                     = "John Doe"
+    "foo/bar"                                   = "fib+baz"
+    "kubernetes.io/cluster/complex.example.com" = "owned"
+  }
+}
+
+resource "aws_cloudwatch_event_target" "complex-example-com-ASGLifecycle-Target" {
+  arn  = aws_sqs_queue.complex-example-com-nth.arn
+  rule = aws_cloudwatch_event_rule.complex-example-com-ASGLifecycle.id
+}
+
+resource "aws_cloudwatch_event_target" "complex-example-com-InstanceScheduledChange-Target" {
+  arn  = aws_sqs_queue.complex-example-com-nth.arn
+  rule = aws_cloudwatch_event_rule.complex-example-com-InstanceScheduledChange.id
+}
+
+resource "aws_cloudwatch_event_target" "complex-example-com-InstanceStateChange-Target" {
+  arn  = aws_sqs_queue.complex-example-com-nth.arn
+  rule = aws_cloudwatch_event_rule.complex-example-com-InstanceStateChange.id
+}
+
+resource "aws_cloudwatch_event_target" "complex-example-com-SpotInterruption-Target" {
+  arn  = aws_sqs_queue.complex-example-com-nth.arn
+  rule = aws_cloudwatch_event_rule.complex-example-com-SpotInterruption.id
+}
+
 resource "aws_ebs_volume" "a-etcd-events-complex-example-com" {
   availability_zone = "us-test-1a"
   encrypted         = false
@@ -478,7 +562,7 @@ resource "aws_launch_template" "nodes-complex-example-com" {
     http_endpoint               = "enabled"
     http_protocol_ipv6          = "disabled"
     http_put_response_hop_limit = 1
-    http_tokens                 = "optional"
+    http_tokens                 = "required"
   }
   monitoring {
     enabled = true
@@ -538,6 +622,7 @@ resource "aws_lb" "api-complex-example-com" {
   internal                         = false
   load_balancer_type               = "network"
   name                             = "api-complex-example-com-vd3t5n"
+  security_groups                  = ["sg-exampleid5", "sg-exampleid6", aws_security_group.api-elb-complex-example-com.id]
   subnet_mapping {
     allocation_id = "eipalloc-012345a678b9cdefa"
     subnet_id     = aws_subnet.us-test-1a-complex-example-com.id
@@ -774,18 +859,18 @@ resource "aws_s3_object" "complex-example-com-addons-kubelet-api-rbac-addons-k8s
   server_side_encryption = "AES256"
 }
 
-resource "aws_s3_object" "complex-example-com-addons-leader-migration-rbac-addons-k8s-io-k8s-1-23" {
-  bucket                 = "testingBucket"
-  content                = file("${path.module}/data/aws_s3_object_complex.example.com-addons-leader-migration.rbac.addons.k8s.io-k8s-1.23_content")
-  key                    = "clusters.example.com/complex.example.com/addons/leader-migration.rbac.addons.k8s.io/k8s-1.23.yaml"
-  provider               = aws.files
-  server_side_encryption = "AES256"
-}
-
 resource "aws_s3_object" "complex-example-com-addons-limit-range-addons-k8s-io" {
   bucket                 = "testingBucket"
   content                = file("${path.module}/data/aws_s3_object_complex.example.com-addons-limit-range.addons.k8s.io_content")
   key                    = "clusters.example.com/complex.example.com/addons/limit-range.addons.k8s.io/v1.5.0.yaml"
+  provider               = aws.files
+  server_side_encryption = "AES256"
+}
+
+resource "aws_s3_object" "complex-example-com-addons-node-termination-handler-aws-k8s-1-11" {
+  bucket                 = "testingBucket"
+  content                = file("${path.module}/data/aws_s3_object_complex.example.com-addons-node-termination-handler.aws-k8s-1.11_content")
+  key                    = "clusters.example.com/complex.example.com/addons/node-termination-handler.aws/k8s-1.11.yaml"
   provider               = aws.files
   server_side_encryption = "AES256"
 }
@@ -919,21 +1004,39 @@ resource "aws_security_group_rule" "from-0-0-0-0--0-ingress-tcp-22to22-nodes-com
   type              = "ingress"
 }
 
-resource "aws_security_group_rule" "from-0-0-0-0--0-ingress-tcp-443to443-masters-complex-example-com" {
+resource "aws_security_group_rule" "from-0-0-0-0--0-ingress-tcp-443to443-api-elb-complex-example-com" {
   from_port         = 443
   prefix_list_ids   = ["pl-44444444"]
   protocol          = "tcp"
-  security_group_id = aws_security_group.masters-complex-example-com.id
+  security_group_id = aws_security_group.api-elb-complex-example-com.id
   to_port           = 443
   type              = "ingress"
 }
 
-resource "aws_security_group_rule" "from-1-1-1-0--24-ingress-tcp-443to443-masters-complex-example-com" {
+resource "aws_security_group_rule" "from-0-0-0-0--0-ingress-tcp-8443to8443-api-elb-complex-example-com" {
+  from_port         = 8443
+  prefix_list_ids   = ["pl-44444444"]
+  protocol          = "tcp"
+  security_group_id = aws_security_group.api-elb-complex-example-com.id
+  to_port           = 8443
+  type              = "ingress"
+}
+
+resource "aws_security_group_rule" "from-1-1-1-0--24-ingress-tcp-443to443-api-elb-complex-example-com" {
   cidr_blocks       = ["1.1.1.0/24"]
   from_port         = 443
   protocol          = "tcp"
-  security_group_id = aws_security_group.masters-complex-example-com.id
+  security_group_id = aws_security_group.api-elb-complex-example-com.id
   to_port           = 443
+  type              = "ingress"
+}
+
+resource "aws_security_group_rule" "from-1-1-1-0--24-ingress-tcp-8443to8443-api-elb-complex-example-com" {
+  cidr_blocks       = ["1.1.1.0/24"]
+  from_port         = 8443
+  protocol          = "tcp"
+  security_group_id = aws_security_group.api-elb-complex-example-com.id
+  to_port           = 8443
   type              = "ingress"
 }
 
@@ -953,6 +1056,24 @@ resource "aws_security_group_rule" "from-1-1-1-1--32-ingress-tcp-22to22-nodes-co
   security_group_id = aws_security_group.nodes-complex-example-com.id
   to_port           = 22
   type              = "ingress"
+}
+
+resource "aws_security_group_rule" "from-api-elb-complex-example-com-egress-all-0to0-0-0-0-0--0" {
+  cidr_blocks       = ["0.0.0.0/0"]
+  from_port         = 0
+  protocol          = "-1"
+  security_group_id = aws_security_group.api-elb-complex-example-com.id
+  to_port           = 0
+  type              = "egress"
+}
+
+resource "aws_security_group_rule" "from-api-elb-complex-example-com-egress-all-0to0-__--0" {
+  from_port         = 0
+  ipv6_cidr_blocks  = ["::/0"]
+  protocol          = "-1"
+  security_group_id = aws_security_group.api-elb-complex-example-com.id
+  to_port           = 0
+  type              = "egress"
 }
 
 resource "aws_security_group_rule" "from-masters-complex-example-com-egress-all-0to0-0-0-0-0--0" {
@@ -1055,38 +1176,56 @@ resource "aws_security_group_rule" "from-nodes-complex-example-com-ingress-udp-1
 }
 
 resource "aws_security_group_rule" "https-elb-to-master" {
-  cidr_blocks       = ["172.20.0.0/16"]
-  from_port         = 443
-  protocol          = "tcp"
-  security_group_id = aws_security_group.masters-complex-example-com.id
-  to_port           = 443
-  type              = "ingress"
-}
-
-resource "aws_security_group_rule" "https-lb-to-master-10-1-0-0--16" {
-  cidr_blocks       = ["10.1.0.0/16"]
-  from_port         = 443
-  protocol          = "tcp"
-  security_group_id = aws_security_group.masters-complex-example-com.id
-  to_port           = 443
-  type              = "ingress"
-}
-
-resource "aws_security_group_rule" "https-lb-to-master-10-2-0-0--16" {
-  cidr_blocks       = ["10.2.0.0/16"]
-  from_port         = 443
-  protocol          = "tcp"
-  security_group_id = aws_security_group.masters-complex-example-com.id
-  to_port           = 443
-  type              = "ingress"
+  from_port                = 443
+  protocol                 = "tcp"
+  security_group_id        = aws_security_group.masters-complex-example-com.id
+  source_security_group_id = aws_security_group.api-elb-complex-example-com.id
+  to_port                  = 443
+  type                     = "ingress"
 }
 
 resource "aws_security_group_rule" "icmp-pmtu-api-elb-1-1-1-0--24" {
   cidr_blocks       = ["1.1.1.0/24"]
   from_port         = 3
   protocol          = "icmp"
-  security_group_id = aws_security_group.masters-complex-example-com.id
+  security_group_id = aws_security_group.api-elb-complex-example-com.id
   to_port           = 4
+  type              = "ingress"
+}
+
+resource "aws_security_group_rule" "icmp-pmtu-api-elb-pl-44444444" {
+  from_port         = 3
+  prefix_list_ids   = ["pl-44444444"]
+  protocol          = "icmp"
+  security_group_id = aws_security_group.api-elb-complex-example-com.id
+  to_port           = 4
+  type              = "ingress"
+}
+
+resource "aws_security_group_rule" "icmp-pmtu-cp-to-elb" {
+  from_port                = 3
+  protocol                 = "icmp"
+  security_group_id        = aws_security_group.api-elb-complex-example-com.id
+  source_security_group_id = aws_security_group.masters-complex-example-com.id
+  to_port                  = 4
+  type                     = "ingress"
+}
+
+resource "aws_security_group_rule" "icmp-pmtu-elb-to-cp" {
+  from_port                = 3
+  protocol                 = "icmp"
+  security_group_id        = aws_security_group.masters-complex-example-com.id
+  source_security_group_id = aws_security_group.api-elb-complex-example-com.id
+  to_port                  = 4
+  type                     = "ingress"
+}
+
+resource "aws_security_group_rule" "icmpv6-pmtu-api-elb-pl-44444444" {
+  from_port         = -1
+  prefix_list_ids   = ["pl-44444444"]
+  protocol          = "icmpv6"
+  security_group_id = aws_security_group.api-elb-complex-example-com.id
+  to_port           = -1
   type              = "ingress"
 }
 
@@ -1126,22 +1265,26 @@ resource "aws_security_group_rule" "nodeport-udp-external-to-node-10-20-30-0--24
   type              = "ingress"
 }
 
-resource "aws_security_group_rule" "tcp-api-1-1-1-0--24" {
-  cidr_blocks       = ["1.1.1.0/24"]
-  from_port         = 8443
-  protocol          = "tcp"
-  security_group_id = aws_security_group.masters-complex-example-com.id
-  to_port           = 8443
-  type              = "ingress"
+resource "aws_security_group_rule" "tcp-api-cp" {
+  from_port                = 8443
+  protocol                 = "tcp"
+  security_group_id        = aws_security_group.masters-complex-example-com.id
+  source_security_group_id = aws_security_group.api-elb-complex-example-com.id
+  to_port                  = 8443
+  type                     = "ingress"
 }
 
-resource "aws_security_group_rule" "tcp-api-pl-44444444" {
-  from_port         = 8443
-  prefix_list_ids   = ["pl-44444444"]
-  protocol          = "tcp"
-  security_group_id = aws_security_group.masters-complex-example-com.id
-  to_port           = 8443
-  type              = "ingress"
+resource "aws_sqs_queue" "complex-example-com-nth" {
+  message_retention_seconds = 300
+  name                      = "complex-example-com-nth"
+  policy                    = file("${path.module}/data/aws_sqs_queue_complex-example-com-nth_policy")
+  tags = {
+    "KubernetesCluster"                         = "complex.example.com"
+    "Name"                                      = "complex-example-com-nth"
+    "Owner"                                     = "John Doe"
+    "foo/bar"                                   = "fib+baz"
+    "kubernetes.io/cluster/complex.example.com" = "owned"
+  }
 }
 
 resource "aws_subnet" "us-east-1a-private-complex-example-com" {
@@ -1184,15 +1327,13 @@ resource "aws_subnet" "us-test-1a-complex-example-com" {
   enable_resource_name_dns_a_record_on_launch = true
   private_dns_hostname_type_on_launch         = "resource-name"
   tags = {
-    "KubernetesCluster"                            = "complex.example.com"
-    "Name"                                         = "us-test-1a.complex.example.com"
-    "Owner"                                        = "John Doe"
-    "SubnetType"                                   = "Public"
-    "foo/bar"                                      = "fib+baz"
-    "kops.k8s.io/instance-group/master-us-test-1a" = "true"
-    "kops.k8s.io/instance-group/nodes"             = "true"
-    "kubernetes.io/cluster/complex.example.com"    = "owned"
-    "kubernetes.io/role/elb"                       = "1"
+    "KubernetesCluster"                         = "complex.example.com"
+    "Name"                                      = "us-test-1a.complex.example.com"
+    "Owner"                                     = "John Doe"
+    "SubnetType"                                = "Public"
+    "foo/bar"                                   = "fib+baz"
+    "kubernetes.io/cluster/complex.example.com" = "owned"
+    "kubernetes.io/role/elb"                    = "1"
   }
   vpc_id = aws_vpc.complex-example-com.id
 }
@@ -1244,7 +1385,7 @@ terraform {
     aws = {
       "configuration_aliases" = [aws.files]
       "source"                = "hashicorp/aws"
-      "version"               = ">= 4.0.0"
+      "version"               = ">= 5.0.0"
     }
   }
 }

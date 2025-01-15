@@ -30,17 +30,17 @@ type CiliumOptionsBuilder struct {
 	Context *OptionsContext
 }
 
-var _ loader.OptionsBuilder = &CiliumOptionsBuilder{}
+var _ loader.ClusterOptionsBuilder = &CiliumOptionsBuilder{}
 
-func (b *CiliumOptionsBuilder) BuildOptions(o interface{}) error {
-	clusterSpec := o.(*kops.ClusterSpec)
+func (b *CiliumOptionsBuilder) BuildOptions(o *kops.Cluster) error {
+	clusterSpec := &o.Spec
 	c := clusterSpec.Networking.Cilium
 	if c == nil {
 		return nil
 	}
 
 	if c.Version == "" {
-		c.Version = "v1.12.10"
+		c.Version = "v1.16.5"
 	}
 
 	if c.EnableEndpointHealthChecking == nil {
@@ -139,6 +139,10 @@ func (b *CiliumOptionsBuilder) BuildOptions(o interface{}) error {
 		c.EnableL7Proxy = fi.PtrTo(true)
 	}
 
+	if c.EnableLocalRedirectPolicy == nil {
+		c.EnableLocalRedirectPolicy = fi.PtrTo(false)
+	}
+
 	if c.DisableCNPStatusUpdates == nil {
 		c.DisableCNPStatusUpdates = fi.PtrTo(true)
 	}
@@ -164,6 +168,17 @@ func (b *CiliumOptionsBuilder) BuildOptions(o interface{}) error {
 		}
 	} else {
 		c.Hubble = &kops.HubbleSpec{
+			Enabled: fi.PtrTo(false),
+		}
+	}
+
+	ingress := c.Ingress
+	if ingress != nil {
+		if ingress.Enabled == nil {
+			ingress.Enabled = fi.PtrTo(true)
+		}
+	} else {
+		c.Ingress = &kops.CiliumIngressSpec{
 			Enabled: fi.PtrTo(false),
 		}
 	}

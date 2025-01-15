@@ -85,7 +85,7 @@ var (
 	ImageDigest = new("ImageDigest", Bool(true))
 	// Scaleway toggles the Scaleway Cloud support.
 	Scaleway = new("Scaleway", Bool(false))
-	// SELinuxMount configures AWS EBS CSI driver for SELinuxMount support.
+	// SELinuxMount configures AWS EBS and GCE PD CSI drivers for SELinuxMount support.
 	// It expects than Kubernetes feature gate SELinuxMountReadWriteOncePod is
 	// enabled or GA in the API server, KCM and kubelet.
 	// OS with SELinux support on all nodes is recommended, but not required
@@ -94,6 +94,10 @@ var (
 	SELinuxMount = new("SELinuxMount", Bool(false))
 	// DO Terraform toggles the DO terraform support.
 	DOTerraform = new("DOTerraform", Bool(false))
+	// Metal enables the experimental bare-metal support.
+	Metal = new("Metal", Bool(false))
+	// AWSSingleNodesInstanceGroup enables the creation of a single node instance group instead of one per availability zone.
+	AWSSingleNodesInstanceGroup = new("AWSSingleNodesInstanceGroup", Bool(false))
 )
 
 // FeatureFlag defines a feature flag

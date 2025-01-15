@@ -14,7 +14,7 @@ In order to deploy a kops-managed cluster on OpenStack, you need the following O
 In addition, kOps can make use of the following services:
 
 * Swift (object store)
-* Dvelve (dns)
+* Designate (dns)
 * Octavia (loadbalancer)
 
 The OpenStack version should be Ocata or newer.
@@ -56,10 +56,10 @@ kops create cluster \
   --zones nova \
   --network-cidr 10.0.0.0/24 \
   --image <imagename> \
-  --master-count=3 \
+  --control-plane-count=3 \
   --node-count=1 \
   --node-size <flavorname> \
-  --master-size <flavorname> \
+  --control-plane-size <flavorname> \
   --etcd-storage-type <volumetype> \
   --api-loadbalancer-type public \
   --topology private \
@@ -123,34 +123,11 @@ kops update cluster my-cluster.k8s.local --state ${KOPS_STATE_STORE} --yes
 
 kOps should create instances to all three zones, but provision volumes from the same zone.
 
-## Using external cloud controller manager
-
-If you want to use [External CCM](https://github.com/kubernetes/cloud-provider-openstack) in your installation, this section contains instructions what you should do to get it up and running.
-
-Create cluster without `--yes` flag (or modify existing cluster):
-
-```bash
-kops edit cluster <cluster>
-```
-
-Add the following to clusterspec:
-
-```yaml
-spec:
-  cloudControllerManager: {}
-```
-
-Finally, update the cluster:
-
-```bash
-kops update cluster --name <cluster> --yes
-```
-
 ## Using CCM created Loadbalancers
 
 With the default configuration, the loadbalancers created using the [cloud-provider-openstack](https://github.com/kubernetes/cloud-provider-openstack) cloud controller provider do not have access to the exposed NodePorts.
 
-A fix is to add the clouster network to the authorized nodeIds.
+A fix is to add the cluster network to the authorized nodeIds.
 
 First, you have to edit the cluster:
 
@@ -214,10 +191,10 @@ kops create cluster \
   --zones zone-1 \
   --network-cidr 10.1.0.0/16 \
   --image debian-10-160819-devops \
-  --master-count=3 \
+  --control-plane-count=3 \
   --node-count=2 \
   --node-size m1.small \
-  --master-size m1.small \
+  --control-plane-size m1.small \
   --etcd-storage-type default \
   --topology private \
   --bastion \
@@ -301,6 +278,20 @@ metadata:
 ```
 
 Please refer to the [OpenStack Compute API documentation](https://docs.openstack.org/api-ref/compute/?expanded=create-server-group-detail#create-server-group) for supported policies.
+
+### Using a custom server group name
+
+By default kOps provisions the server groups in OpenStack with `anti-affinity`.
+However, if you have only one AZ and you want to run multiple control-planes you might want to have anti-affinity between control planes.
+
+To override this add the following annotation to all control-plane Instance Groups configuration where kOps should provision a server group with another policy:
+
+```yaml
+kind: InstanceGroup
+metadata:
+  annotations:
+    openstack.kops.io/serverGroupName: control-plane
+```
 
 ## Next steps
 

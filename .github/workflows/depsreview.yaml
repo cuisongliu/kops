@@ -11,9 +11,9 @@ permissions:
 jobs:
   dependency-review:
     if: ${{ github.repository == 'kubernetes/kops' }}
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-24.04
     steps:
       - name: 'Checkout Repository'
-        uses: actions/checkout@c85c95e3d7251135ab7dc9ce3241c5835cc595a9
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - name: 'Review Dependencies'
-        uses: actions/dependency-review-action@1360a344ccb0ab6e9475edef90ad2f46bf8003b1
+        uses: actions/dependency-review-action@3b139cfc5fae8b618d3eae3675e383bb1769c019

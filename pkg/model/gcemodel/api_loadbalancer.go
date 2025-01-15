@@ -20,12 +20,13 @@ import (
 	"fmt"
 	"strconv"
 
+	"golang.org/x/exp/slices"
 	"k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/pkg/wellknownports"
+	"k8s.io/kops/pkg/wellknownservices"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/gce"
 	"k8s.io/kops/upup/pkg/fi/cloudup/gcetasks"
-	"k8s.io/utils/strings/slices"
 )
 
 // APILoadBalancerBuilder builds a LoadBalancer for accessing the API
@@ -64,32 +65,30 @@ func (b *APILoadBalancerBuilder) createPublicLB(c *fi.CloudupModelBuilderContext
 	c.AddTask(poolHealthCheck)
 
 	ipAddress := &gcetasks.Address{
-		Name:         s(b.NameForIPAddress("api")),
-		ForAPIServer: true,
-		Lifecycle:    b.Lifecycle,
+		Name: s(b.NameForIPAddress("api")),
+
+		Lifecycle:         b.Lifecycle,
+		WellKnownServices: []wellknownservices.WellKnownService{wellknownservices.KubeAPIServer},
 	}
 	c.AddTask(ipAddress)
 
-	c.AddTask(&gcetasks.ForwardingRule{
-		Name:       s(b.NameForForwardingRule("api")),
-		Lifecycle:  b.Lifecycle,
-		PortRange:  s(strconv.Itoa(wellknownports.KubeAPIServer) + "-" + strconv.Itoa(wellknownports.KubeAPIServer)),
-		TargetPool: targetPool,
-		IPAddress:  ipAddress,
-		IPProtocol: "TCP",
-	})
-	if b.Cluster.UsesNoneDNS() {
-		c.AddTask(&gcetasks.ForwardingRule{
-			Name:       s(b.NameForForwardingRule("kops-controller")),
-			Lifecycle:  b.Lifecycle,
-			PortRange:  s(strconv.Itoa(wellknownports.KopsControllerPort) + "-" + strconv.Itoa(wellknownports.KopsControllerPort)),
-			TargetPool: targetPool,
-			IPAddress:  ipAddress,
-			IPProtocol: "TCP",
-		})
-	}
+	clusterLabel := gce.LabelForCluster(b.ClusterName())
 
-	return b.addFirewallRules(c)
+	c.AddTask(&gcetasks.ForwardingRule{
+		Name:                s(b.NameForForwardingRule("api")),
+		Lifecycle:           b.Lifecycle,
+		PortRange:           s(strconv.Itoa(wellknownports.KubeAPIServer) + "-" + strconv.Itoa(wellknownports.KubeAPIServer)),
+		TargetPool:          targetPool,
+		IPAddress:           ipAddress,
+		IPProtocol:          "TCP",
+		LoadBalancingScheme: s("EXTERNAL"),
+		Labels: map[string]string{
+			clusterLabel.Key: clusterLabel.Value,
+			"name":           "api",
+		},
+	})
+
+	return nil
 }
 
 func (b *APILoadBalancerBuilder) addFirewallRules(c *fi.CloudupModelBuilderContext) error {
@@ -137,6 +136,8 @@ func (b *APILoadBalancerBuilder) addFirewallRules(c *fi.CloudupModelBuilderConte
 // GCP this entails creating a health check, backend service, and one forwarding rule
 // per specified subnet pointing to that backend service.
 func (b *APILoadBalancerBuilder) createInternalLB(c *fi.CloudupModelBuilderContext) error {
+	clusterLabel := gce.LabelForCluster(b.ClusterName())
+
 	hc := &gcetasks.HealthCheck{
 		Name:      s(b.NameForHealthCheck("api")),
 		Port:      wellknownports.KubeAPIServer,
@@ -155,7 +156,7 @@ func (b *APILoadBalancerBuilder) createInternalLB(c *fi.CloudupModelBuilderConte
 			return fmt.Errorf("instance group %q must specify exactly one zone", ig.GetName())
 		}
 		zone := ig.Spec.Zones[0]
-		igms = append(igms, &gcetasks.InstanceGroupManager{Name: s(gce.NameForInstanceGroupManager(b.Cluster, ig, zone)), Zone: s(zone)})
+		igms = append(igms, &gcetasks.InstanceGroupManager{Name: s(gce.NameForInstanceGroupManager(b.Cluster.ObjectMeta.Name, ig.ObjectMeta.Name, zone)), Zone: s(zone)})
 	}
 	bs := &gcetasks.BackendService{
 		Name:                  s(b.NameForBackendService("api")),
@@ -189,8 +190,9 @@ func (b *APILoadBalancerBuilder) createInternalLB(c *fi.CloudupModelBuilderConte
 			IPAddressType: s("INTERNAL"),
 			Purpose:       s("SHARED_LOADBALANCER_VIP"),
 			Subnetwork:    subnet,
-			ForAPIServer:  true,
-			Lifecycle:     b.Lifecycle,
+
+			WellKnownServices: []wellknownservices.WellKnownService{wellknownservices.KubeAPIServer},
+			Lifecycle:         b.Lifecycle,
 		}
 		c.AddTask(ipAddress)
 
@@ -204,9 +206,15 @@ func (b *APILoadBalancerBuilder) createInternalLB(c *fi.CloudupModelBuilderConte
 			LoadBalancingScheme: s("INTERNAL"),
 			Network:             network,
 			Subnetwork:          subnet,
+			Labels: map[string]string{
+				clusterLabel.Key: clusterLabel.Value,
+				"name":           "api-" + sn.Name,
+			},
 		})
 		if b.Cluster.UsesNoneDNS() {
-			c.AddTask(&gcetasks.ForwardingRule{
+			ipAddress.WellKnownServices = append(ipAddress.WellKnownServices, wellknownservices.KopsController)
+
+			fr := &gcetasks.ForwardingRule{
 				Name:                s(b.NameForForwardingRule("kops-controller-" + sn.Name)),
 				Lifecycle:           b.Lifecycle,
 				BackendService:      bs,
@@ -216,10 +224,18 @@ func (b *APILoadBalancerBuilder) createInternalLB(c *fi.CloudupModelBuilderConte
 				LoadBalancingScheme: s("INTERNAL"),
 				Network:             network,
 				Subnetwork:          subnet,
-			})
+				Labels: map[string]string{
+					clusterLabel.Key: clusterLabel.Value,
+					"name":           "kops-controller-" + sn.Name,
+				},
+			}
+			// We previously created a forwarding rule which was external; prune it
+			fr.PruneForwardingRulesWithName(b.NameForForwardingRule("kops-controller")) //, "Removing legacy external load balancer for kops-controller")
+
+			c.AddTask(fr)
 		}
 	}
-	return b.addFirewallRules(c)
+	return nil
 }
 
 func (b *APILoadBalancerBuilder) Build(c *fi.CloudupModelBuilderContext) error {
@@ -235,22 +251,25 @@ func (b *APILoadBalancerBuilder) Build(c *fi.CloudupModelBuilderContext) error {
 
 	switch lbSpec.Type {
 	case kops.LoadBalancerTypePublic:
-		return b.createPublicLB(c)
+		if err := b.createPublicLB(c); err != nil {
+			return err
+		}
+		// We always create the internal load balancer also;
+		// it allows us to restrict access to only the nodes.
+		if err := b.createInternalLB(c); err != nil {
+			return err
+		}
+
+		return b.addFirewallRules(c)
 
 	case kops.LoadBalancerTypeInternal:
-		return b.createInternalLB(c)
+		if err := b.createInternalLB(c); err != nil {
+			return err
+		}
+
+		return b.addFirewallRules(c)
 
 	default:
 		return fmt.Errorf("unhandled LoadBalancer type %q", lbSpec.Type)
 	}
-}
-
-// subnetNotSpecified returns true if the given LB subnet is not listed in the list of cluster subnets.
-func subnetNotSpecified(sn kops.LoadBalancerSubnetSpec, subnets []kops.ClusterSubnetSpec) bool {
-	for _, csn := range subnets {
-		if csn.Name == sn.Name || csn.ID == sn.Name {
-			return false
-		}
-	}
-	return true
 }

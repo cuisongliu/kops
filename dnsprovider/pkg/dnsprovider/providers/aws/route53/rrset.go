@@ -20,37 +20,37 @@ import (
 	"k8s.io/kops/dnsprovider/pkg/dnsprovider"
 	"k8s.io/kops/dnsprovider/pkg/dnsprovider/rrstype"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/route53"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	route53types "github.com/aws/aws-sdk-go-v2/service/route53/types"
 )
 
 // Compile time check for interface adherence
 var _ dnsprovider.ResourceRecordSet = ResourceRecordSet{}
 
 type ResourceRecordSet struct {
-	impl   *route53.ResourceRecordSet
+	impl   *route53types.ResourceRecordSet
 	rrsets *ResourceRecordSets
 }
 
 func (rrset ResourceRecordSet) Name() string {
-	return aws.StringValue(rrset.impl.Name)
+	return aws.ToString(rrset.impl.Name)
 }
 
 func (rrset ResourceRecordSet) Rrdatas() []string {
 	// Sigh - need to unpack the strings out of the route53 ResourceRecords
 	result := make([]string, len(rrset.impl.ResourceRecords))
 	for i, record := range rrset.impl.ResourceRecords {
-		result[i] = aws.StringValue(record.Value)
+		result[i] = aws.ToString(record.Value)
 	}
 	return result
 }
 
 func (rrset ResourceRecordSet) Ttl() int64 {
-	return aws.Int64Value(rrset.impl.TTL)
+	return aws.ToInt64(rrset.impl.TTL)
 }
 
 func (rrset ResourceRecordSet) Type() rrstype.RrsType {
-	return rrstype.RrsType(aws.StringValue(rrset.impl.Type))
+	return rrstype.RrsType(rrset.impl.Type)
 }
 
 // Route53ResourceRecordSet returns the route53 ResourceRecordSet object for the ResourceRecordSet
@@ -58,6 +58,6 @@ func (rrset ResourceRecordSet) Type() rrstype.RrsType {
 // without having to requery it, so that we can expose AWS specific functionality.
 // Using this method should be avoided where possible; instead prefer to add functionality
 // to the cross-provider ResourceRecordSet interface.
-func (rrset ResourceRecordSet) Route53ResourceRecordSet() *route53.ResourceRecordSet {
+func (rrset ResourceRecordSet) Route53ResourceRecordSet() *route53types.ResourceRecordSet {
 	return rrset.impl
 }

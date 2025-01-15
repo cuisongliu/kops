@@ -20,13 +20,13 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go-v2/aws"
 
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/pkg/testutils"
 	"k8s.io/kops/pkg/testutils/golden"
-	"k8s.io/kops/pkg/util/stringorslice"
+	"k8s.io/kops/pkg/util/stringorset"
 	"k8s.io/kops/upup/pkg/fi"
 )
 
@@ -38,18 +38,18 @@ func TestRoundTrip(t *testing.T) {
 		{
 			IAM: &Statement{
 				Effect:   StatementEffectAllow,
-				Action:   stringorslice.Of("ec2:DescribeRegions"),
-				Resource: stringorslice.Of("*"),
+				Action:   stringorset.Of("ec2:DescribeRegions"),
+				Resource: stringorset.Of("*"),
 			},
 			JSON: "{\"Action\":\"ec2:DescribeRegions\",\"Effect\":\"Allow\",\"Resource\":\"*\"}",
 		},
 		{
 			IAM: &Statement{
 				Effect:   StatementEffectDeny,
-				Action:   stringorslice.Of("ec2:DescribeRegions", "ec2:DescribeInstances"),
-				Resource: stringorslice.Of("a", "b"),
+				Action:   stringorset.Of("ec2:DescribeRegions", "ec2:DescribeInstances"),
+				Resource: stringorset.Of("a", "b"),
 			},
-			JSON: "{\"Action\":[\"ec2:DescribeRegions\",\"ec2:DescribeInstances\"],\"Effect\":\"Deny\",\"Resource\":[\"a\",\"b\"]}",
+			JSON: "{\"Action\":[\"ec2:DescribeInstances\",\"ec2:DescribeRegions\"],\"Effect\":\"Deny\",\"Resource\":[\"a\",\"b\"]}",
 		},
 		{
 			IAM: &Statement{
@@ -64,7 +64,7 @@ func TestRoundTrip(t *testing.T) {
 		{
 			IAM: &Statement{
 				Effect:    StatementEffectDeny,
-				Principal: Principal{Service: "service"},
+				Principal: Principal{Service: fi.PtrTo(stringorset.Of("service"))},
 				Condition: map[string]interface{}{
 					"bar": "baz",
 				},
@@ -174,7 +174,9 @@ func TestPolicyGeneration(t *testing.T) {
 		b := &PolicyBuilder{
 			Cluster: &kops.Cluster{
 				Spec: kops.ClusterSpec{
-					ConfigStore: "s3://kops-tests/iam-builder-test.k8s.local",
+					ConfigStore: kops.ConfigStoreSpec{
+						Base: "s3://kops-tests/iam-builder-test.k8s.local",
+					},
 					IAM: &kops.IAMSpec{
 						AllowContainerRegistry: x.AllowContainerRegistry,
 					},
@@ -207,6 +209,7 @@ func TestPolicyGeneration(t *testing.T) {
 							},
 						},
 					},
+					ExternalCloudControllerManager: &kops.CloudControllerManagerConfig{},
 					Networking: kops.NetworkingSpec{
 						Kubenet: &kops.KubenetNetworkingSpec{},
 					},

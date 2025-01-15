@@ -40,14 +40,15 @@ var StoreVersion = v1alpha2.SchemeGroupVersion
 
 type ValidationFunction func(o runtime.Object) error
 
-type commonVFS struct {
-	kind     string
-	basePath vfs.Path
-	encoder  runtime.Encoder
-	validate ValidationFunction
+type VFSClientBase struct {
+	kind       string
+	vfsContext *vfs.VFSContext
+	basePath   vfs.Path
+	encoder    runtime.Encoder
+	validate   ValidationFunction
 }
 
-func (c *commonVFS) init(kind string, basePath vfs.Path, storeVersion runtime.GroupVersioner) {
+func (c *VFSClientBase) Init(kind string, vfsContext *vfs.VFSContext, basePath vfs.Path, storeVersion runtime.GroupVersioner) {
 	codecs := kopscodecs.Codecs
 	yaml, ok := runtime.SerializerInfoForMediaType(codecs.SupportedMediaTypes(), "application/yaml")
 	if !ok {
@@ -56,10 +57,11 @@ func (c *commonVFS) init(kind string, basePath vfs.Path, storeVersion runtime.Gr
 	c.encoder = codecs.EncoderForVersion(yaml.Serializer, storeVersion)
 
 	c.kind = kind
+	c.vfsContext = vfsContext
 	c.basePath = basePath
 }
 
-func (c *commonVFS) find(ctx context.Context, name string) (runtime.Object, error) {
+func (c *VFSClientBase) Find(ctx context.Context, name string) (runtime.Object, error) {
 	o, err := c.readConfig(ctx, c.basePath.Join(name))
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -70,11 +72,11 @@ func (c *commonVFS) find(ctx context.Context, name string) (runtime.Object, erro
 	return o, nil
 }
 
-func (c *commonVFS) list(ctx context.Context, items interface{}, options metav1.ListOptions) (interface{}, error) {
+func (c *VFSClientBase) List(ctx context.Context, items interface{}, options metav1.ListOptions) (interface{}, error) {
 	return c.readAll(ctx, items)
 }
 
-func (c *commonVFS) create(ctx context.Context, cluster *kops.Cluster, i runtime.Object) error {
+func (c *VFSClientBase) create(ctx context.Context, cluster *kops.Cluster, i runtime.Object) error {
 	objectMeta, err := meta.Accessor(i)
 	if err != nil {
 		return err
@@ -103,7 +105,7 @@ func (c *commonVFS) create(ctx context.Context, cluster *kops.Cluster, i runtime
 	return nil
 }
 
-func (c *commonVFS) serialize(o runtime.Object) ([]byte, error) {
+func (c *VFSClientBase) serialize(o runtime.Object) ([]byte, error) {
 	var b bytes.Buffer
 	err := c.encoder.Encode(o, &b)
 	if err != nil {
@@ -113,7 +115,7 @@ func (c *commonVFS) serialize(o runtime.Object) ([]byte, error) {
 	return b.Bytes(), nil
 }
 
-func (c *commonVFS) readConfig(ctx context.Context, configPath vfs.Path) (runtime.Object, error) {
+func (c *VFSClientBase) readConfig(ctx context.Context, configPath vfs.Path) (runtime.Object, error) {
 	data, err := configPath.ReadFile(ctx)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -129,7 +131,7 @@ func (c *commonVFS) readConfig(ctx context.Context, configPath vfs.Path) (runtim
 	return object, nil
 }
 
-func (c *commonVFS) writeConfig(ctx context.Context, cluster *kops.Cluster, configPath vfs.Path, o runtime.Object, writeOptions ...vfs.WriteOption) error {
+func (c *VFSClientBase) writeConfig(ctx context.Context, cluster *kops.Cluster, configPath vfs.Path, o runtime.Object, writeOptions ...vfs.WriteOption) error {
 	data, err := c.serialize(o)
 	if err != nil {
 		return fmt.Errorf("error marshaling object: %v", err)
@@ -174,7 +176,7 @@ func (c *commonVFS) writeConfig(ctx context.Context, cluster *kops.Cluster, conf
 	return nil
 }
 
-func (c *commonVFS) update(ctx context.Context, cluster *kops.Cluster, i runtime.Object) error {
+func (c *VFSClientBase) update(ctx context.Context, cluster *kops.Cluster, i runtime.Object) error {
 	objectMeta, err := meta.Accessor(i)
 	if err != nil {
 		return err
@@ -200,9 +202,9 @@ func (c *commonVFS) update(ctx context.Context, cluster *kops.Cluster, i runtime
 	return nil
 }
 
-func (c *commonVFS) delete(ctx context.Context, name string, options metav1.DeleteOptions) error {
+func (c *VFSClientBase) delete(ctx context.Context, name string, options metav1.DeleteOptions) error {
 	p := c.basePath.Join(name)
-	err := p.Remove()
+	err := p.Remove(ctx)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
@@ -212,7 +214,7 @@ func (c *commonVFS) delete(ctx context.Context, name string, options metav1.Dele
 	return nil
 }
 
-func (c *commonVFS) listNames(ctx context.Context) ([]string, error) {
+func (c *VFSClientBase) listNames(ctx context.Context) ([]string, error) {
 	keys, err := listChildNames(ctx, c.basePath)
 	if err != nil {
 		return nil, fmt.Errorf("error listing %s in state store: %v", c.kind, err)
@@ -224,7 +226,7 @@ func (c *commonVFS) listNames(ctx context.Context) ([]string, error) {
 	return keys, nil
 }
 
-func (c *commonVFS) readAll(ctx context.Context, items interface{}) (interface{}, error) {
+func (c *VFSClientBase) readAll(ctx context.Context, items interface{}) (interface{}, error) {
 	sliceValue := reflect.ValueOf(items)
 	sliceType := reflect.TypeOf(items)
 	if sliceType.Kind() != reflect.Slice {
@@ -237,7 +239,7 @@ func (c *commonVFS) readAll(ctx context.Context, items interface{}) (interface{}
 	}
 
 	for _, name := range names {
-		o, err := c.find(ctx, name)
+		o, err := c.Find(ctx, name)
 		if err != nil {
 			return nil, err
 		}

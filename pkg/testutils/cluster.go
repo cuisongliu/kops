@@ -33,7 +33,6 @@ func BuildMinimalCluster(clusterName string) *kops.Cluster {
 		{Name: "subnet-us-test-1a", Zone: "us-test-1a", CIDR: "172.20.1.0/24", Type: kops.SubnetTypePrivate},
 	}
 
-	c.Spec.ContainerRuntime = "containerd"
 	c.Spec.Containerd = &kops.ContainerdConfig{}
 
 	c.Spec.API.PublicName = fmt.Sprintf("api.%v", clusterName)
@@ -42,9 +41,7 @@ func BuildMinimalCluster(clusterName string) *kops.Cluster {
 
 	// Default to public topology
 	c.Spec.Networking.Topology = &kops.TopologySpec{
-		ControlPlane: kops.TopologyPublic,
-		Nodes:        kops.TopologyPublic,
-		DNS:          kops.DNSTypePublic,
+		DNS: kops.DNSTypePublic,
 	}
 
 	c.Spec.Networking.NetworkCIDR = "172.20.0.0/16"
@@ -57,7 +54,9 @@ func BuildMinimalCluster(clusterName string) *kops.Cluster {
 	c.Spec.Networking.NonMasqueradeCIDR = "100.64.0.0/10"
 	c.Spec.CloudProvider.AWS = &kops.AWSSpec{}
 
-	c.Spec.ConfigBase = "memfs://unittest-bucket/" + clusterName
+	c.Spec.ConfigStore = kops.ConfigStoreSpec{
+		Base: "memfs://unittest-bucket/" + clusterName,
+	}
 
 	c.Spec.DNSZone = "test.com"
 

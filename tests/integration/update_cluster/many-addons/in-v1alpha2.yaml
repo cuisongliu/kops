@@ -2,12 +2,14 @@ apiVersion: kops.k8s.io/v1alpha2
 kind: Cluster
 metadata:
   creationTimestamp: "2016-12-10T22:42:27Z"
-  name: minimal.example.com
+  name: many-addons.example.com
 spec:
   awsLoadBalancerController:
     enabled: true
   certManager:
     enabled: true
+    featureGates:
+      AdditionalCertificateOutputFormats: true
   clusterAutoscaler:
     enabled: true
     podAnnotations:
@@ -21,7 +23,7 @@ spec:
     awsEBSCSIDriver:
       enabled: true
   cloudProvider: aws
-  configBase: memfs://clusters.example.com/minimal.example.com
+  configBase: memfs://tests/many-addons.example.com
   etcdClusters:
   - etcdMembers:
     - instanceGroup: master-us-test-1a
@@ -34,11 +36,13 @@ spec:
   iam: {}
   kubelet:
     anonymousAuth: false
-  kubernetesVersion: v1.26.0
-  masterPublicName: api.minimal.example.com
+  kubernetesVersion: v1.32.0
+  masterPublicName: api.many-addons.example.com
   networkCIDR: 172.20.0.0/16
   networking:
     amazonvpc: {}
+  nodeProblemDetector:
+    enabled: true
   nodeTerminationHandler:
     enabled: true
   nonMasqueradeCIDR: 172.20.0.0/16
@@ -46,9 +50,6 @@ spec:
     enabled: true
   sshAccess:
     - 0.0.0.0/0
-  topology:
-    masters: public
-    nodes: public
   subnets:
   - cidr: 172.20.32.0/19
     name: us-test-1a
@@ -63,7 +64,7 @@ metadata:
   creationTimestamp: "2016-12-10T22:42:28Z"
   name: nodes
   labels:
-    kops.k8s.io/cluster: minimal.example.com
+    kops.k8s.io/cluster: many-addons.example.com
 spec:
   associatePublicIp: true
   image: ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-server-20220404
@@ -82,7 +83,7 @@ metadata:
   creationTimestamp: "2016-12-10T22:42:28Z"
   name: master-us-test-1a
   labels:
-    kops.k8s.io/cluster: minimal.example.com
+    kops.k8s.io/cluster: many-addons.example.com
 spec:
   associatePublicIp: true
   image: ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-server-20220404

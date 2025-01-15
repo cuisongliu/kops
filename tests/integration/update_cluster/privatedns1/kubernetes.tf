@@ -153,6 +153,11 @@ resource "aws_autoscaling_group" "bastion-privatedns1-example-com" {
     value               = "John Doe"
   }
   tag {
+    key                 = "aws-node-termination-handler/managed"
+    propagate_at_launch = true
+    value               = ""
+  }
+  tag {
     key                 = "foo/bar"
     propagate_at_launch = true
     value               = "fib+baz"
@@ -203,6 +208,11 @@ resource "aws_autoscaling_group" "master-us-test-1a-masters-privatedns1-example-
     key                 = "Owner"
     propagate_at_launch = true
     value               = "John Doe"
+  }
+  tag {
+    key                 = "aws-node-termination-handler/managed"
+    propagate_at_launch = true
+    value               = ""
   }
   tag {
     key                 = "foo/bar"
@@ -275,6 +285,11 @@ resource "aws_autoscaling_group" "nodes-privatedns1-example-com" {
     value               = "John Doe"
   }
   tag {
+    key                 = "aws-node-termination-handler/managed"
+    propagate_at_launch = true
+    value               = ""
+  }
+  tag {
     key                 = "foo/bar"
     propagate_at_launch = true
     value               = "fib+baz"
@@ -300,6 +315,98 @@ resource "aws_autoscaling_group" "nodes-privatedns1-example-com" {
     value               = "owned"
   }
   vpc_zone_identifier = [aws_subnet.us-test-1a-privatedns1-example-com.id]
+}
+
+resource "aws_autoscaling_lifecycle_hook" "bastion-NTHLifecycleHook" {
+  autoscaling_group_name = aws_autoscaling_group.bastion-privatedns1-example-com.id
+  default_result         = "CONTINUE"
+  heartbeat_timeout      = 300
+  lifecycle_transition   = "autoscaling:EC2_INSTANCE_TERMINATING"
+  name                   = "bastion-NTHLifecycleHook"
+}
+
+resource "aws_autoscaling_lifecycle_hook" "master-us-test-1a-NTHLifecycleHook" {
+  autoscaling_group_name = aws_autoscaling_group.master-us-test-1a-masters-privatedns1-example-com.id
+  default_result         = "CONTINUE"
+  heartbeat_timeout      = 300
+  lifecycle_transition   = "autoscaling:EC2_INSTANCE_TERMINATING"
+  name                   = "master-us-test-1a-NTHLifecycleHook"
+}
+
+resource "aws_autoscaling_lifecycle_hook" "nodes-NTHLifecycleHook" {
+  autoscaling_group_name = aws_autoscaling_group.nodes-privatedns1-example-com.id
+  default_result         = "CONTINUE"
+  heartbeat_timeout      = 300
+  lifecycle_transition   = "autoscaling:EC2_INSTANCE_TERMINATING"
+  name                   = "nodes-NTHLifecycleHook"
+}
+
+resource "aws_cloudwatch_event_rule" "privatedns1-example-com-ASGLifecycle" {
+  event_pattern = file("${path.module}/data/aws_cloudwatch_event_rule_privatedns1.example.com-ASGLifecycle_event_pattern")
+  name          = "privatedns1.example.com-ASGLifecycle"
+  tags = {
+    "KubernetesCluster"                             = "privatedns1.example.com"
+    "Name"                                          = "privatedns1.example.com-ASGLifecycle"
+    "Owner"                                         = "John Doe"
+    "foo/bar"                                       = "fib+baz"
+    "kubernetes.io/cluster/privatedns1.example.com" = "owned"
+  }
+}
+
+resource "aws_cloudwatch_event_rule" "privatedns1-example-com-InstanceScheduledChange" {
+  event_pattern = file("${path.module}/data/aws_cloudwatch_event_rule_privatedns1.example.com-InstanceScheduledChange_event_pattern")
+  name          = "privatedns1.example.com-InstanceScheduledChange"
+  tags = {
+    "KubernetesCluster"                             = "privatedns1.example.com"
+    "Name"                                          = "privatedns1.example.com-InstanceScheduledChange"
+    "Owner"                                         = "John Doe"
+    "foo/bar"                                       = "fib+baz"
+    "kubernetes.io/cluster/privatedns1.example.com" = "owned"
+  }
+}
+
+resource "aws_cloudwatch_event_rule" "privatedns1-example-com-InstanceStateChange" {
+  event_pattern = file("${path.module}/data/aws_cloudwatch_event_rule_privatedns1.example.com-InstanceStateChange_event_pattern")
+  name          = "privatedns1.example.com-InstanceStateChange"
+  tags = {
+    "KubernetesCluster"                             = "privatedns1.example.com"
+    "Name"                                          = "privatedns1.example.com-InstanceStateChange"
+    "Owner"                                         = "John Doe"
+    "foo/bar"                                       = "fib+baz"
+    "kubernetes.io/cluster/privatedns1.example.com" = "owned"
+  }
+}
+
+resource "aws_cloudwatch_event_rule" "privatedns1-example-com-SpotInterruption" {
+  event_pattern = file("${path.module}/data/aws_cloudwatch_event_rule_privatedns1.example.com-SpotInterruption_event_pattern")
+  name          = "privatedns1.example.com-SpotInterruption"
+  tags = {
+    "KubernetesCluster"                             = "privatedns1.example.com"
+    "Name"                                          = "privatedns1.example.com-SpotInterruption"
+    "Owner"                                         = "John Doe"
+    "foo/bar"                                       = "fib+baz"
+    "kubernetes.io/cluster/privatedns1.example.com" = "owned"
+  }
+}
+
+resource "aws_cloudwatch_event_target" "privatedns1-example-com-ASGLifecycle-Target" {
+  arn  = aws_sqs_queue.privatedns1-example-com-nth.arn
+  rule = aws_cloudwatch_event_rule.privatedns1-example-com-ASGLifecycle.id
+}
+
+resource "aws_cloudwatch_event_target" "privatedns1-example-com-InstanceScheduledChange-Target" {
+  arn  = aws_sqs_queue.privatedns1-example-com-nth.arn
+  rule = aws_cloudwatch_event_rule.privatedns1-example-com-InstanceScheduledChange.id
+}
+
+resource "aws_cloudwatch_event_target" "privatedns1-example-com-InstanceStateChange-Target" {
+  arn  = aws_sqs_queue.privatedns1-example-com-nth.arn
+  rule = aws_cloudwatch_event_rule.privatedns1-example-com-InstanceStateChange.id
+}
+
+resource "aws_cloudwatch_event_target" "privatedns1-example-com-SpotInterruption-Target" {
+  arn  = aws_sqs_queue.privatedns1-example-com-nth.arn
+  rule = aws_cloudwatch_event_rule.privatedns1-example-com-SpotInterruption.id
 }
 
 resource "aws_ebs_volume" "us-test-1a-etcd-events-privatedns1-example-com" {
@@ -341,6 +448,7 @@ resource "aws_ebs_volume" "us-test-1a-etcd-main-privatedns1-example-com" {
 }
 
 resource "aws_eip" "us-test-1a-privatedns1-example-com" {
+  domain = "vpc"
   tags = {
     "KubernetesCluster"                             = "privatedns1.example.com"
     "Name"                                          = "us-test-1a.privatedns1.example.com"
@@ -348,7 +456,6 @@ resource "aws_eip" "us-test-1a-privatedns1-example-com" {
     "foo/bar"                                       = "fib+baz"
     "kubernetes.io/cluster/privatedns1.example.com" = "owned"
   }
-  vpc = true
 }
 
 resource "aws_elb" "api-privatedns1-example-com" {
@@ -537,6 +644,7 @@ resource "aws_launch_template" "bastion-privatedns1-example-com" {
       "KubernetesCluster"                             = "privatedns1.example.com"
       "Name"                                          = "bastion.privatedns1.example.com"
       "Owner"                                         = "John Doe"
+      "aws-node-termination-handler/managed"          = ""
       "foo/bar"                                       = "fib+baz"
       "k8s.io/role/bastion"                           = "1"
       "kops.k8s.io/instancegroup"                     = "bastion"
@@ -549,6 +657,7 @@ resource "aws_launch_template" "bastion-privatedns1-example-com" {
       "KubernetesCluster"                             = "privatedns1.example.com"
       "Name"                                          = "bastion.privatedns1.example.com"
       "Owner"                                         = "John Doe"
+      "aws-node-termination-handler/managed"          = ""
       "foo/bar"                                       = "fib+baz"
       "k8s.io/role/bastion"                           = "1"
       "kops.k8s.io/instancegroup"                     = "bastion"
@@ -559,6 +668,7 @@ resource "aws_launch_template" "bastion-privatedns1-example-com" {
     "KubernetesCluster"                             = "privatedns1.example.com"
     "Name"                                          = "bastion.privatedns1.example.com"
     "Owner"                                         = "John Doe"
+    "aws-node-termination-handler/managed"          = ""
     "foo/bar"                                       = "fib+baz"
     "k8s.io/role/bastion"                           = "1"
     "kops.k8s.io/instancegroup"                     = "bastion"
@@ -613,6 +723,7 @@ resource "aws_launch_template" "master-us-test-1a-masters-privatedns1-example-co
       "KubernetesCluster"                                                                                     = "privatedns1.example.com"
       "Name"                                                                                                  = "master-us-test-1a.masters.privatedns1.example.com"
       "Owner"                                                                                                 = "John Doe"
+      "aws-node-termination-handler/managed"                                                                  = ""
       "foo/bar"                                                                                               = "fib+baz"
       "k8s.io/cluster-autoscaler/node-template/label/kops.k8s.io/kops-controller-pki"                         = ""
       "k8s.io/cluster-autoscaler/node-template/label/node-role.kubernetes.io/control-plane"                   = ""
@@ -629,6 +740,7 @@ resource "aws_launch_template" "master-us-test-1a-masters-privatedns1-example-co
       "KubernetesCluster"                                                                                     = "privatedns1.example.com"
       "Name"                                                                                                  = "master-us-test-1a.masters.privatedns1.example.com"
       "Owner"                                                                                                 = "John Doe"
+      "aws-node-termination-handler/managed"                                                                  = ""
       "foo/bar"                                                                                               = "fib+baz"
       "k8s.io/cluster-autoscaler/node-template/label/kops.k8s.io/kops-controller-pki"                         = ""
       "k8s.io/cluster-autoscaler/node-template/label/node-role.kubernetes.io/control-plane"                   = ""
@@ -643,6 +755,7 @@ resource "aws_launch_template" "master-us-test-1a-masters-privatedns1-example-co
     "KubernetesCluster"                                                                                     = "privatedns1.example.com"
     "Name"                                                                                                  = "master-us-test-1a.masters.privatedns1.example.com"
     "Owner"                                                                                                 = "John Doe"
+    "aws-node-termination-handler/managed"                                                                  = ""
     "foo/bar"                                                                                               = "fib+baz"
     "k8s.io/cluster-autoscaler/node-template/label/kops.k8s.io/kops-controller-pki"                         = ""
     "k8s.io/cluster-autoscaler/node-template/label/node-role.kubernetes.io/control-plane"                   = ""
@@ -698,6 +811,7 @@ resource "aws_launch_template" "nodes-privatedns1-example-com" {
       "KubernetesCluster"                                                          = "privatedns1.example.com"
       "Name"                                                                       = "nodes.privatedns1.example.com"
       "Owner"                                                                      = "John Doe"
+      "aws-node-termination-handler/managed"                                       = ""
       "foo/bar"                                                                    = "fib+baz"
       "k8s.io/cluster-autoscaler/node-template/label/node-role.kubernetes.io/node" = ""
       "k8s.io/role/node"                                                           = "1"
@@ -711,6 +825,7 @@ resource "aws_launch_template" "nodes-privatedns1-example-com" {
       "KubernetesCluster"                                                          = "privatedns1.example.com"
       "Name"                                                                       = "nodes.privatedns1.example.com"
       "Owner"                                                                      = "John Doe"
+      "aws-node-termination-handler/managed"                                       = ""
       "foo/bar"                                                                    = "fib+baz"
       "k8s.io/cluster-autoscaler/node-template/label/node-role.kubernetes.io/node" = ""
       "k8s.io/role/node"                                                           = "1"
@@ -722,6 +837,7 @@ resource "aws_launch_template" "nodes-privatedns1-example-com" {
     "KubernetesCluster"                                                          = "privatedns1.example.com"
     "Name"                                                                       = "nodes.privatedns1.example.com"
     "Owner"                                                                      = "John Doe"
+    "aws-node-termination-handler/managed"                                       = ""
     "foo/bar"                                                                    = "fib+baz"
     "k8s.io/cluster-autoscaler/node-template/label/node-role.kubernetes.io/node" = ""
     "k8s.io/role/node"                                                           = "1"
@@ -736,6 +852,7 @@ resource "aws_lb" "bastion-privatedns1-example-com" {
   internal                         = false
   load_balancer_type               = "network"
   name                             = "bastion-privatedns1-examp-mbgbef"
+  security_groups                  = [aws_security_group.bastion-elb-privatedns1-example-com.id]
   subnet_mapping {
     subnet_id = aws_subnet.utility-us-test-1a-privatedns1-example-com.id
   }
@@ -1007,6 +1124,14 @@ resource "aws_s3_object" "privatedns1-example-com-addons-limit-range-addons-k8s-
   server_side_encryption = "AES256"
 }
 
+resource "aws_s3_object" "privatedns1-example-com-addons-node-termination-handler-aws-k8s-1-11" {
+  bucket                 = "testingBucket"
+  content                = file("${path.module}/data/aws_s3_object_privatedns1.example.com-addons-node-termination-handler.aws-k8s-1.11_content")
+  key                    = "clusters.example.com/privatedns1.example.com/addons/node-termination-handler.aws/k8s-1.11.yaml"
+  provider               = aws.files
+  server_side_encryption = "AES256"
+}
+
 resource "aws_s3_object" "privatedns1-example-com-addons-storage-aws-addons-k8s-io-v1-15-0" {
   bucket                 = "testingBucket"
   content                = file("${path.module}/data/aws_s3_object_privatedns1.example.com-addons-storage-aws.addons.k8s.io-v1.15.0_content")
@@ -1021,6 +1146,19 @@ resource "aws_security_group" "api-elb-privatedns1-example-com" {
   tags = {
     "KubernetesCluster"                             = "privatedns1.example.com"
     "Name"                                          = "api-elb.privatedns1.example.com"
+    "Owner"                                         = "John Doe"
+    "foo/bar"                                       = "fib+baz"
+    "kubernetes.io/cluster/privatedns1.example.com" = "owned"
+  }
+  vpc_id = aws_vpc.privatedns1-example-com.id
+}
+
+resource "aws_security_group" "bastion-elb-privatedns1-example-com" {
+  description = "Security group for bastion ELB"
+  name        = "bastion-elb.privatedns1.example.com"
+  tags = {
+    "KubernetesCluster"                             = "privatedns1.example.com"
+    "Name"                                          = "bastion-elb.privatedns1.example.com"
     "Owner"                                         = "John Doe"
     "foo/bar"                                       = "fib+baz"
     "kubernetes.io/cluster/privatedns1.example.com" = "owned"
@@ -1067,11 +1205,11 @@ resource "aws_security_group" "nodes-privatedns1-example-com" {
   vpc_id = aws_vpc.privatedns1-example-com.id
 }
 
-resource "aws_security_group_rule" "from-0-0-0-0--0-ingress-tcp-22to22-bastion-privatedns1-example-com" {
+resource "aws_security_group_rule" "from-0-0-0-0--0-ingress-tcp-22to22-bastion-elb-privatedns1-example-com" {
   cidr_blocks       = ["0.0.0.0/0"]
   from_port         = 22
   protocol          = "tcp"
-  security_group_id = aws_security_group.bastion-privatedns1-example-com.id
+  security_group_id = aws_security_group.bastion-elb-privatedns1-example-com.id
   to_port           = 22
   type              = "ingress"
 }
@@ -1085,11 +1223,11 @@ resource "aws_security_group_rule" "from-0-0-0-0--0-ingress-tcp-443to443-api-elb
   type              = "ingress"
 }
 
-resource "aws_security_group_rule" "from-172-20-4-0--22-ingress-tcp-22to22-bastion-privatedns1-example-com" {
+resource "aws_security_group_rule" "from-172-20-4-0--22-ingress-tcp-22to22-bastion-elb-privatedns1-example-com" {
   cidr_blocks       = ["172.20.4.0/22"]
   from_port         = 22
   protocol          = "tcp"
-  security_group_id = aws_security_group.bastion-privatedns1-example-com.id
+  security_group_id = aws_security_group.bastion-elb-privatedns1-example-com.id
   to_port           = 22
   type              = "ingress"
 }
@@ -1112,6 +1250,42 @@ resource "aws_security_group_rule" "from-api-elb-privatedns1-example-com-egress-
   type              = "egress"
 }
 
+resource "aws_security_group_rule" "from-bastion-elb-privatedns1-example-com-egress-all-0to0-0-0-0-0--0" {
+  cidr_blocks       = ["0.0.0.0/0"]
+  from_port         = 0
+  protocol          = "-1"
+  security_group_id = aws_security_group.bastion-elb-privatedns1-example-com.id
+  to_port           = 0
+  type              = "egress"
+}
+
+resource "aws_security_group_rule" "from-bastion-elb-privatedns1-example-com-egress-all-0to0-__--0" {
+  from_port         = 0
+  ipv6_cidr_blocks  = ["::/0"]
+  protocol          = "-1"
+  security_group_id = aws_security_group.bastion-elb-privatedns1-example-com.id
+  to_port           = 0
+  type              = "egress"
+}
+
+resource "aws_security_group_rule" "from-bastion-elb-privatedns1-example-com-ingress-icmp-3to4-bastion-privatedns1-example-com" {
+  from_port                = 3
+  protocol                 = "icmp"
+  security_group_id        = aws_security_group.bastion-privatedns1-example-com.id
+  source_security_group_id = aws_security_group.bastion-elb-privatedns1-example-com.id
+  to_port                  = 4
+  type                     = "ingress"
+}
+
+resource "aws_security_group_rule" "from-bastion-elb-privatedns1-example-com-ingress-tcp-22to22-bastion-privatedns1-example-com" {
+  from_port                = 22
+  protocol                 = "tcp"
+  security_group_id        = aws_security_group.bastion-privatedns1-example-com.id
+  source_security_group_id = aws_security_group.bastion-elb-privatedns1-example-com.id
+  to_port                  = 22
+  type                     = "ingress"
+}
+
 resource "aws_security_group_rule" "from-bastion-privatedns1-example-com-egress-all-0to0-0-0-0-0--0" {
   cidr_blocks       = ["0.0.0.0/0"]
   from_port         = 0
@@ -1128,6 +1302,15 @@ resource "aws_security_group_rule" "from-bastion-privatedns1-example-com-egress-
   security_group_id = aws_security_group.bastion-privatedns1-example-com.id
   to_port           = 0
   type              = "egress"
+}
+
+resource "aws_security_group_rule" "from-bastion-privatedns1-example-com-ingress-icmp-3to4-bastion-elb-privatedns1-example-com" {
+  from_port                = 3
+  protocol                 = "icmp"
+  security_group_id        = aws_security_group.bastion-elb-privatedns1-example-com.id
+  source_security_group_id = aws_security_group.bastion-privatedns1-example-com.id
+  to_port                  = 4
+  type                     = "ingress"
 }
 
 resource "aws_security_group_rule" "from-bastion-privatedns1-example-com-ingress-tcp-22to22-masters-privatedns1-example-com" {
@@ -1265,11 +1448,29 @@ resource "aws_security_group_rule" "icmp-pmtu-api-elb-0-0-0-0--0" {
   type              = "ingress"
 }
 
+resource "aws_security_group_rule" "icmp-pmtu-cp-to-elb" {
+  from_port                = 3
+  protocol                 = "icmp"
+  security_group_id        = aws_security_group.api-elb-privatedns1-example-com.id
+  source_security_group_id = aws_security_group.masters-privatedns1-example-com.id
+  to_port                  = 4
+  type                     = "ingress"
+}
+
+resource "aws_security_group_rule" "icmp-pmtu-elb-to-cp" {
+  from_port                = 3
+  protocol                 = "icmp"
+  security_group_id        = aws_security_group.masters-privatedns1-example-com.id
+  source_security_group_id = aws_security_group.api-elb-privatedns1-example-com.id
+  to_port                  = 4
+  type                     = "ingress"
+}
+
 resource "aws_security_group_rule" "icmp-pmtu-ssh-nlb-0-0-0-0--0" {
   cidr_blocks       = ["0.0.0.0/0"]
   from_port         = 3
   protocol          = "icmp"
-  security_group_id = aws_security_group.bastion-privatedns1-example-com.id
+  security_group_id = aws_security_group.bastion-elb-privatedns1-example-com.id
   to_port           = 4
   type              = "ingress"
 }
@@ -1278,9 +1479,22 @@ resource "aws_security_group_rule" "icmp-pmtu-ssh-nlb-172-20-4-0--22" {
   cidr_blocks       = ["172.20.4.0/22"]
   from_port         = 3
   protocol          = "icmp"
-  security_group_id = aws_security_group.bastion-privatedns1-example-com.id
+  security_group_id = aws_security_group.bastion-elb-privatedns1-example-com.id
   to_port           = 4
   type              = "ingress"
+}
+
+resource "aws_sqs_queue" "privatedns1-example-com-nth" {
+  message_retention_seconds = 300
+  name                      = "privatedns1-example-com-nth"
+  policy                    = file("${path.module}/data/aws_sqs_queue_privatedns1-example-com-nth_policy")
+  tags = {
+    "KubernetesCluster"                             = "privatedns1.example.com"
+    "Name"                                          = "privatedns1-example-com-nth"
+    "Owner"                                         = "John Doe"
+    "foo/bar"                                       = "fib+baz"
+    "kubernetes.io/cluster/privatedns1.example.com" = "owned"
+  }
 }
 
 resource "aws_subnet" "us-test-1a-privatedns1-example-com" {
@@ -1294,8 +1508,6 @@ resource "aws_subnet" "us-test-1a-privatedns1-example-com" {
     "Owner"                                         = "John Doe"
     "SubnetType"                                    = "Private"
     "foo/bar"                                       = "fib+baz"
-    "kops.k8s.io/instance-group/master-us-test-1a"  = "true"
-    "kops.k8s.io/instance-group/nodes"              = "true"
     "kubernetes.io/cluster/privatedns1.example.com" = "owned"
     "kubernetes.io/role/internal-elb"               = "1"
   }
@@ -1313,7 +1525,6 @@ resource "aws_subnet" "utility-us-test-1a-privatedns1-example-com" {
     "Owner"                                         = "John Doe"
     "SubnetType"                                    = "Utility"
     "foo/bar"                                       = "fib+baz"
-    "kops.k8s.io/instance-group/bastion"            = "true"
     "kubernetes.io/cluster/privatedns1.example.com" = "owned"
     "kubernetes.io/role/elb"                        = "1"
   }
@@ -1357,7 +1568,7 @@ terraform {
     aws = {
       "configuration_aliases" = [aws.files]
       "source"                = "hashicorp/aws"
-      "version"               = ">= 4.0.0"
+      "version"               = ">= 5.0.0"
     }
   }
 }

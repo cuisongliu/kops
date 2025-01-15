@@ -101,7 +101,7 @@ func runChannelBuilderTest(t *testing.T, key string, addonManifests []string) {
 		t.Fatalf("error from BuildCloud: %v", err)
 	}
 
-	if err := PerformAssignments(cluster, cloud); err != nil {
+	if err := PerformAssignments(cluster, vfs.Context, cloud); err != nil {
 		t.Fatalf("error from PerformAssignments for %q: %v", key, err)
 	}
 
@@ -122,7 +122,7 @@ func runChannelBuilderTest(t *testing.T, key string, addonManifests []string) {
 	if err != nil {
 		t.Errorf("error building vfspath: %v", err)
 	}
-	clientset := vfsclientset.NewVFSClientset(basePath)
+	clientset := vfsclientset.NewVFSClientset(vfs.Context, basePath)
 
 	secretStore, err := clientset.SecretStore(cluster)
 	if err != nil {
@@ -153,6 +153,8 @@ func runChannelBuilderTest(t *testing.T, key string, addonManifests []string) {
 		},
 	}
 
+	kopsModel.AllInstanceGroups = kopsModel.InstanceGroups
+
 	tf := &TemplateFunctions{
 		KopsModelContext: kopsModel,
 		cloud:            cloud,
@@ -162,7 +164,7 @@ func runChannelBuilderTest(t *testing.T, key string, addonManifests []string) {
 	bcb := bootstrapchannelbuilder.NewBootstrapChannelBuilder(
 		&kopsModel,
 		fi.LifecycleSync,
-		assets.NewAssetBuilder(cluster.Spec.Assets, cluster.Spec.KubernetesVersion, false),
+		assets.NewAssetBuilder(vfs.Context, cluster.Spec.Assets, false),
 		templates,
 		nil,
 	)

@@ -17,10 +17,6 @@ limitations under the License.
 package components
 
 import (
-	"fmt"
-
-	"github.com/blang/semver/v4"
-	"github.com/pelletier/go-toml"
 	"k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/loader"
@@ -31,11 +27,11 @@ type ContainerdOptionsBuilder struct {
 	*OptionsContext
 }
 
-var _ loader.OptionsBuilder = &ContainerdOptionsBuilder{}
+var _ loader.ClusterOptionsBuilder = &ContainerdOptionsBuilder{}
 
 // BuildOptions is responsible for filling in the default setting for containerd daemon
-func (b *ContainerdOptionsBuilder) BuildOptions(o interface{}) error {
-	clusterSpec := o.(*kops.ClusterSpec)
+func (b *ContainerdOptionsBuilder) BuildOptions(o *kops.Cluster) error {
+	clusterSpec := &o.Spec
 
 	if clusterSpec.Containerd == nil {
 		clusterSpec.Containerd = &kops.ContainerdConfig{}
@@ -43,62 +39,23 @@ func (b *ContainerdOptionsBuilder) BuildOptions(o interface{}) error {
 
 	containerd := clusterSpec.Containerd
 
-	if clusterSpec.ContainerRuntime == "containerd" {
-		// Set version based on Kubernetes version
-		if fi.ValueOf(containerd.Version) == "" {
-			switch {
-			case b.IsKubernetesLT("1.24.14"):
-				fallthrough
-			case b.IsKubernetesGTE("1.25") && b.IsKubernetesLT("1.25.10"):
-				fallthrough
-			case b.IsKubernetesGTE("1.26") && b.IsKubernetesLT("1.26.5"):
-				fallthrough
-			case b.IsKubernetesGTE("1.27") && b.IsKubernetesLT("1.27.2"):
-				containerd.Version = fi.PtrTo("1.6.20")
-				containerd.Runc = &kops.Runc{
-					Version: fi.PtrTo("1.1.5"),
-				}
-			case b.IsKubernetesGTE("1.27.2"):
-				containerd.Version = fi.PtrTo("1.7.2")
-				containerd.Runc = &kops.Runc{
-					Version: fi.PtrTo("1.1.7"),
-				}
-			default:
-				containerd.Version = fi.PtrTo("1.6.21")
-				containerd.Runc = &kops.Runc{
-					Version: fi.PtrTo("1.1.7"),
-				}
+	// Set version based on Kubernetes version
+	if fi.ValueOf(containerd.Version) == "" {
+		switch {
+		case b.IsKubernetesLT("1.27.2"):
+			containerd.Version = fi.PtrTo("1.6.20")
+			containerd.Runc = &kops.Runc{
+				Version: fi.PtrTo("1.1.5"),
+			}
+		default:
+			containerd.Version = fi.PtrTo("1.7.25")
+			containerd.Runc = &kops.Runc{
+				Version: fi.PtrTo("1.2.4"),
 			}
 		}
-		// Set default log level to INFO
-		containerd.LogLevel = fi.PtrTo("info")
-	} else if clusterSpec.ContainerRuntime == "docker" {
-		// Docker version should always be available
-		dockerVersion := fi.ValueOf(clusterSpec.Docker.Version)
-		if dockerVersion == "" {
-			return fmt.Errorf("docker version is required")
-		} else {
-			// Skip containerd setup for older versions without containerd service
-			sv, err := semver.ParseTolerant(dockerVersion)
-			if err != nil {
-				return fmt.Errorf("unable to parse version string: %q", dockerVersion)
-			}
-			if sv.LT(semver.MustParse("18.9.0")) {
-				containerd.SkipInstall = true
-				return nil
-			}
-		}
-		// Set default log level to INFO
-		containerd.LogLevel = fi.PtrTo("info")
-		// Build config file for containerd running in Docker mode
-		config, _ := toml.Load("")
-		config.SetPath([]string{"disabled_plugins"}, []string{"cri"})
-		containerd.ConfigOverride = fi.PtrTo(config.String())
-
-	} else {
-		// Unknown container runtime, should not install containerd
-		containerd.SkipInstall = true
 	}
+	// Set default log level to INFO
+	containerd.LogLevel = fi.PtrTo("info")
 
 	if containerd.NvidiaGPU != nil && fi.ValueOf(containerd.NvidiaGPU.Enabled) && containerd.NvidiaGPU.DriverPackage == "" {
 		containerd.NvidiaGPU.DriverPackage = kops.NvidiaDefaultDriverPackage

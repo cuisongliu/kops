@@ -28,14 +28,20 @@ type NodeTerminationHandlerOptionsBuilder struct {
 	*OptionsContext
 }
 
-var _ loader.OptionsBuilder = &NodeTerminationHandlerOptionsBuilder{}
+var _ loader.ClusterOptionsBuilder = &NodeTerminationHandlerOptionsBuilder{}
 
-func (b *NodeTerminationHandlerOptionsBuilder) BuildOptions(o interface{}) error {
-	clusterSpec := o.(*kops.ClusterSpec)
-	if clusterSpec.CloudProvider.AWS == nil || clusterSpec.CloudProvider.AWS.NodeTerminationHandler == nil {
+func (b *NodeTerminationHandlerOptionsBuilder) BuildOptions(o *kops.Cluster) error {
+	clusterSpec := &o.Spec
+	if clusterSpec.CloudProvider.AWS == nil {
 		return nil
 	}
+	if clusterSpec.CloudProvider.AWS.NodeTerminationHandler == nil {
+		clusterSpec.CloudProvider.AWS.NodeTerminationHandler = &kops.NodeTerminationHandlerSpec{}
+	}
 	nth := clusterSpec.CloudProvider.AWS.NodeTerminationHandler
+	if nth.DeleteSQSMsgIfNodeNotFound == nil {
+		nth.DeleteSQSMsgIfNodeNotFound = fi.PtrTo(false)
+	}
 	if nth.Enabled == nil {
 		nth.Enabled = fi.PtrTo(true)
 	}
@@ -64,6 +70,14 @@ func (b *NodeTerminationHandlerOptionsBuilder) BuildOptions(o interface{}) error
 		nth.ManagedASGTag = fi.PtrTo("aws-node-termination-handler/managed")
 	}
 
+	if nth.PodTerminationGracePeriod == nil {
+		nth.PodTerminationGracePeriod = fi.PtrTo(int32(-1))
+	}
+
+	if nth.TaintNode == nil {
+		nth.TaintNode = fi.PtrTo(false)
+	}
+
 	if nth.CPURequest == nil {
 		defaultCPURequest := resource.MustParse("50m")
 		nth.CPURequest = &defaultCPURequest
@@ -75,7 +89,7 @@ func (b *NodeTerminationHandlerOptionsBuilder) BuildOptions(o interface{}) error
 	}
 
 	if nth.Version == nil {
-		nth.Version = fi.PtrTo("v1.18.3")
+		nth.Version = fi.PtrTo("v1.22.0")
 	}
 
 	return nil

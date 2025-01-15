@@ -21,6 +21,7 @@ import (
 
 	compute "google.golang.org/api/compute/v1"
 	"k8s.io/klog/v2"
+	"k8s.io/kops/pkg/wellknownservices"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/gce"
 	"k8s.io/kops/upup/pkg/fi/cloudup/terraform"
@@ -35,9 +36,12 @@ type Address struct {
 	IPAddress     *string
 	IPAddressType *string
 	Purpose       *string
-	ForAPIServer  bool
 
 	Subnetwork *Subnet
+
+	// WellKnownServices indicates which services are supported by this resource.
+	// This field is internal and is not rendered to the cloud.
+	WellKnownServices []wellknownservices.WellKnownService
 }
 
 var _ fi.CompareWithID = &ForwardingRule{}
@@ -55,30 +59,48 @@ func (e *Address) Find(c *fi.CloudupContext) (*Address, error) {
 
 		// Ignore system fields
 		actual.Lifecycle = e.Lifecycle
-		actual.ForAPIServer = e.ForAPIServer
+		actual.WellKnownServices = e.WellKnownServices
 	}
 	return actual, err
 }
 
-func findAddressByIP(cloud gce.GCECloud, ip string) (*Address, error) {
-	// Technically this is a regex, but it doesn't matter...
+func findAddressByIP(cloud gce.GCECloud, ip string, subnet string) (*Address, error) {
+	// Technically this is a regex, but it doesn't matter, it's a prefilter
 	addrs, err := cloud.Compute().Addresses().ListWithFilter(cloud.Project(), cloud.Region(), "address eq "+ip)
 	if err != nil {
 		return nil, fmt.Errorf("error listing IP Addresses: %v", err)
 	}
 
-	if len(addrs) == 0 {
+	var matches []*compute.Address
+	for _, addr := range addrs {
+		if subnet != "" && addr.Subnetwork != subnet {
+			continue
+		}
+		if addr.Address == ip {
+			matches = append(matches, addr)
+		}
+	}
+
+	if len(matches) == 0 {
 		return nil, nil
 	}
-	if len(addrs) > 1 {
+
+	if len(matches) > 1 {
 		return nil, fmt.Errorf("found multiple Addresses matching %q", ip)
 	}
 
+	addr := matches[0]
+
 	actual := &Address{}
-	actual.IPAddress = &addrs[0].Address
-	actual.IPAddressType = &addrs[0].AddressType
-	actual.Purpose = &addrs[0].Purpose
-	actual.Name = &addrs[0].Name
+	actual.IPAddress = &addr.Address
+	actual.IPAddressType = &addr.AddressType
+	actual.Purpose = &addr.Purpose
+	actual.Name = &addr.Name
+	if addr.Subnetwork != "" {
+		actual.Subnetwork = &Subnet{
+			Name: fi.PtrTo(lastComponent(addr.Subnetwork)),
+		}
+	}
 
 	return actual, nil
 }
@@ -109,8 +131,10 @@ func (e *Address) find(cloud gce.GCECloud) (*Address, error) {
 
 var _ fi.HasAddress = &Address{}
 
-func (e *Address) IsForAPIServer() bool {
-	return e.ForAPIServer
+// GetWellKnownServices implements fi.HasAddress::GetWellKnownServices.
+// It indicates which services we support with this address (likely attached to a load balancer).
+func (e *Address) GetWellKnownServices() []wellknownservices.WellKnownService {
+	return e.WellKnownServices
 }
 
 func (e *Address) FindAddresses(context *fi.CloudupContext) ([]string, error) {

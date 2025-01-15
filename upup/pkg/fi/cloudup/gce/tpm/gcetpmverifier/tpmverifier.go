@@ -66,12 +66,12 @@ func NewTPMVerifier(opt *gcetpm.TPMVerifierOptions) (bootstrap.Verifier, error) 
 
 var _ bootstrap.Verifier = &tpmVerifier{}
 
-func (v *tpmVerifier) VerifyToken(ctx context.Context, rawRequest *http.Request, authToken string, body []byte, useInstanceIDForNodeName bool) (*bootstrap.VerifyResult, error) {
+func (v *tpmVerifier) VerifyToken(ctx context.Context, rawRequest *http.Request, authToken string, body []byte) (*bootstrap.VerifyResult, error) {
 	// Reminder: we shouldn't trust any data we get from the client until we've checked the signature (and even then...)
 	// Thankfully the GCE SDK does seem to escape the parameters correctly, for example.
 
 	if !strings.HasPrefix(authToken, gcetpm.GCETPMAuthenticationTokenPrefix) {
-		return nil, fmt.Errorf("incorrect authorization type")
+		return nil, bootstrap.ErrNotThisVerifier
 	}
 	authToken = strings.TrimPrefix(authToken, gcetpm.GCETPMAuthenticationTokenPrefix)
 

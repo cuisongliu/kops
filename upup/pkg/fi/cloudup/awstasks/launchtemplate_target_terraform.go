@@ -17,10 +17,12 @@ limitations under the License.
 package awstasks
 
 import (
+	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awsup"
 	"k8s.io/kops/upup/pkg/fi/cloudup/terraform"
 	"k8s.io/kops/upup/pkg/fi/cloudup/terraformWriter"
+	"k8s.io/kops/util/pkg/maps"
 )
 
 type terraformLaunchTemplateNetworkInterface struct {
@@ -29,7 +31,7 @@ type terraformLaunchTemplateNetworkInterface struct {
 	// DeleteOnTermination indicates whether the network interface should be destroyed on instance termination.
 	DeleteOnTermination *bool `cty:"delete_on_termination"`
 	// Ipv6AddressCount is the number of IPv6 addresses to assign with the primary network interface.
-	Ipv6AddressCount *int64 `cty:"ipv6_address_count"`
+	Ipv6AddressCount *int32 `cty:"ipv6_address_count"`
 	// SecurityGroups is a list of security group ids.
 	SecurityGroups []*terraformWriter.Literal `cty:"security_groups"`
 }
@@ -51,7 +53,7 @@ type terraformLaunchTemplatePlacement struct {
 	// SpreadDomain are reserved for future use.
 	SpreadDomain *string `cty:"spread_domain"`
 	// Tenancy ist he tenancy of the instance. Can be default, dedicated, or host.
-	Tenancy *string `cty:"tenancy"`
+	Tenancy *ec2types.Tenancy `cty:"tenancy"`
 }
 
 type terraformLaunchTemplateIAMProfile struct {
@@ -61,9 +63,9 @@ type terraformLaunchTemplateIAMProfile struct {
 
 type terraformLaunchTemplateMarketOptionsSpotOptions struct {
 	// BlockDurationMinutes is required duration in minutes. This value must be a multiple of 60.
-	BlockDurationMinutes *int64 `cty:"block_duration_minutes"`
+	BlockDurationMinutes *int32 `cty:"block_duration_minutes"`
 	// InstanceInterruptionBehavior is the behavior when a Spot Instance is interrupted. Can be hibernate, stop, or terminate
-	InstanceInterruptionBehavior *string `cty:"instance_interruption_behavior"`
+	InstanceInterruptionBehavior *ec2types.InstanceInterruptionBehavior `cty:"instance_interruption_behavior"`
 	// MaxPrice is the maximum hourly price you're willing to pay for the Spot Instances
 	MaxPrice *string `cty:"max_price"`
 	// SpotInstanceType is the Spot Instance request type. Can be one-time, or persistent
@@ -83,11 +85,11 @@ type terraformLaunchTemplateBlockDeviceEBS struct {
 	// VolumeType is the ebs type to use
 	VolumeType *string `cty:"volume_type"`
 	// VolumeSize is the volume size
-	VolumeSize *int64 `cty:"volume_size"`
+	VolumeSize *int32 `cty:"volume_size"`
 	// IOPS is the provisioned IOPS
-	IOPS *int64 `cty:"iops"`
+	IOPS *int32 `cty:"iops"`
 	// Throughput is the gp3 volume throughput
-	Throughput *int64 `cty:"throughput"`
+	Throughput *int32 `cty:"throughput"`
 	// DeleteOnTermination indicates the volume should die with the instance
 	DeleteOnTermination *bool `cty:"delete_on_termination"`
 	// Encrypted indicates the device should be encrypted
@@ -120,11 +122,11 @@ type terraformLaunchTemplateInstanceMetadata struct {
 	// HTTPEndpoint enables or disables the HTTP metadata endpoint on instances.
 	HTTPEndpoint *string `cty:"http_endpoint"`
 	// HTTPPutResponseHopLimit is the desired HTTP PUT response hop limit for instance metadata requests.
-	HTTPPutResponseHopLimit *int64 `cty:"http_put_response_hop_limit"`
+	HTTPPutResponseHopLimit *int32 `cty:"http_put_response_hop_limit"`
 	// HTTPTokens is the state of token usage for your instance metadata requests.
-	HTTPTokens *string `cty:"http_tokens"`
+	HTTPTokens *ec2types.LaunchTemplateHttpTokensState `cty:"http_tokens"`
 	// HTTPProtocolIPv6 enables the IPv6 instance metadata endpoint
-	HTTPProtocolIPv6 *string `cty:"http_protocol_ipv6"`
+	HTTPProtocolIPv6 *ec2types.LaunchTemplateInstanceMetadataProtocolIpv6 `cty:"http_protocol_ipv6"`
 }
 
 type terraformLaunchTemplate struct {
@@ -144,7 +146,7 @@ type terraformLaunchTemplate struct {
 	// ImageID is the ami to use for the instances
 	ImageID *string `cty:"image_id"`
 	// InstanceType is the type of instance
-	InstanceType *string `cty:"instance_type"`
+	InstanceType *ec2types.InstanceType `cty:"instance_type"`
 	// KeyName is the ssh key to use
 	KeyName *terraformWriter.Literal `cty:"key_name"`
 	// MarketOptions are the spot pricing options
@@ -213,12 +215,10 @@ func (t *LaunchTemplate) RenderTerraform(target *terraform.TerraformTarget, a, e
 	}
 
 	if fi.ValueOf(e.SpotPrice) != "" {
-		marketSpotOptions := terraformLaunchTemplateMarketOptionsSpotOptions{MaxPrice: e.SpotPrice}
-		if e.SpotDurationInMinutes != nil {
-			marketSpotOptions.BlockDurationMinutes = e.SpotDurationInMinutes
-		}
-		if e.InstanceInterruptionBehavior != nil {
-			marketSpotOptions.InstanceInterruptionBehavior = e.InstanceInterruptionBehavior
+		marketSpotOptions := terraformLaunchTemplateMarketOptionsSpotOptions{
+			BlockDurationMinutes:         e.SpotDurationInMinutes,
+			InstanceInterruptionBehavior: e.InstanceInterruptionBehavior,
+			MaxPrice:                     e.SpotPrice,
 		}
 		tf.MarketOptions = []*terraformLaunchTemplateMarketOptions{
 			{
@@ -263,55 +263,39 @@ func (t *LaunchTemplate) RenderTerraform(target *terraform.TerraformTarget, a, e
 			}
 		}
 	}
+
 	devices, err := e.buildRootDevice(cloud)
 	if err != nil {
 		return err
 	}
-	for n, x := range devices {
-		tf.BlockDeviceMappings = append(tf.BlockDeviceMappings, &terraformLaunchTemplateBlockDevice{
-			DeviceName: fi.PtrTo(n),
-			EBS: []*terraformLaunchTemplateBlockDeviceEBS{
-				{
-					DeleteOnTermination: fi.PtrTo(true),
-					Encrypted:           x.EbsEncrypted,
-					KmsKeyID:            x.EbsKmsKey,
-					IOPS:                x.EbsVolumeIops,
-					Throughput:          x.EbsVolumeThroughput,
-					VolumeSize:          x.EbsVolumeSize,
-					VolumeType:          x.EbsVolumeType,
-				},
-			},
-		})
+
+	devicesKeys := maps.SortedKeys(devices)
+	for _, key := range devicesKeys {
+		terraformLaunchTemplateBlockDevice := createTerraformLaunchTemplateBlockDevice(key, devices[key])
+		tf.BlockDeviceMappings = append(tf.BlockDeviceMappings, terraformLaunchTemplateBlockDevice)
 	}
+
 	additionals, err := buildAdditionalDevices(e.BlockDeviceMappings)
 	if err != nil {
 		return err
 	}
-	for n, x := range additionals {
-		tf.BlockDeviceMappings = append(tf.BlockDeviceMappings, &terraformLaunchTemplateBlockDevice{
-			DeviceName: fi.PtrTo(n),
-			EBS: []*terraformLaunchTemplateBlockDeviceEBS{
-				{
-					DeleteOnTermination: fi.PtrTo(true),
-					Encrypted:           x.EbsEncrypted,
-					IOPS:                x.EbsVolumeIops,
-					Throughput:          x.EbsVolumeThroughput,
-					KmsKeyID:            x.EbsKmsKey,
-					VolumeSize:          x.EbsVolumeSize,
-					VolumeType:          x.EbsVolumeType,
-				},
-			},
-		})
+
+	additionalsKeys := maps.SortedKeys(additionals)
+	for _, key := range additionalsKeys {
+		terraformLaunchTemplateBlockDevice := createTerraformLaunchTemplateBlockDevice(key, additionals[key])
+		tf.BlockDeviceMappings = append(tf.BlockDeviceMappings, terraformLaunchTemplateBlockDevice)
 	}
 
 	devices, err = buildEphemeralDevices(cloud, fi.ValueOf(e.InstanceType))
 	if err != nil {
 		return err
 	}
-	for n, x := range devices {
+
+	devicesKeys = maps.SortedKeys(devices)
+	for _, key := range devicesKeys {
 		tf.BlockDeviceMappings = append(tf.BlockDeviceMappings, &terraformLaunchTemplateBlockDevice{
-			VirtualName: x.VirtualName,
-			DeviceName:  fi.PtrTo(n),
+			VirtualName: devices[key].VirtualName,
+			DeviceName:  fi.PtrTo(key),
 		})
 	}
 
@@ -328,4 +312,21 @@ func (t *LaunchTemplate) RenderTerraform(target *terraform.TerraformTarget, a, e
 	}
 
 	return target.RenderResource("aws_launch_template", fi.ValueOf(e.Name), tf)
+}
+
+func createTerraformLaunchTemplateBlockDevice(deviceName string, v *BlockDeviceMapping) *terraformLaunchTemplateBlockDevice {
+	return &terraformLaunchTemplateBlockDevice{
+		DeviceName: fi.PtrTo(deviceName),
+		EBS: []*terraformLaunchTemplateBlockDeviceEBS{
+			{
+				DeleteOnTermination: fi.PtrTo(true),
+				Encrypted:           v.EbsEncrypted,
+				KmsKeyID:            v.EbsKmsKey,
+				IOPS:                v.EbsVolumeIops,
+				Throughput:          v.EbsVolumeThroughput,
+				VolumeSize:          v.EbsVolumeSize,
+				VolumeType:          fi.PtrTo(string(v.EbsVolumeType)),
+			},
+		},
+	}
 }

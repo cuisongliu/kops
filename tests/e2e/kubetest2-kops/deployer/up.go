@@ -20,10 +20,13 @@ import (
 	"errors"
 	"fmt"
 	osexec "os/exec"
+	"path"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/google/shlex"
+	"golang.org/x/exp/slices"
 
 	"k8s.io/klog/v2"
 	"k8s.io/kops/tests/e2e/kubetest2-kops/aws"
@@ -40,6 +43,17 @@ func (d *deployer) Up() error {
 		return err
 	}
 
+	// kops is fetched when --up is called instead of init to support a scenario where k/k is being built
+	// and a kops build is not ready yet
+	if d.KopsVersionMarker != "" {
+		d.KopsBinaryPath = path.Join(d.commonOptions.RunDir(), "kops")
+		baseURL, err := kops.DownloadKops(d.KopsVersionMarker, d.KopsBinaryPath)
+		if err != nil {
+			return fmt.Errorf("init failed to download kops from url: %v", err)
+		}
+		d.KopsBaseURL = baseURL
+	}
+
 	if d.terraform == nil {
 		klog.Info("Cleaning up any leaked resources from previous cluster")
 		// Intentionally ignore errors:
@@ -48,7 +62,7 @@ func (d *deployer) Up() error {
 	}
 
 	if d.CloudProvider == "gce" && d.createBucket {
-		if err := gce.EnsureGCSBucket(d.stateStore(), d.GCPProject); err != nil {
+		if err := gce.EnsureGCSBucket(d.stateStore(), d.GCPProject, false); err != nil {
 			return err
 		}
 	}
@@ -118,6 +132,16 @@ func (d *deployer) createCluster(zones []string, adminAccess string, yes bool) e
 		"--ssh-public-key", d.SSHPublicKeyPath,
 		"--set", "cluster.spec.nodePortAccess=0.0.0.0/0",
 	}
+
+	version, err := kops.GetVersion(d.KopsBinaryPath)
+	if err != nil {
+		return err
+	}
+	if version > "1.29" {
+		// Requires https://github.com/kubernetes/kops/pull/16128
+		args = append(args, "--set", `spec.containerd.configAdditions=plugins."io.containerd.grpc.v1.cri".containerd.runtimes.test-handler.runtime_type=io.containerd.runc.v2`)
+	}
+
 	if yes {
 		args = append(args, "--yes")
 	}
@@ -134,25 +158,44 @@ func (d *deployer) createCluster(zones []string, adminAccess string, yes bool) e
 		args = append(args, createArgs...)
 	}
 	args = appendIfUnset(args, "--admin-access", adminAccess)
-	args = appendIfUnset(args, "--master-count", fmt.Sprintf("%d", d.ControlPlaneSize))
-	args = appendIfUnset(args, "--master-volume-size", "48")
-	args = appendIfUnset(args, "--node-count", "4")
-	args = appendIfUnset(args, "--node-volume-size", "48")
-	args = appendIfUnset(args, "--set", adminAccess)
-	args = appendIfUnset(args, "--zones", strings.Join(zones, ","))
+
+	// Dont set --master-count if either --control-plane-count or --master-count
+	// has been provided in --create-args
+	foundCPCount := false
+	for _, existingArg := range args {
+		existingKey := strings.Split(existingArg, "=")
+		if existingKey[0] == "--control-plane-count" || existingKey[0] == "--master-count" {
+			foundCPCount = true
+			break
+		}
+	}
+	if !foundCPCount {
+		args = appendIfUnset(args, "--master-count", fmt.Sprintf("%d", d.ControlPlaneCount))
+	}
 
 	switch d.CloudProvider {
 	case "aws":
 		if isArm {
 			args = appendIfUnset(args, "--master-size", "c6g.large")
+			args = appendIfUnset(args, "--node-size", "c6g.large")
 		} else {
 			args = appendIfUnset(args, "--master-size", "c5.large")
 		}
 	case "gce":
-		args = appendIfUnset(args, "--master-size", "e2-standard-2")
+		if isArm {
+			args = appendIfUnset(args, "--master-size", "t2a-standard-2")
+			args = appendIfUnset(args, "--node-size", "t2a-standard-2")
+		} else {
+			args = appendIfUnset(args, "--master-size", "e2-standard-2")
+			args = appendIfUnset(args, "--node-size", "e2-standard-2")
+		}
 		if d.GCPProject != "" {
 			args = appendIfUnset(args, "--project", d.GCPProject)
 		}
+		// set some sane default e2e testing behaviour on gce
+		args = appendIfUnset(args, "--networking", "kubenet")
+		args = appendIfUnset(args, "--node-volume-size", "100")
+
 		// We used to set the --vpc flag to split clusters into different networks, this is now the default.
 		// args = appendIfUnset(args, "--vpc", strings.Split(d.ClusterName, ".")[0])
 	case "digitalocean":
@@ -160,8 +203,17 @@ func (d *deployer) createCluster(zones []string, adminAccess string, yes bool) e
 		args = appendIfUnset(args, "--node-size", "c2-16vcpu-32gb")
 	}
 
+	args = appendIfUnset(args, "--master-volume-size", "48")
+	args = appendIfUnset(args, "--node-count", "4")
+	args = appendIfUnset(args, "--node-volume-size", "48")
+	args = appendIfUnset(args, "--zones", strings.Join(zones, ","))
+
 	if d.terraform != nil {
 		args = append(args, "--target", "terraform", "--out", d.terraform.Dir())
+	}
+
+	if d.KubernetesFeatureGates != "" {
+		args = appendIfUnset(args, "--kubernetes-feature-gates", d.KubernetesFeatureGates)
 	}
 
 	klog.Info(strings.Join(args, " "))
@@ -169,7 +221,7 @@ func (d *deployer) createCluster(zones []string, adminAccess string, yes bool) e
 	cmd.SetEnv(d.env()...)
 
 	exec.InheritOutput(cmd)
-	err := cmd.Run()
+	err = cmd.Run()
 	if err != nil {
 		return err
 	}
@@ -233,20 +285,17 @@ func (d *deployer) updateCluster(yes bool) error {
 func (d *deployer) IsUp() (bool, error) {
 	wait := d.ValidationWait
 	if wait == 0 {
-		if d.TerraformVersion != "" || d.CloudProvider == "digitalocean" {
-			// `--target terraform` doesn't precreate the API DNS records,
-			// so kops is more likely to hit negative TTLs during validation.
-			// Digital Ocean also occasionally takes longer to validate.
-			wait = time.Duration(20) * time.Minute
-		} else {
-			wait = time.Duration(15) * time.Minute
-		}
+		// kOps is more likely to hit negative TTLs for API DNS during validation.
+		wait = time.Duration(20) * time.Minute
 	}
 	args := []string{
 		d.KopsBinaryPath, "validate", "cluster",
 		"--name", d.ClusterName,
-		"--count", "10",
+		"--count", strconv.Itoa(d.ValidationCount),
 		"--wait", wait.String(),
+	}
+	if d.ValidationInterval > 10*time.Second {
+		args = append(args, "--interval", d.ValidationInterval.String())
 	}
 	klog.Info(strings.Join(args, " "))
 
@@ -268,6 +317,9 @@ func (d *deployer) IsUp() (bool, error) {
 
 // verifyUpFlags ensures fields are set for creation of the cluster
 func (d *deployer) verifyUpFlags() error {
+	if d.BuildOptions.BuildKubernetes {
+		return nil
+	}
 	if d.KubernetesVersion == "" {
 		return errors.New("missing required --kubernetes-version flag")
 	}
@@ -284,7 +336,7 @@ func (d *deployer) verifyUpFlags() error {
 func (d *deployer) zones() ([]string, error) {
 	switch d.CloudProvider {
 	case "aws":
-		return aws.RandomZones(d.ControlPlaneSize)
+		return aws.RandomZones(d.ControlPlaneCount)
 	case "gce":
 		return gce.RandomZones(1)
 	case "digitalocean":
@@ -294,11 +346,19 @@ func (d *deployer) zones() ([]string, error) {
 }
 
 // appendIfUnset will append an argument and its value to args if the arg is not already present
-// This shouldn't be used for arguments that can be specified multiple times like --set
+// This shouldn't be used for arguments that can be specified multiple times except --set
 func appendIfUnset(args []string, arg, value string) []string {
+	setFlags := []string{}
 	for _, existingArg := range args {
-		existingKey := strings.Split(existingArg, "=")
-		if existingKey[0] == arg {
+		existingKey := strings.SplitN(existingArg, "=", 2)
+		if existingKey[0] == "--set" {
+			if len(existingKey) == 3 {
+				setFlags = append(setFlags, existingKey[1])
+			}
+			if slices.Contains(setFlags, arg) {
+				return args
+			}
+		} else if existingKey[0] == arg {
 			return args
 		}
 	}

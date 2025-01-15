@@ -25,13 +25,16 @@ kops edit cluster [CLUSTER] [flags]
 ```
   # Edit a cluster configuration in AWS.
   kops edit cluster k8s.cluster.site --state=s3://my-state-store
+  
+  # Set cluster spec values.
+  kops edit cluster testcluster.k8s.local --set spec.kubernetesVersion=1.28.4
 ```
 
 ### Options
 
 ```
   -h, --help            help for cluster
-      --set strings     Directly set values in the spec
+      --set strings     Directly set values in the spec (default [])
       --unset strings   Directly unset values in the spec
 ```
 

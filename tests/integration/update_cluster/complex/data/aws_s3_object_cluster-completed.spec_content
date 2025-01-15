@@ -29,16 +29,15 @@ spec:
   channel: stable
   cloudConfig:
     awsEBSCSIDriver:
-      enabled: true
-      version: v1.14.1
+      version: v1.38.1
     manageStorageClasses: true
   cloudControllerManager:
     allocateNodeCIDRs: true
-    clusterCIDR: 100.64.0.0/10
+    clusterCIDR: 100.96.0.0/11
     clusterName: complex.example.com
+    concurrentNodeSyncs: 5
     configureCloudRoutes: false
-    enableLeaderMigration: true
-    image: registry.k8s.io/provider-aws/cloud-controller-manager:v1.24.3
+    image: registry.k8s.io/provider-aws/cloud-controller-manager:v1.30.3
     leaderElection:
       leaderElect: true
   cloudLabels:
@@ -47,16 +46,12 @@ spec:
   cloudProvider: aws
   clusterDNSDomain: cluster.local
   configBase: memfs://clusters.example.com/complex.example.com
-  configStore: memfs://clusters.example.com/complex.example.com
-  containerRuntime: containerd
   containerd:
     logLevel: info
     runc:
-      version: 1.1.5
-    version: 1.6.20
+      version: 1.2.4
+    version: 1.7.25
   dnsZone: Z1AFAKE1ZON3YO
-  docker:
-    skipInstall: true
   etcdClusters:
   - backups:
       backupStore: memfs://clusters.example.com/complex.example.com/backups/etcd/main
@@ -66,7 +61,7 @@ spec:
     manager:
       backupRetentionDays: 90
     name: main
-    version: 3.5.9
+    version: 3.5.17
   - backups:
       backupStore: memfs://clusters.example.com/complex.example.com/backups/etcd/events
     etcdMembers:
@@ -75,7 +70,7 @@ spec:
     manager:
       backupRetentionDays: 90
     name: events
-    version: 3.5.9
+    version: 3.5.17
   externalDns:
     provider: dns-controller
   iam:
@@ -109,9 +104,8 @@ spec:
     etcdServersOverrides:
     - /events#https://127.0.0.1:4002
     featureGates:
-      CSIMigrationAWS: "true"
       InTreePluginAWSUnregister: "true"
-    image: registry.k8s.io/kube-apiserver:v1.24.0
+    image: registry.k8s.io/kube-apiserver:v1.30.0
     kubeletPreferredAddressTypes:
     - InternalIP
     - Hostname
@@ -139,14 +133,19 @@ spec:
     cloudProvider: external
     clusterCIDR: 100.96.0.0/11
     clusterName: complex.example.com
+    concurrentHorizontalPodAustoscalerSyncs: 10
+    concurrentJobSyncs: 10
     configureCloudRoutes: false
+    cpuLimit: 500m
+    cpuRequest: 200m
     featureGates:
-      CSIMigrationAWS: "true"
       InTreePluginAWSUnregister: "true"
-    image: registry.k8s.io/kube-controller-manager:v1.24.0
+    image: registry.k8s.io/kube-controller-manager:v1.30.0
     leaderElection:
       leaderElect: true
     logLevel: 2
+    memoryLimit: 1000Mi
+    memoryRequest: 800Mi
     useServiceAccountCredentials: true
   kubeDNS:
     cacheMaxConcurrent: 150
@@ -158,23 +157,26 @@ spec:
     nodeLocalDNS:
       cpuRequest: 25m
       enabled: false
-      image: registry.k8s.io/dns/k8s-dns-node-cache:1.22.20
+      image: registry.k8s.io/dns/k8s-dns-node-cache:1.23.0
       memoryRequest: 5Mi
     provider: CoreDNS
     serverIP: 100.64.0.10
   kubeProxy:
     clusterCIDR: 100.96.0.0/11
     cpuRequest: 100m
-    image: registry.k8s.io/kube-proxy:v1.24.0
+    image: registry.k8s.io/kube-proxy:v1.30.0
     logLevel: 2
   kubeScheduler:
+    cpuLimit: 500m
+    cpuRequest: 200m
     featureGates:
-      CSIMigrationAWS: "true"
       InTreePluginAWSUnregister: "true"
-    image: registry.k8s.io/kube-scheduler:v1.24.0
+    image: registry.k8s.io/kube-scheduler:v1.30.0
     leaderElection:
       leaderElect: true
     logLevel: 2
+    memoryLimit: 1000Mi
+    memoryRequest: 800Mi
   kubelet:
     anonymousAuth: false
     cgroupDriver: systemd
@@ -185,7 +187,6 @@ spec:
     enableDebuggingHandlers: true
     evictionHard: memory.available<100Mi,nodefs.available<10%,nodefs.inodesFree<5%,imagefs.available<10%,imagefs.inodesFree<5%
     featureGates:
-      CSIMigrationAWS: "true"
       InTreePluginAWSUnregister: "true"
     kubeconfigPath: /var/lib/kubelet/kubeconfig
     logLevel: 2
@@ -198,7 +199,7 @@ spec:
   kubernetesApiAccess:
   - 1.1.1.0/24
   - pl-44444444
-  kubernetesVersion: 1.24.0
+  kubernetesVersion: 1.30.0
   masterKubelet:
     anonymousAuth: false
     cgroupDriver: systemd
@@ -209,7 +210,6 @@ spec:
     enableDebuggingHandlers: true
     evictionHard: memory.available<100Mi,nodefs.available<10%,nodefs.inodesFree<5%,imagefs.available<10%,imagefs.inodesFree<5%
     featureGates:
-      CSIMigrationAWS: "true"
       InTreePluginAWSUnregister: "true"
     kubeconfigPath: /var/lib/kubelet/kubeconfig
     logLevel: 2
@@ -226,6 +226,21 @@ spec:
   nodePortAccess:
   - 1.2.3.4/32
   - 10.20.30.0/24
+  nodeTerminationHandler:
+    cpuRequest: 50m
+    deleteSQSMsgIfNodeNotFound: false
+    enableRebalanceDraining: false
+    enableRebalanceMonitoring: false
+    enableScheduledEventDraining: true
+    enableSpotInterruptionDraining: true
+    enabled: true
+    excludeFromLoadBalancers: true
+    managedASGTag: kubernetes.io/cluster/complex.example.com
+    memoryRequest: 64Mi
+    podTerminationGracePeriod: -1
+    prometheusEnable: false
+    taintNode: false
+    version: v1.22.0
   nonMasqueradeCIDR: 100.64.0.0/10
   podCIDR: 100.96.0.0/11
   secretStore: memfs://clusters.example.com/complex.example.com/secrets
@@ -260,5 +275,3 @@ spec:
   topology:
     dns:
       type: Public
-    masters: public
-    nodes: public

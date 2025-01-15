@@ -21,10 +21,11 @@ import (
 
 	"k8s.io/kops/pkg/client/simple/vfsclientset"
 	"k8s.io/kops/upup/pkg/fi/cloudup"
+	"k8s.io/kops/util/pkg/vfs"
 )
 
-func apply(ctx context.Context) error {
-	clientset := vfsclientset.NewVFSClientset(registryBase)
+func apply(vfsContext *vfs.VFSContext, ctx context.Context) error {
+	clientset := vfsclientset.NewVFSClientset(vfsContext, registryBase)
 
 	cluster, err := clientset.GetCluster(ctx, clusterName)
 	if err != nil {
@@ -36,8 +37,7 @@ func apply(ctx context.Context) error {
 		Clientset:  clientset,
 		TargetName: cloudup.TargetDirect,
 	}
-	err = applyCmd.Run(ctx)
-	if err != nil {
+	if _, err = applyCmd.Run(ctx); err != nil {
 		return err
 	}
 

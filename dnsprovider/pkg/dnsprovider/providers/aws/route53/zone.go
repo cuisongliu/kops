@@ -19,8 +19,8 @@ package route53
 import (
 	"strings"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/route53"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	route53types "github.com/aws/aws-sdk-go-v2/service/route53/types"
 	"k8s.io/kops/dnsprovider/pkg/dnsprovider"
 )
 
@@ -28,16 +28,16 @@ import (
 var _ dnsprovider.Zone = &Zone{}
 
 type Zone struct {
-	impl  *route53.HostedZone
+	impl  *route53types.HostedZone
 	zones *Zones
 }
 
 func (zone *Zone) Name() string {
-	return aws.StringValue(zone.impl.Name)
+	return aws.ToString(zone.impl.Name)
 }
 
 func (zone *Zone) ID() string {
-	id := aws.StringValue(zone.impl.Id)
+	id := aws.ToString(zone.impl.Id)
 	id = strings.TrimPrefix(id, "/hostedzone/")
 	return id
 }
@@ -51,6 +51,6 @@ func (zone *Zone) ResourceRecordSets() (dnsprovider.ResourceRecordSets, bool) {
 // without having to requery it, so that we can expose AWS specific functionality.
 // Using this method should be avoided where possible; instead prefer to add functionality
 // to the cross-provider Zone interface.
-func (zone *Zone) Route53HostedZone() *route53.HostedZone {
+func (zone *Zone) Route53HostedZone() *route53types.HostedZone {
 	return zone.impl
 }

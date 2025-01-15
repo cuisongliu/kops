@@ -17,18 +17,20 @@ limitations under the License.
 package awsmodel
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
 
-	"github.com/aws/aws-sdk-go/aws/endpoints"
-	awsIam "github.com/aws/aws-sdk-go/service/iam"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awsiam "github.com/aws/aws-sdk-go-v2/service/iam"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/klog/v2"
 	"k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/pkg/model"
 	"k8s.io/kops/pkg/model/iam"
-	"k8s.io/kops/pkg/util/stringorslice"
+	"k8s.io/kops/pkg/util/stringorset"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awstasks"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awsup"
@@ -63,7 +65,7 @@ func (b *IAMModelBuilder) Build(c *fi.CloudupModelBuilderContext) error {
 
 	// Collect Instance Profile ARNs and their associated Instance Group roles
 	sharedProfileARNsToIGRole := make(map[string]kops.InstanceGroupRole)
-	for _, ig := range b.InstanceGroups {
+	for _, ig := range b.AllInstanceGroups {
 		if ig.Spec.IAM != nil && ig.Spec.IAM.Profile != nil {
 			specProfile := fi.ValueOf(ig.Spec.IAM.Profile)
 			if matchingRole, ok := sharedProfileARNsToIGRole[specProfile]; ok {
@@ -404,15 +406,21 @@ func (b *IAMModelBuilder) buildPolicy(policyString string) (*iam.Policy, error) 
 
 // IAMServiceEC2 returns the name of the IAM service for EC2 in the current region.
 // It is ec2.amazonaws.com in the default aws partition, but different in other isolated/custom partitions
-func IAMServiceEC2(region string) string {
-	partitions := endpoints.DefaultPartitions()
-	for _, p := range partitions {
-		if _, ok := p.Regions()[region]; ok {
-			ep := "ec2." + p.DNSSuffix()
-			return ep
-		}
+func IAMServiceEC2(region string) (string, error) {
+	ctx := context.TODO()
+	resolver := ec2.NewDefaultEndpointResolverV2()
+	ep, err := resolver.ResolveEndpoint(ctx, ec2.EndpointParameters{Region: aws.String(region)})
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve endpoint: %v", err)
 	}
-	return "ec2.amazonaws.com"
+	if ep.URI.Host != "" {
+		// Remove the region from the hostname. Examples:
+		// ec2.us-east-1.amazonaws.com     -> ec2.amazonaws.com
+		// ec2.cn-west-1.amazonaws.com.cn  -> ec2.amazonaws.com.cn
+		// ec2.us-gov-west-1.amazonaws.com -> ec2.amazonaws.com
+		return strings.ReplaceAll(ep.URI.Host, fmt.Sprintf("%v.", region), ""), nil
+	}
+	return "ec2.amazonaws.com", nil
 }
 
 func formatAWSIAMStatement(accountId, partition, oidcProvider, namespace, name string) (*iam.Statement, error) {
@@ -432,7 +440,7 @@ func formatAWSIAMStatement(accountId, partition, oidcProvider, namespace, name s
 			Principal: iam.Principal{
 				Federated: "arn:" + partition + ":iam::" + accountId + ":oidc-provider/" + oidcProvider,
 			},
-			Action: stringorslice.String("sts:AssumeRoleWithWebIdentity"),
+			Action: stringorset.String("sts:AssumeRoleWithWebIdentity"),
 			Condition: map[string]interface{}{
 				condition: map[string]interface{}{
 					oidcProvider + ":sub": "system:serviceaccount:" + namespace + ":" + name,
@@ -466,27 +474,35 @@ func (b *IAMModelBuilder) buildAWSIAMRolePolicy(role iam.Subject) (fi.Resource, 
 	} else {
 		// We don't generate using json.Marshal here, it would create whitespace changes in the policy for existing clusters.
 
-		policy = strings.ReplaceAll(NodeRolePolicyTemplate, "{{ IAMServiceEC2 }}", IAMServiceEC2(b.Region))
+		ec2Service, err := IAMServiceEC2(b.Region)
+		if err != nil {
+			return nil, err
+		}
+		policy = strings.ReplaceAll(NodeRolePolicyTemplate, "{{ IAMServiceEC2 }}", ec2Service)
 	}
 
 	return fi.NewStringResource(policy), nil
 }
 
 func (b *IAMModelBuilder) FindDeletions(context *fi.CloudupModelBuilderContext, cloud fi.Cloud) error {
+	ctx := context.Context()
 	iamapi := cloud.(awsup.AWSCloud).IAM()
 	ownershipTag := "kubernetes.io/cluster/" + b.Cluster.ObjectMeta.Name
-	request := &awsIam.ListRolesInput{}
-	var getRoleErr error
-	err := iamapi.ListRolesPages(request, func(p *awsIam.ListRolesOutput, lastPage bool) bool {
-		for _, role := range p.Roles {
+	request := &awsiam.ListRolesInput{}
+	paginator := awsiam.NewListRolesPaginator(iamapi, request)
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return fmt.Errorf("listing IAM roles: %w", err)
+		}
+		for _, role := range page.Roles {
 			if !strings.HasSuffix(fi.ValueOf(role.RoleName), "."+b.Cluster.ObjectMeta.Name) {
 				continue
 			}
-			getRequest := &awsIam.GetRoleInput{RoleName: role.RoleName}
-			roleOutput, err := iamapi.GetRole(getRequest)
+			getRequest := &awsiam.GetRoleInput{RoleName: role.RoleName}
+			roleOutput, err := iamapi.GetRole(ctx, getRequest)
 			if err != nil {
-				getRoleErr = fmt.Errorf("calling IAM GetRole on %s: %w", fi.ValueOf(role.RoleName), err)
-				return false
+				return fmt.Errorf("calling IAM GetRole on %s: %w", fi.ValueOf(role.RoleName), err)
 			}
 			for _, tag := range roleOutput.Role.Tags {
 				if fi.ValueOf(tag.Key) == ownershipTag && fi.ValueOf(tag.Value) == "owned" {
@@ -500,13 +516,6 @@ func (b *IAMModelBuilder) FindDeletions(context *fi.CloudupModelBuilderContext, 
 				}
 			}
 		}
-		return true
-	})
-	if getRoleErr != nil {
-		return getRoleErr
-	}
-	if err != nil {
-		return fmt.Errorf("listing IAM roles: %w", err)
 	}
 	return nil
 }

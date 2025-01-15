@@ -17,7 +17,9 @@ limitations under the License.
 package config
 
 import (
+	"k8s.io/kops/pkg/bootstrap/pkibootstrap"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awsup"
+	"k8s.io/kops/upup/pkg/fi/cloudup/azure"
 	"k8s.io/kops/upup/pkg/fi/cloudup/do"
 	gcetpm "k8s.io/kops/upup/pkg/fi/cloudup/gce/tpm"
 	"k8s.io/kops/upup/pkg/fi/cloudup/hetzner"
@@ -50,6 +52,9 @@ type ServerOptions struct {
 	// Provider is the cloud provider.
 	Provider ServerProviderOptions `json:"provider"`
 
+	// PKI configures private/public key node authentication.
+	PKI *pkibootstrap.Options `json:"pki,omitempty"`
+
 	// ServerKeyPath is the path to our TLS serving private key.
 	ServerKeyPath string `json:"serverKeyPath,omitempty"`
 	// ServerCertificatePath is the path to our TLS serving certificate.
@@ -61,9 +66,6 @@ type ServerOptions struct {
 	SigningCAs []string `json:"signingCAs"`
 	// CertNames is the list of active certificate names.
 	CertNames []string `json:"certNames"`
-
-	// UseInstanceIDForNodeName uses the instance ID instead of the hostname for the node name.
-	UseInstanceIDForNodeName bool `json:"useInstanceIDForNodeName,omitempty"`
 }
 
 type ServerProviderOptions struct {
@@ -73,6 +75,7 @@ type ServerProviderOptions struct {
 	OpenStack    *openstack.OpenStackVerifierOptions `json:"openstack,omitempty"`
 	DigitalOcean *do.DigitalOceanVerifierOptions     `json:"do,omitempty"`
 	Scaleway     *scaleway.ScalewayVerifierOptions   `json:"scaleway,omitempty"`
+	Azure        *azure.AzureVerifierOptions         `json:"azure,omitempty"`
 }
 
 // DiscoveryOptions configures our support for discovery, particularly gossip DNS (i.e. k8s.local)

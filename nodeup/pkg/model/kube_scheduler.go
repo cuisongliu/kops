@@ -66,7 +66,7 @@ func (b *KubeSchedulerBuilder) Build(c *fi.NodeupModelBuilderContext) error {
 		return nil
 	}
 
-	kubeScheduler := *b.Cluster.Spec.KubeScheduler
+	kubeScheduler := b.NodeupConfig.ControlPlaneConfig.KubeScheduler
 
 	if err := b.writeServerCertificate(c, &kubeScheduler); err != nil {
 		return err
@@ -155,7 +155,7 @@ func (b *KubeSchedulerBuilder) writeServerCertificate(c *fi.NodeupModelBuilderCo
 
 	if kubeScheduler.TLSCertFile == nil {
 		alternateNames := []string{
-			"kube-scheduler.kube-system.svc." + b.Cluster.Spec.ClusterDNSDomain,
+			"kube-scheduler.kube-system.svc." + b.NodeupConfig.APIServerConfig.ClusterDNSDomain,
 		}
 
 		issueCert := &nodetasks.IssueCert{
@@ -196,10 +196,6 @@ func (b *KubeSchedulerBuilder) buildPod(kubeScheduler *kops.KubeSchedulerConfig)
 		flags = append(flags, "--"+flag+"kubeconfig="+kubescheduler.KubeConfigPath)
 	}
 
-	if fi.ValueOf(kubeScheduler.UsePolicyConfigMap) {
-		flags = append(flags, "--policy-configmap=scheduler-policy", "--policy-configmap-namespace=kube-system")
-	}
-
 	pod := &v1.Pod{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: "v1",
@@ -215,6 +211,27 @@ func (b *KubeSchedulerBuilder) buildPod(kubeScheduler *kops.KubeSchedulerConfig)
 		Spec: v1.PodSpec{
 			HostNetwork: true,
 		},
+	}
+
+	resourceRequests := v1.ResourceList{}
+	resourceLimits := v1.ResourceList{}
+
+	cpuRequest := resource.MustParse("100m")
+	if kubeScheduler.CPURequest != nil {
+		cpuRequest = *kubeScheduler.CPURequest
+	}
+	resourceRequests["cpu"] = cpuRequest
+
+	if kubeScheduler.CPULimit != nil {
+		resourceLimits["cpu"] = *kubeScheduler.CPULimit
+	}
+
+	if kubeScheduler.MemoryRequest != nil {
+		resourceRequests["memory"] = *kubeScheduler.MemoryRequest
+	}
+
+	if kubeScheduler.MemoryLimit != nil {
+		resourceLimits["memory"] = *kubeScheduler.MemoryLimit
 	}
 
 	image := b.RemapImage(kubeScheduler.Image)
@@ -236,9 +253,8 @@ func (b *KubeSchedulerBuilder) buildPod(kubeScheduler *kops.KubeSchedulerConfig)
 			TimeoutSeconds:      15,
 		},
 		Resources: v1.ResourceRequirements{
-			Requests: v1.ResourceList{
-				v1.ResourceCPU: resource.MustParse("100m"),
-			},
+			Requests: resourceRequests,
+			Limits:   resourceLimits,
 		},
 	}
 	kubemanifest.AddHostPathMapping(pod, container, "varlibkubescheduler", "/var/lib/kube-scheduler")

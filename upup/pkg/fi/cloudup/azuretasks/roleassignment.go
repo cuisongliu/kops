@@ -26,13 +26,9 @@ import (
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/azure"
 
-	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2022-08-01/compute"
-	// Use 2018-01-01-preview API as we need the version to create
-	// a role assignment with Data Actions (https://github.com/Azure/azure-sdk-for-go/issues/1895).
-	// The non-preview version of the authorization API (2015-07-01)
-	// doesn't support Data Actions.q
-	authz "github.com/Azure/azure-sdk-for-go/services/preview/authorization/mgmt/2020-04-01-preview/authorization"
-	"github.com/Azure/go-autorest/autorest/to"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
+	authz "github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/authorization/armauthorization/v3"
+	compute "github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/compute/armcompute"
 	"github.com/google/uuid"
 )
 
@@ -47,10 +43,10 @@ type RoleAssignment struct {
 	Name      *string
 	Lifecycle fi.Lifecycle
 
-	ResourceGroup *ResourceGroup
-	VMScaleSet    *VMScaleSet
-	ID            *string
-	RoleDefID     *string
+	Scope      *string
+	VMScaleSet *VMScaleSet
+	ID         *string
+	RoleDefID  *string
 }
 
 var (
@@ -73,20 +69,24 @@ func (r *RoleAssignment) Find(c *fi.CloudupContext) (*RoleAssignment, error) {
 	}
 
 	cloud := c.T.Cloud.(azure.AzureCloud)
-	rs, err := cloud.RoleAssignment().List(context.TODO(), *r.ResourceGroup.Name)
+	rs, err := cloud.RoleAssignment().List(context.TODO(), *r.Scope)
 	if err != nil {
 		return nil, err
 	}
 
 	principalID := *r.VMScaleSet.PrincipalID
 	var found *authz.RoleAssignment
-	for _, ra := range rs {
+	for i := range rs {
+		ra := rs[i]
+		if ra.Properties == nil {
+			continue
+		}
 		// Use a name constructed by VMSS and Role definition ID to find a Role Assignment. We cannot use ra.Name
 		// as it is set to a randomly generated GUID.
-		l := strings.Split(*ra.RoleDefinitionID, "/")
+		l := strings.Split(*ra.Properties.RoleDefinitionID, "/")
 		roleDefID := l[len(l)-1]
-		if *ra.PrincipalID == principalID && roleDefID == *r.RoleDefID {
-			found = &ra
+		if *ra.Properties.PrincipalID == principalID && roleDefID == *r.RoleDefID {
+			found = ra
 			break
 		}
 	}
@@ -95,7 +95,7 @@ func (r *RoleAssignment) Find(c *fi.CloudupContext) (*RoleAssignment, error) {
 	}
 
 	// Query VM Scale Sets and find one that has matching Principal ID.
-	vs, err := cloud.VMScaleSet().List(context.TODO(), *r.ResourceGroup.Name)
+	vs, err := cloud.VMScaleSet().List(context.TODO(), *r.VMScaleSet.ResourceGroup.Name)
 	if err != nil {
 		return nil, err
 	}
@@ -105,7 +105,7 @@ func (r *RoleAssignment) Find(c *fi.CloudupContext) (*RoleAssignment, error) {
 			continue
 		}
 		if *v.Identity.PrincipalID == principalID {
-			foundVMSS = &v
+			foundVMSS = v
 			break
 		}
 	}
@@ -117,14 +117,12 @@ func (r *RoleAssignment) Find(c *fi.CloudupContext) (*RoleAssignment, error) {
 	return &RoleAssignment{
 		Name:      r.Name,
 		Lifecycle: r.Lifecycle,
-		ResourceGroup: &ResourceGroup{
-			Name: r.ResourceGroup.Name,
-		},
+		Scope:     found.Properties.Scope,
 		VMScaleSet: &VMScaleSet{
 			Name: foundVMSS.Name,
 		},
 		ID:        found.ID,
-		RoleDefID: fi.PtrTo(filepath.Base(fi.ValueOf(found.RoleDefinitionID))),
+		RoleDefID: to.Ptr(filepath.Base(*found.Properties.RoleDefinitionID)),
 	}, nil
 }
 
@@ -165,13 +163,11 @@ func createNewRoleAssignment(t *azure.AzureAPITarget, e *RoleAssignment) error {
 	// We generate the name of Role Assignment here. It must be a valid GUID.
 	roleAssignmentName := uuid.New().String()
 
-	// TODO(kenji): Append additinoal scope ("providers/Microsoft.Storage/storageAccounts/<account-name>") when the role is for blob access so that
-	// the role is scoped to a specific storage account.
-	scope := fmt.Sprintf("/subscriptions/%s/resourceGroups/%s", t.Cloud.SubscriptionID(), *e.ResourceGroup.Name)
+	scope := *e.Scope
 	roleDefID := fmt.Sprintf("%s/providers/Microsoft.Authorization/roleDefinitions/%s", scope, *e.RoleDefID)
 	roleAssignment := authz.RoleAssignmentCreateParameters{
-		RoleAssignmentProperties: &authz.RoleAssignmentProperties{
-			RoleDefinitionID: to.StringPtr(roleDefID),
+		Properties: &authz.RoleAssignmentProperties{
+			RoleDefinitionID: to.Ptr(roleDefID),
 			PrincipalID:      e.VMScaleSet.PrincipalID,
 		},
 	}

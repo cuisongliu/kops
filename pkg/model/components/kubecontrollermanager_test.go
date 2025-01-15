@@ -26,6 +26,7 @@ import (
 	api "k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/pkg/assets"
 	"k8s.io/kops/upup/pkg/fi"
+	"k8s.io/kops/util/pkg/vfs"
 )
 
 func buildCluster() *api.Cluster {
@@ -46,7 +47,7 @@ func Test_Build_KCM_Builder(t *testing.T) {
 
 		c := buildCluster()
 		c.Spec.KubernetesVersion = v
-		b := assets.NewAssetBuilder(c.Spec.Assets, c.Spec.KubernetesVersion, false)
+		b := assets.NewAssetBuilder(vfs.Context, c.Spec.Assets, false)
 
 		kcm := &KubeControllerManagerOptionsBuilder{
 			OptionsContext: &OptionsContext{
@@ -54,7 +55,7 @@ func Test_Build_KCM_Builder(t *testing.T) {
 			},
 		}
 
-		err := kcm.BuildOptions(&c.Spec)
+		err := kcm.BuildOptions(c)
 		if err != nil {
 			t.Fatalf("unexpected error from BuildOptions %s", err)
 		}
@@ -67,7 +68,7 @@ func Test_Build_KCM_Builder(t *testing.T) {
 
 func Test_Build_KCM_Builder_Change_Duration(t *testing.T) {
 	c := buildCluster()
-	b := assets.NewAssetBuilder(c.Spec.Assets, c.Spec.KubernetesVersion, false)
+	b := assets.NewAssetBuilder(vfs.Context, c.Spec.Assets, false)
 
 	kcm := &KubeControllerManagerOptionsBuilder{
 		OptionsContext: &OptionsContext{
@@ -81,7 +82,7 @@ func Test_Build_KCM_Builder_Change_Duration(t *testing.T) {
 
 	c.Spec.KubeControllerManager.AttachDetachReconcileSyncPeriod.Duration = time.Minute * 5
 
-	err := kcm.BuildOptions(&c.Spec)
+	err := kcm.BuildOptions(c)
 	if err != nil {
 		t.Fatalf("unexpected error from BuildOptions %s", err)
 	}
@@ -142,7 +143,7 @@ func Test_Build_KCM_Builder_CIDR_Mask_Size(t *testing.T) {
 	for _, tc := range grid {
 		t.Run(tc.PodCIDR+":"+tc.ClusterCIDR, func(t *testing.T) {
 			c := buildCluster()
-			b := assets.NewAssetBuilder(c.Spec.Assets, c.Spec.KubernetesVersion, false)
+			b := assets.NewAssetBuilder(vfs.Context, c.Spec.Assets, false)
 
 			kcm := &KubeControllerManagerOptionsBuilder{
 				OptionsContext: &OptionsContext{
@@ -155,7 +156,7 @@ func Test_Build_KCM_Builder_CIDR_Mask_Size(t *testing.T) {
 				ClusterCIDR: tc.ClusterCIDR,
 			}
 
-			err := kcm.BuildOptions(&c.Spec)
+			err := kcm.BuildOptions(c)
 			require.NoError(t, err)
 
 			assert.Equal(t, tc.ExpectedMaskSize, c.Spec.KubeControllerManager.NodeCIDRMaskSize)

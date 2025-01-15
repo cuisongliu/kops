@@ -19,24 +19,29 @@ kops update cluster [CLUSTER] [flags]
 
 ```
   # After the cluster has been edited or upgraded, update the cloud resources with:
-  kops update cluster k8s-cluster.example.com --yes --state=s3://my-state-store --yes
+  kops update cluster k8s-cluster.example.com --state=s3://my-state-store --yes
 ```
 
 ### Options
 
 ```
-      --admin duration[=18h0m0s]      Also export a cluster admin user credential with the specified lifetime and add it to the cluster context
-      --allow-kops-downgrade          Allow an older version of kOps to update the cluster than last used
-      --create-kube-config            Will control automatically creating the kube config file on your local filesystem (default true)
-  -h, --help                          help for cluster
-      --internal                      Use the cluster's internal DNS name. Implies --create-kube-config
-      --lifecycle-overrides strings   comma separated list of phase overrides, example: SecurityGroups=Ignore,InternetGateway=ExistsAndWarnIfChanges
-      --out string                    Path to write any local output
-      --phase string                  Subset of tasks to run: cluster, network, security
-      --ssh-public-key string         SSH public key to use (deprecated: use kops create secret instead)
-      --target string                 Target - direct, terraform (default "direct")
-      --user string                   Existing user in kubeconfig file to use.  Implies --create-kube-config
-  -y, --yes                           Create cloud resources, without --yes update is in dry run mode
+      --admin duration[=18h0m0s]       Also export a cluster admin user credential with the specified lifetime and add it to the cluster context
+      --allow-kops-downgrade           Allow an older version of kOps to update the cluster than last used
+      --create-kube-config             Will control automatically creating the kube config file on your local filesystem (default true)
+  -h, --help                           help for cluster
+      --ignore-kubelet-version-skew    Setting this to true will force updating the kubernetes version on all instance groups, regardles of which control plane version is running
+      --instance-group strings         Instance groups to update (defaults to all if not specified)
+      --instance-group-roles strings   Instance group roles to update (control-plane,apiserver,node,bastion)
+      --internal                       Use the cluster's internal DNS name. Implies --create-kube-config
+      --lifecycle-overrides strings    comma separated list of phase overrides, example: SecurityGroups=Ignore,InternetGateway=ExistsAndWarnIfChanges
+      --out string                     Path to write any local output
+      --phase string                   Subset of tasks to run: cluster, network, security
+      --prune                          Delete old revisions of cloud resources that were needed during an upgrade
+      --reconcile                      Reconcile the cluster by rolling the control plane and nodes sequentially
+      --ssh-public-key string          SSH public key to use (deprecated: use kops create secret instead)
+      --target string                  Target - direct, terraform (default "direct")
+      --user string                    Existing user in kubeconfig file to use.  Implies --create-kube-config
+  -y, --yes                            Create cloud resources, without --yes update is in dry run mode
 ```
 
 ### Options inherited from parent commands

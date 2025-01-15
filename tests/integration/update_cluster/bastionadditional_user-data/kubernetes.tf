@@ -148,6 +148,11 @@ resource "aws_autoscaling_group" "bastion-bastionuserdata-example-com" {
     value               = "bastion.bastionuserdata.example.com"
   }
   tag {
+    key                 = "aws-node-termination-handler/managed"
+    propagate_at_launch = true
+    value               = ""
+  }
+  tag {
     key                 = "k8s.io/role/bastion"
     propagate_at_launch = true
     value               = "1"
@@ -188,6 +193,11 @@ resource "aws_autoscaling_group" "master-us-test-1a-masters-bastionuserdata-exam
     key                 = "Name"
     propagate_at_launch = true
     value               = "master-us-test-1a.masters.bastionuserdata.example.com"
+  }
+  tag {
+    key                 = "aws-node-termination-handler/managed"
+    propagate_at_launch = true
+    value               = ""
   }
   tag {
     key                 = "k8s.io/cluster-autoscaler/node-template/label/kops.k8s.io/kops-controller-pki"
@@ -250,6 +260,11 @@ resource "aws_autoscaling_group" "nodes-bastionuserdata-example-com" {
     value               = "nodes.bastionuserdata.example.com"
   }
   tag {
+    key                 = "aws-node-termination-handler/managed"
+    propagate_at_launch = true
+    value               = ""
+  }
+  tag {
     key                 = "k8s.io/cluster-autoscaler/node-template/label/node-role.kubernetes.io/node"
     propagate_at_launch = true
     value               = ""
@@ -270,6 +285,90 @@ resource "aws_autoscaling_group" "nodes-bastionuserdata-example-com" {
     value               = "owned"
   }
   vpc_zone_identifier = [aws_subnet.us-test-1a-bastionuserdata-example-com.id]
+}
+
+resource "aws_autoscaling_lifecycle_hook" "bastion-NTHLifecycleHook" {
+  autoscaling_group_name = aws_autoscaling_group.bastion-bastionuserdata-example-com.id
+  default_result         = "CONTINUE"
+  heartbeat_timeout      = 300
+  lifecycle_transition   = "autoscaling:EC2_INSTANCE_TERMINATING"
+  name                   = "bastion-NTHLifecycleHook"
+}
+
+resource "aws_autoscaling_lifecycle_hook" "master-us-test-1a-NTHLifecycleHook" {
+  autoscaling_group_name = aws_autoscaling_group.master-us-test-1a-masters-bastionuserdata-example-com.id
+  default_result         = "CONTINUE"
+  heartbeat_timeout      = 300
+  lifecycle_transition   = "autoscaling:EC2_INSTANCE_TERMINATING"
+  name                   = "master-us-test-1a-NTHLifecycleHook"
+}
+
+resource "aws_autoscaling_lifecycle_hook" "nodes-NTHLifecycleHook" {
+  autoscaling_group_name = aws_autoscaling_group.nodes-bastionuserdata-example-com.id
+  default_result         = "CONTINUE"
+  heartbeat_timeout      = 300
+  lifecycle_transition   = "autoscaling:EC2_INSTANCE_TERMINATING"
+  name                   = "nodes-NTHLifecycleHook"
+}
+
+resource "aws_cloudwatch_event_rule" "bastionuserdata-example-com-ASGLifecycle" {
+  event_pattern = file("${path.module}/data/aws_cloudwatch_event_rule_bastionuserdata.example.com-ASGLifecycle_event_pattern")
+  name          = "bastionuserdata.example.com-ASGLifecycle"
+  tags = {
+    "KubernetesCluster"                                 = "bastionuserdata.example.com"
+    "Name"                                              = "bastionuserdata.example.com-ASGLifecycle"
+    "kubernetes.io/cluster/bastionuserdata.example.com" = "owned"
+  }
+}
+
+resource "aws_cloudwatch_event_rule" "bastionuserdata-example-com-InstanceScheduledChange" {
+  event_pattern = file("${path.module}/data/aws_cloudwatch_event_rule_bastionuserdata.example.com-InstanceScheduledChange_event_pattern")
+  name          = "bastionuserdata.example.com-InstanceScheduledChange"
+  tags = {
+    "KubernetesCluster"                                 = "bastionuserdata.example.com"
+    "Name"                                              = "bastionuserdata.example.com-InstanceScheduledChange"
+    "kubernetes.io/cluster/bastionuserdata.example.com" = "owned"
+  }
+}
+
+resource "aws_cloudwatch_event_rule" "bastionuserdata-example-com-InstanceStateChange" {
+  event_pattern = file("${path.module}/data/aws_cloudwatch_event_rule_bastionuserdata.example.com-InstanceStateChange_event_pattern")
+  name          = "bastionuserdata.example.com-InstanceStateChange"
+  tags = {
+    "KubernetesCluster"                                 = "bastionuserdata.example.com"
+    "Name"                                              = "bastionuserdata.example.com-InstanceStateChange"
+    "kubernetes.io/cluster/bastionuserdata.example.com" = "owned"
+  }
+}
+
+resource "aws_cloudwatch_event_rule" "bastionuserdata-example-com-SpotInterruption" {
+  event_pattern = file("${path.module}/data/aws_cloudwatch_event_rule_bastionuserdata.example.com-SpotInterruption_event_pattern")
+  name          = "bastionuserdata.example.com-SpotInterruption"
+  tags = {
+    "KubernetesCluster"                                 = "bastionuserdata.example.com"
+    "Name"                                              = "bastionuserdata.example.com-SpotInterruption"
+    "kubernetes.io/cluster/bastionuserdata.example.com" = "owned"
+  }
+}
+
+resource "aws_cloudwatch_event_target" "bastionuserdata-example-com-ASGLifecycle-Target" {
+  arn  = aws_sqs_queue.bastionuserdata-example-com-nth.arn
+  rule = aws_cloudwatch_event_rule.bastionuserdata-example-com-ASGLifecycle.id
+}
+
+resource "aws_cloudwatch_event_target" "bastionuserdata-example-com-InstanceScheduledChange-Target" {
+  arn  = aws_sqs_queue.bastionuserdata-example-com-nth.arn
+  rule = aws_cloudwatch_event_rule.bastionuserdata-example-com-InstanceScheduledChange.id
+}
+
+resource "aws_cloudwatch_event_target" "bastionuserdata-example-com-InstanceStateChange-Target" {
+  arn  = aws_sqs_queue.bastionuserdata-example-com-nth.arn
+  rule = aws_cloudwatch_event_rule.bastionuserdata-example-com-InstanceStateChange.id
+}
+
+resource "aws_cloudwatch_event_target" "bastionuserdata-example-com-SpotInterruption-Target" {
+  arn  = aws_sqs_queue.bastionuserdata-example-com-nth.arn
+  rule = aws_cloudwatch_event_rule.bastionuserdata-example-com-SpotInterruption.id
 }
 
 resource "aws_ebs_volume" "us-test-1a-etcd-events-bastionuserdata-example-com" {
@@ -307,12 +406,12 @@ resource "aws_ebs_volume" "us-test-1a-etcd-main-bastionuserdata-example-com" {
 }
 
 resource "aws_eip" "us-test-1a-bastionuserdata-example-com" {
+  domain = "vpc"
   tags = {
     "KubernetesCluster"                                 = "bastionuserdata.example.com"
     "Name"                                              = "us-test-1a.bastionuserdata.example.com"
     "kubernetes.io/cluster/bastionuserdata.example.com" = "owned"
   }
-  vpc = true
 }
 
 resource "aws_elb" "api-bastionuserdata-example-com" {
@@ -465,7 +564,7 @@ resource "aws_launch_template" "bastion-bastionuserdata-example-com" {
     http_endpoint               = "enabled"
     http_protocol_ipv6          = "disabled"
     http_put_response_hop_limit = 1
-    http_tokens                 = "optional"
+    http_tokens                 = "required"
   }
   monitoring {
     enabled = false
@@ -482,6 +581,7 @@ resource "aws_launch_template" "bastion-bastionuserdata-example-com" {
     tags = {
       "KubernetesCluster"                                 = "bastionuserdata.example.com"
       "Name"                                              = "bastion.bastionuserdata.example.com"
+      "aws-node-termination-handler/managed"              = ""
       "k8s.io/role/bastion"                               = "1"
       "kops.k8s.io/instancegroup"                         = "bastion"
       "kubernetes.io/cluster/bastionuserdata.example.com" = "owned"
@@ -492,6 +592,7 @@ resource "aws_launch_template" "bastion-bastionuserdata-example-com" {
     tags = {
       "KubernetesCluster"                                 = "bastionuserdata.example.com"
       "Name"                                              = "bastion.bastionuserdata.example.com"
+      "aws-node-termination-handler/managed"              = ""
       "k8s.io/role/bastion"                               = "1"
       "kops.k8s.io/instancegroup"                         = "bastion"
       "kubernetes.io/cluster/bastionuserdata.example.com" = "owned"
@@ -500,6 +601,7 @@ resource "aws_launch_template" "bastion-bastionuserdata-example-com" {
   tags = {
     "KubernetesCluster"                                 = "bastionuserdata.example.com"
     "Name"                                              = "bastion.bastionuserdata.example.com"
+    "aws-node-termination-handler/managed"              = ""
     "k8s.io/role/bastion"                               = "1"
     "kops.k8s.io/instancegroup"                         = "bastion"
     "kubernetes.io/cluster/bastionuserdata.example.com" = "owned"
@@ -536,7 +638,7 @@ resource "aws_launch_template" "master-us-test-1a-masters-bastionuserdata-exampl
     http_endpoint               = "enabled"
     http_protocol_ipv6          = "disabled"
     http_put_response_hop_limit = 1
-    http_tokens                 = "optional"
+    http_tokens                 = "required"
   }
   monitoring {
     enabled = false
@@ -553,6 +655,7 @@ resource "aws_launch_template" "master-us-test-1a-masters-bastionuserdata-exampl
     tags = {
       "KubernetesCluster"                                                                                     = "bastionuserdata.example.com"
       "Name"                                                                                                  = "master-us-test-1a.masters.bastionuserdata.example.com"
+      "aws-node-termination-handler/managed"                                                                  = ""
       "k8s.io/cluster-autoscaler/node-template/label/kops.k8s.io/kops-controller-pki"                         = ""
       "k8s.io/cluster-autoscaler/node-template/label/node-role.kubernetes.io/control-plane"                   = ""
       "k8s.io/cluster-autoscaler/node-template/label/node.kubernetes.io/exclude-from-external-load-balancers" = ""
@@ -567,6 +670,7 @@ resource "aws_launch_template" "master-us-test-1a-masters-bastionuserdata-exampl
     tags = {
       "KubernetesCluster"                                                                                     = "bastionuserdata.example.com"
       "Name"                                                                                                  = "master-us-test-1a.masters.bastionuserdata.example.com"
+      "aws-node-termination-handler/managed"                                                                  = ""
       "k8s.io/cluster-autoscaler/node-template/label/kops.k8s.io/kops-controller-pki"                         = ""
       "k8s.io/cluster-autoscaler/node-template/label/node-role.kubernetes.io/control-plane"                   = ""
       "k8s.io/cluster-autoscaler/node-template/label/node.kubernetes.io/exclude-from-external-load-balancers" = ""
@@ -579,6 +683,7 @@ resource "aws_launch_template" "master-us-test-1a-masters-bastionuserdata-exampl
   tags = {
     "KubernetesCluster"                                                                                     = "bastionuserdata.example.com"
     "Name"                                                                                                  = "master-us-test-1a.masters.bastionuserdata.example.com"
+    "aws-node-termination-handler/managed"                                                                  = ""
     "k8s.io/cluster-autoscaler/node-template/label/kops.k8s.io/kops-controller-pki"                         = ""
     "k8s.io/cluster-autoscaler/node-template/label/node-role.kubernetes.io/control-plane"                   = ""
     "k8s.io/cluster-autoscaler/node-template/label/node.kubernetes.io/exclude-from-external-load-balancers" = ""
@@ -615,7 +720,7 @@ resource "aws_launch_template" "nodes-bastionuserdata-example-com" {
     http_endpoint               = "enabled"
     http_protocol_ipv6          = "disabled"
     http_put_response_hop_limit = 1
-    http_tokens                 = "optional"
+    http_tokens                 = "required"
   }
   monitoring {
     enabled = false
@@ -632,6 +737,7 @@ resource "aws_launch_template" "nodes-bastionuserdata-example-com" {
     tags = {
       "KubernetesCluster"                                                          = "bastionuserdata.example.com"
       "Name"                                                                       = "nodes.bastionuserdata.example.com"
+      "aws-node-termination-handler/managed"                                       = ""
       "k8s.io/cluster-autoscaler/node-template/label/node-role.kubernetes.io/node" = ""
       "k8s.io/role/node"                                                           = "1"
       "kops.k8s.io/instancegroup"                                                  = "nodes"
@@ -643,6 +749,7 @@ resource "aws_launch_template" "nodes-bastionuserdata-example-com" {
     tags = {
       "KubernetesCluster"                                                          = "bastionuserdata.example.com"
       "Name"                                                                       = "nodes.bastionuserdata.example.com"
+      "aws-node-termination-handler/managed"                                       = ""
       "k8s.io/cluster-autoscaler/node-template/label/node-role.kubernetes.io/node" = ""
       "k8s.io/role/node"                                                           = "1"
       "kops.k8s.io/instancegroup"                                                  = "nodes"
@@ -652,6 +759,7 @@ resource "aws_launch_template" "nodes-bastionuserdata-example-com" {
   tags = {
     "KubernetesCluster"                                                          = "bastionuserdata.example.com"
     "Name"                                                                       = "nodes.bastionuserdata.example.com"
+    "aws-node-termination-handler/managed"                                       = ""
     "k8s.io/cluster-autoscaler/node-template/label/node-role.kubernetes.io/node" = ""
     "k8s.io/role/node"                                                           = "1"
     "kops.k8s.io/instancegroup"                                                  = "nodes"
@@ -665,6 +773,7 @@ resource "aws_lb" "bastion-bastionuserdata-example-com" {
   internal                         = false
   load_balancer_type               = "network"
   name                             = "bastion-bastionuserdata-e-4grhsv"
+  security_groups                  = [aws_security_group.bastion-elb-bastionuserdata-example-com.id]
   subnet_mapping {
     subnet_id = aws_subnet.utility-us-test-1a-bastionuserdata-example-com.id
   }
@@ -849,6 +958,14 @@ resource "aws_s3_object" "bastionuserdata-example-com-addons-limit-range-addons-
   server_side_encryption = "AES256"
 }
 
+resource "aws_s3_object" "bastionuserdata-example-com-addons-node-termination-handler-aws-k8s-1-11" {
+  bucket                 = "testingBucket"
+  content                = file("${path.module}/data/aws_s3_object_bastionuserdata.example.com-addons-node-termination-handler.aws-k8s-1.11_content")
+  key                    = "clusters.example.com/bastionuserdata.example.com/addons/node-termination-handler.aws/k8s-1.11.yaml"
+  provider               = aws.files
+  server_side_encryption = "AES256"
+}
+
 resource "aws_s3_object" "bastionuserdata-example-com-addons-storage-aws-addons-k8s-io-v1-15-0" {
   bucket                 = "testingBucket"
   content                = file("${path.module}/data/aws_s3_object_bastionuserdata.example.com-addons-storage-aws.addons.k8s.io-v1.15.0_content")
@@ -959,6 +1076,17 @@ resource "aws_security_group" "bastion-bastionuserdata-example-com" {
   vpc_id = aws_vpc.bastionuserdata-example-com.id
 }
 
+resource "aws_security_group" "bastion-elb-bastionuserdata-example-com" {
+  description = "Security group for bastion ELB"
+  name        = "bastion-elb.bastionuserdata.example.com"
+  tags = {
+    "KubernetesCluster"                                 = "bastionuserdata.example.com"
+    "Name"                                              = "bastion-elb.bastionuserdata.example.com"
+    "kubernetes.io/cluster/bastionuserdata.example.com" = "owned"
+  }
+  vpc_id = aws_vpc.bastionuserdata-example-com.id
+}
+
 resource "aws_security_group" "masters-bastionuserdata-example-com" {
   description = "Security group for masters"
   name        = "masters.bastionuserdata.example.com"
@@ -981,11 +1109,11 @@ resource "aws_security_group" "nodes-bastionuserdata-example-com" {
   vpc_id = aws_vpc.bastionuserdata-example-com.id
 }
 
-resource "aws_security_group_rule" "from-0-0-0-0--0-ingress-tcp-22to22-bastion-bastionuserdata-example-com" {
+resource "aws_security_group_rule" "from-0-0-0-0--0-ingress-tcp-22to22-bastion-elb-bastionuserdata-example-com" {
   cidr_blocks       = ["0.0.0.0/0"]
   from_port         = 22
   protocol          = "tcp"
-  security_group_id = aws_security_group.bastion-bastionuserdata-example-com.id
+  security_group_id = aws_security_group.bastion-elb-bastionuserdata-example-com.id
   to_port           = 22
   type              = "ingress"
 }
@@ -999,11 +1127,11 @@ resource "aws_security_group_rule" "from-0-0-0-0--0-ingress-tcp-443to443-api-elb
   type              = "ingress"
 }
 
-resource "aws_security_group_rule" "from-172-20-4-0--22-ingress-tcp-22to22-bastion-bastionuserdata-example-com" {
+resource "aws_security_group_rule" "from-172-20-4-0--22-ingress-tcp-22to22-bastion-elb-bastionuserdata-example-com" {
   cidr_blocks       = ["172.20.4.0/22"]
   from_port         = 22
   protocol          = "tcp"
-  security_group_id = aws_security_group.bastion-bastionuserdata-example-com.id
+  security_group_id = aws_security_group.bastion-elb-bastionuserdata-example-com.id
   to_port           = 22
   type              = "ingress"
 }
@@ -1044,6 +1172,15 @@ resource "aws_security_group_rule" "from-bastion-bastionuserdata-example-com-egr
   type              = "egress"
 }
 
+resource "aws_security_group_rule" "from-bastion-bastionuserdata-example-com-ingress-icmp-3to4-bastion-elb-bastionuserdata-example-com" {
+  from_port                = 3
+  protocol                 = "icmp"
+  security_group_id        = aws_security_group.bastion-elb-bastionuserdata-example-com.id
+  source_security_group_id = aws_security_group.bastion-bastionuserdata-example-com.id
+  to_port                  = 4
+  type                     = "ingress"
+}
+
 resource "aws_security_group_rule" "from-bastion-bastionuserdata-example-com-ingress-tcp-22to22-masters-bastionuserdata-example-com" {
   from_port                = 22
   protocol                 = "tcp"
@@ -1058,6 +1195,42 @@ resource "aws_security_group_rule" "from-bastion-bastionuserdata-example-com-ing
   protocol                 = "tcp"
   security_group_id        = aws_security_group.nodes-bastionuserdata-example-com.id
   source_security_group_id = aws_security_group.bastion-bastionuserdata-example-com.id
+  to_port                  = 22
+  type                     = "ingress"
+}
+
+resource "aws_security_group_rule" "from-bastion-elb-bastionuserdata-example-com-egress-all-0to0-0-0-0-0--0" {
+  cidr_blocks       = ["0.0.0.0/0"]
+  from_port         = 0
+  protocol          = "-1"
+  security_group_id = aws_security_group.bastion-elb-bastionuserdata-example-com.id
+  to_port           = 0
+  type              = "egress"
+}
+
+resource "aws_security_group_rule" "from-bastion-elb-bastionuserdata-example-com-egress-all-0to0-__--0" {
+  from_port         = 0
+  ipv6_cidr_blocks  = ["::/0"]
+  protocol          = "-1"
+  security_group_id = aws_security_group.bastion-elb-bastionuserdata-example-com.id
+  to_port           = 0
+  type              = "egress"
+}
+
+resource "aws_security_group_rule" "from-bastion-elb-bastionuserdata-example-com-ingress-icmp-3to4-bastion-bastionuserdata-example-com" {
+  from_port                = 3
+  protocol                 = "icmp"
+  security_group_id        = aws_security_group.bastion-bastionuserdata-example-com.id
+  source_security_group_id = aws_security_group.bastion-elb-bastionuserdata-example-com.id
+  to_port                  = 4
+  type                     = "ingress"
+}
+
+resource "aws_security_group_rule" "from-bastion-elb-bastionuserdata-example-com-ingress-tcp-22to22-bastion-bastionuserdata-example-com" {
+  from_port                = 22
+  protocol                 = "tcp"
+  security_group_id        = aws_security_group.bastion-bastionuserdata-example-com.id
+  source_security_group_id = aws_security_group.bastion-elb-bastionuserdata-example-com.id
   to_port                  = 22
   type                     = "ingress"
 }
@@ -1179,11 +1352,29 @@ resource "aws_security_group_rule" "icmp-pmtu-api-elb-0-0-0-0--0" {
   type              = "ingress"
 }
 
+resource "aws_security_group_rule" "icmp-pmtu-cp-to-elb" {
+  from_port                = 3
+  protocol                 = "icmp"
+  security_group_id        = aws_security_group.api-elb-bastionuserdata-example-com.id
+  source_security_group_id = aws_security_group.masters-bastionuserdata-example-com.id
+  to_port                  = 4
+  type                     = "ingress"
+}
+
+resource "aws_security_group_rule" "icmp-pmtu-elb-to-cp" {
+  from_port                = 3
+  protocol                 = "icmp"
+  security_group_id        = aws_security_group.masters-bastionuserdata-example-com.id
+  source_security_group_id = aws_security_group.api-elb-bastionuserdata-example-com.id
+  to_port                  = 4
+  type                     = "ingress"
+}
+
 resource "aws_security_group_rule" "icmp-pmtu-ssh-nlb-0-0-0-0--0" {
   cidr_blocks       = ["0.0.0.0/0"]
   from_port         = 3
   protocol          = "icmp"
-  security_group_id = aws_security_group.bastion-bastionuserdata-example-com.id
+  security_group_id = aws_security_group.bastion-elb-bastionuserdata-example-com.id
   to_port           = 4
   type              = "ingress"
 }
@@ -1192,9 +1383,20 @@ resource "aws_security_group_rule" "icmp-pmtu-ssh-nlb-172-20-4-0--22" {
   cidr_blocks       = ["172.20.4.0/22"]
   from_port         = 3
   protocol          = "icmp"
-  security_group_id = aws_security_group.bastion-bastionuserdata-example-com.id
+  security_group_id = aws_security_group.bastion-elb-bastionuserdata-example-com.id
   to_port           = 4
   type              = "ingress"
+}
+
+resource "aws_sqs_queue" "bastionuserdata-example-com-nth" {
+  message_retention_seconds = 300
+  name                      = "bastionuserdata-example-com-nth"
+  policy                    = file("${path.module}/data/aws_sqs_queue_bastionuserdata-example-com-nth_policy")
+  tags = {
+    "KubernetesCluster"                                 = "bastionuserdata.example.com"
+    "Name"                                              = "bastionuserdata-example-com-nth"
+    "kubernetes.io/cluster/bastionuserdata.example.com" = "owned"
+  }
 }
 
 resource "aws_subnet" "us-test-1a-bastionuserdata-example-com" {
@@ -1206,8 +1408,6 @@ resource "aws_subnet" "us-test-1a-bastionuserdata-example-com" {
     "KubernetesCluster"                                 = "bastionuserdata.example.com"
     "Name"                                              = "us-test-1a.bastionuserdata.example.com"
     "SubnetType"                                        = "Private"
-    "kops.k8s.io/instance-group/master-us-test-1a"      = "true"
-    "kops.k8s.io/instance-group/nodes"                  = "true"
     "kubernetes.io/cluster/bastionuserdata.example.com" = "owned"
     "kubernetes.io/role/internal-elb"                   = "1"
   }
@@ -1223,7 +1423,6 @@ resource "aws_subnet" "utility-us-test-1a-bastionuserdata-example-com" {
     "KubernetesCluster"                                 = "bastionuserdata.example.com"
     "Name"                                              = "utility-us-test-1a.bastionuserdata.example.com"
     "SubnetType"                                        = "Utility"
-    "kops.k8s.io/instance-group/bastion"                = "true"
     "kubernetes.io/cluster/bastionuserdata.example.com" = "owned"
     "kubernetes.io/role/elb"                            = "1"
   }
@@ -1263,7 +1462,7 @@ terraform {
     aws = {
       "configuration_aliases" = [aws.files]
       "source"                = "hashicorp/aws"
-      "version"               = ">= 4.0.0"
+      "version"               = ">= 5.0.0"
     }
   }
 }

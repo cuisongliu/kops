@@ -27,6 +27,9 @@ import (
 	"strings"
 
 	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	corev1apply "k8s.io/client-go/applyconfigurations/core/v1"
+	metav1apply "k8s.io/client-go/applyconfigurations/meta/v1"
 	"k8s.io/klog/v2"
 
 	"github.com/GoogleCloudPlatform/k8s-cloud-provider/pkg/cloud"
@@ -127,10 +130,39 @@ func (g *Cloud) GetLoadBalancerName(ctx context.Context, clusterName string, svc
 
 // EnsureLoadBalancer is an implementation of LoadBalancer.EnsureLoadBalancer.
 func (g *Cloud) EnsureLoadBalancer(ctx context.Context, clusterName string, svc *v1.Service, nodes []*v1.Node) (*v1.LoadBalancerStatus, error) {
+	// GCE load balancers do not support services with LoadBalancerClass set. LoadBalancerClass can't be updated for an existing load balancer, so here we don't need to clean any resources.
+	// Check API documentation for .Spec.LoadBalancerClass for details on when this field is allowed to be changed.
+	if svc.Spec.LoadBalancerClass != nil {
+		klog.Infof("Ignoring service %s/%s using load balancer class %s, it is not supported by this controller.", svc.Namespace, svc.Name, svc.Spec.LoadBalancerClass)
+		return nil, cloudprovider.ImplementedElsewhere
+	}
+
 	loadBalancerName := g.GetLoadBalancerName(ctx, clusterName, svc)
 	desiredScheme := getSvcScheme(svc)
 	clusterID, err := g.ClusterID.GetID()
 	if err != nil {
+		return nil, err
+	}
+
+	// Services with multiples protocols are not supported by this controller, warn the users and sets
+	// the corresponding Service Status Condition.
+	// https://github.com/kubernetes/enhancements/tree/master/keps/sig-network/1435-mixed-protocol-lb
+	if err := checkMixedProtocol(svc.Spec.Ports); err != nil {
+		if hasLoadBalancerPortsError(svc) {
+			return nil, err
+		}
+		klog.Warningf("Ignoring service %s/%s using different ports protocols", svc.Namespace, svc.Name)
+		g.eventRecorder.Event(svc, v1.EventTypeWarning, v1.LoadBalancerPortsErrorReason, "LoadBalancers with multiple protocols are not supported.")
+		svcApplyStatus := corev1apply.ServiceStatus().WithConditions(
+			metav1apply.Condition().
+				WithType(v1.LoadBalancerPortsError).
+				WithStatus(metav1.ConditionTrue).
+				WithReason(v1.LoadBalancerPortsErrorReason).
+				WithMessage("LoadBalancer with multiple protocols are not supported"))
+		svcApply := corev1apply.Service(svc.Name, svc.Namespace).WithStatus(svcApplyStatus)
+		if _, errApply := g.client.CoreV1().Services(svc.Namespace).ApplyStatus(ctx, svcApply, metav1.ApplyOptions{FieldManager: "gce-cloud-controller", Force: true}); errApply != nil {
+			return nil, errApply
+		}
 		return nil, err
 	}
 
@@ -180,6 +212,13 @@ func (g *Cloud) EnsureLoadBalancer(ctx context.Context, clusterName string, svc 
 
 // UpdateLoadBalancer is an implementation of LoadBalancer.UpdateLoadBalancer.
 func (g *Cloud) UpdateLoadBalancer(ctx context.Context, clusterName string, svc *v1.Service, nodes []*v1.Node) error {
+	// GCE load balancers do not support services with LoadBalancerClass set. LoadBalancerClass can't be updated for an existing load balancer, so here we don't need to clean any resources.
+	// Check API documentation for .Spec.LoadBalancerClass for details on when this field is allowed to be changed.
+	if svc.Spec.LoadBalancerClass != nil {
+		klog.Infof("Ignoring service %s/%s using load balancer class %s, it is not supported by this controller.", svc.Namespace, svc.Name, svc.Spec.LoadBalancerClass)
+		return cloudprovider.ImplementedElsewhere
+	}
+
 	loadBalancerName := g.GetLoadBalancerName(ctx, clusterName, svc)
 	scheme := getSvcScheme(svc)
 	clusterID, err := g.ClusterID.GetID()
@@ -187,7 +226,26 @@ func (g *Cloud) UpdateLoadBalancer(ctx context.Context, clusterName string, svc 
 		return err
 	}
 
-	klog.V(4).Infof("UpdateLoadBalancer(%v, %v, %v, %v, %v): updating with %d nodes", clusterName, svc.Namespace, svc.Name, loadBalancerName, g.region, len(nodes))
+	// Services with multiples protocols are not supported by this controller, warn the users and sets
+	// the corresponding Service Status Condition, but keep processing the Update to not break upgrades.
+	// https://github.com/kubernetes/enhancements/tree/master/keps/sig-network/1435-mixed-protocol-lb
+	if err := checkMixedProtocol(svc.Spec.Ports); err != nil && !hasLoadBalancerPortsError(svc) {
+		klog.Warningf("Ignoring update for service %s/%s using different ports protocols", svc.Namespace, svc.Name)
+		g.eventRecorder.Event(svc, v1.EventTypeWarning, v1.LoadBalancerPortsErrorReason, "LoadBalancer with multiple protocols are not supported.")
+		svcApplyStatus := corev1apply.ServiceStatus().WithConditions(
+			metav1apply.Condition().
+				WithType(v1.LoadBalancerPortsError).
+				WithStatus(metav1.ConditionTrue).
+				WithReason(v1.LoadBalancerPortsErrorReason).
+				WithMessage("LoadBalancer with multiple protocols are not supported"))
+		svcApply := corev1apply.Service(svc.Name, svc.Namespace).WithStatus(svcApplyStatus)
+		if _, errApply := g.client.CoreV1().Services(svc.Namespace).ApplyStatus(ctx, svcApply, metav1.ApplyOptions{FieldManager: "gce-cloud-controller", Force: true}); errApply != nil {
+			// the error is retried by the controller loop
+			return errApply
+		}
+	}
+
+	klog.V(4).Infof("UpdateLoadBalancer(%v, %v, %v, %v, %v): updating with %v nodes [node names limited, total number of nodes: %d]", clusterName, svc.Namespace, svc.Name, loadBalancerName, g.region, loggableNodeNames(nodes), len(nodes))
 
 	switch scheme {
 	case cloud.SchemeInternal:
@@ -225,4 +283,34 @@ func getSvcScheme(svc *v1.Service) cloud.LbScheme {
 		return cloud.SchemeInternal
 	}
 	return cloud.SchemeExternal
+}
+
+// checkMixedProtocol checks if the Service Ports uses different protocols,
+// per examples, TCP and UDP.
+func checkMixedProtocol(ports []v1.ServicePort) error {
+	if len(ports) == 0 {
+		return nil
+	}
+
+	firstProtocol := ports[0].Protocol
+	for _, port := range ports[1:] {
+		if port.Protocol != firstProtocol {
+			return fmt.Errorf("mixed protocol is not supported for LoadBalancer")
+		}
+	}
+	return nil
+}
+
+// hasLoadBalancerPortsError checks if the Service has the LoadBalancerPortsError set to True
+func hasLoadBalancerPortsError(service *v1.Service) bool {
+	if service == nil {
+		return false
+	}
+
+	for _, cond := range service.Status.Conditions {
+		if cond.Type == v1.LoadBalancerPortsError {
+			return cond.Status == metav1.ConditionTrue
+		}
+	}
+	return false
 }

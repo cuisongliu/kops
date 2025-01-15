@@ -17,11 +17,13 @@ limitations under the License.
 package awsup
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"k8s.io/klog/v2"
 	"k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/protokube/pkg/etcd"
@@ -41,7 +43,7 @@ func (c *awsCloudImplementation) FindClusterStatus(cluster *kops.Cluster) (*kops
 	return status, nil
 }
 
-// FindEtcdStatus discovers the status of the cluster, by looking for the tagged etcd volumes
+// FindClusterStatus discovers the status of the cluster, by looking for the tagged etcd volumes
 func (c *MockAWSCloud) FindClusterStatus(cluster *kops.Cluster) (*kops.ClusterStatus, error) {
 	etcdStatus, err := findEtcdStatus(c, cluster)
 	if err != nil {
@@ -64,25 +66,27 @@ func findEtcdStatus(c AWSCloud, cluster *kops.Cluster) ([]kops.EtcdClusterStatus
 		request.Filters = append(request.Filters, NewEC2Filter("tag:"+k, v))
 	}
 
-	var volumes []*ec2.Volume
+	var volumes []ec2types.Volume
 	klog.V(2).Infof("Listing EC2 Volumes")
-	err := c.EC2().DescribeVolumesPages(request, func(p *ec2.DescribeVolumesOutput, lastPage bool) bool {
-		volumes = append(volumes, p.Volumes...)
-		return true
-	})
-	if err != nil {
-		return nil, fmt.Errorf("error describing volumes: %v", err)
+	paginator := ec2.NewDescribeVolumesPaginator(c.EC2(), request)
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(context.TODO())
+		if err != nil {
+			return nil, fmt.Errorf("error describing volumes: %v", err)
+		}
+		volumes = append(volumes, page.Volumes...)
 	}
 
+	var err error
 	for _, volume := range volumes {
-		volumeID := aws.StringValue(volume.VolumeId)
+		volumeID := aws.ToString(volume.VolumeId)
 
 		etcdClusterName := ""
 		var etcdClusterSpec *etcd.EtcdClusterSpec
 		master := false
 		for _, tag := range volume.Tags {
-			k := aws.StringValue(tag.Key)
-			v := aws.StringValue(tag.Value)
+			k := aws.ToString(tag.Key)
+			v := aws.ToString(tag.Value)
 
 			if strings.HasPrefix(k, TagNameEtcdClusterPrefix) {
 				etcdClusterName = strings.TrimPrefix(k, TagNameEtcdClusterPrefix)
@@ -109,7 +113,7 @@ func findEtcdStatus(c AWSCloud, cluster *kops.Cluster) ([]kops.EtcdClusterStatus
 		memberName := etcdClusterSpec.NodeName
 		status.Members = append(status.Members, &kops.EtcdMemberStatus{
 			Name:     memberName,
-			VolumeID: aws.StringValue(volume.VolumeId),
+			VolumeID: aws.ToString(volume.VolumeId),
 		})
 	}
 

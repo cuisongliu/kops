@@ -18,8 +18,11 @@ package azuretasks
 
 import (
 	"context"
+	"errors"
+	"fmt"
 
-	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2022-05-01/network"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
+	network "github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/network/armnetwork"
 	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/azure"
@@ -31,8 +34,10 @@ type Subnet struct {
 	Name      *string
 	Lifecycle fi.Lifecycle
 
+	ID                   *string
 	ResourceGroup        *ResourceGroup
 	VirtualNetwork       *VirtualNetwork
+	NatGateway           *NatGateway
 	NetworkSecurityGroup *NetworkSecurityGroup
 
 	CIDR   *string
@@ -46,7 +51,7 @@ var (
 
 // CompareWithID returns the Name of the VM Scale Set.
 func (s *Subnet) CompareWithID() *string {
-	return s.Name
+	return s.ID
 }
 
 // Find discovers the Subnet in the cloud provider.
@@ -54,18 +59,37 @@ func (s *Subnet) Find(c *fi.CloudupContext) (*Subnet, error) {
 	cloud := c.T.Cloud.(azure.AzureCloud)
 	l, err := cloud.Subnet().List(context.TODO(), *s.ResourceGroup.Name, *s.VirtualNetwork.Name)
 	if err != nil {
-		return nil, err
+		var azErr *azcore.ResponseError
+		if errors.As(err, &azErr) {
+			if azErr.ErrorCode == "ResourceNotFound" || azErr.ErrorCode == "ResourceGroupNotFound" {
+				return nil, nil
+			} else {
+				return nil, azErr
+			}
+		} else {
+			return nil, err
+		}
 	}
+
 	var found *network.Subnet
 	for _, v := range l {
 		if *v.Name == *s.Name {
-			found = &v
+			found = v
 			break
 		}
 	}
 	if found == nil {
 		return nil, nil
 	}
+
+	if found.ID == nil {
+		return nil, fmt.Errorf("found subnet without ID")
+	}
+	if found.Properties == nil {
+		return nil, fmt.Errorf("found subnet without properties")
+	}
+
+	s.ID = found.ID
 
 	fs := &Subnet{
 		Name:      s.Name,
@@ -77,11 +101,17 @@ func (s *Subnet) Find(c *fi.CloudupContext) (*Subnet, error) {
 		VirtualNetwork: &VirtualNetwork{
 			Name: s.VirtualNetwork.Name,
 		},
-		CIDR: found.AddressPrefix,
+		ID:   found.ID,
+		CIDR: found.Properties.AddressPrefix,
 	}
-	if found.NetworkSecurityGroup != nil {
+	if found.Properties.NatGateway != nil {
+		fs.NatGateway = &NatGateway{
+			ID: found.Properties.NatGateway.ID,
+		}
+	}
+	if found.Properties.NetworkSecurityGroup != nil {
 		fs.NetworkSecurityGroup = &NetworkSecurityGroup{
-			ID: found.NetworkSecurityGroup.ID,
+			ID: found.Properties.NetworkSecurityGroup.ID,
 		}
 	}
 
@@ -119,20 +149,32 @@ func (*Subnet) RenderAzure(t *azure.AzureAPITarget, a, e, changes *Subnet) error
 	}
 
 	subnet := network.Subnet{
-		SubnetPropertiesFormat: &network.SubnetPropertiesFormat{
+		Properties: &network.SubnetPropertiesFormat{
 			AddressPrefix: e.CIDR,
 		},
 	}
+	if e.NatGateway != nil {
+		subnet.Properties.NatGateway = &network.SubResource{
+			ID: e.NatGateway.ID,
+		}
+	}
 	if e.NetworkSecurityGroup != nil {
-		subnet.NetworkSecurityGroup = &network.SecurityGroup{
+		subnet.Properties.NetworkSecurityGroup = &network.SecurityGroup{
 			ID: e.NetworkSecurityGroup.ID,
 		}
 	}
 
-	return t.Cloud.Subnet().CreateOrUpdate(
+	sn, err := t.Cloud.Subnet().CreateOrUpdate(
 		context.TODO(),
 		*e.ResourceGroup.Name,
 		*e.VirtualNetwork.Name,
 		*e.Name,
 		subnet)
+	if err != nil {
+		return err
+	}
+
+	e.ID = sn.ID
+
+	return nil
 }

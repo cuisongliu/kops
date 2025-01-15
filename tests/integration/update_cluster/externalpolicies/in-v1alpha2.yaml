@@ -33,7 +33,7 @@ spec:
     auditWebhookBatchThrottleQps: 3.14
   kubelet:
     anonymousAuth: false
-  kubernetesVersion: v1.26.0
+  kubernetesVersion: v1.32.0
   masterPublicName: api.externalpolicies.example.com
   networkCIDR: 172.20.0.0/16
   networking:
@@ -44,9 +44,6 @@ spec:
   nonMasqueradeCIDR: 100.64.0.0/10
   sshAccess:
   - 0.0.0.0/0
-  topology:
-    masters: public
-    nodes: public
   externalPolicies:
     node:
       - arn:aws-test:iam::123456789000:policy/test-policy

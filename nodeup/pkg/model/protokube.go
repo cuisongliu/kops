@@ -184,7 +184,7 @@ func (t *ProtokubeBuilder) ProtokubeFlags() (*ProtokubeFlags, error) {
 
 	f.ClusterID = fi.PtrTo(t.NodeupConfig.ClusterName)
 
-	zone := t.Cluster.Spec.DNSZone
+	zone := t.NodeupConfig.DNSZone
 	if zone != "" {
 		if strings.Contains(zone, ".") {
 			// match by name
@@ -200,17 +200,17 @@ func (t *ProtokubeBuilder) ProtokubeFlags() (*ProtokubeFlags, error) {
 	}
 
 	if t.UsesLegacyGossip() {
-		klog.Warningf("using (legacy) gossip DNS", t.NodeupConfig.ClusterName)
+		klog.Warningf("using (legacy) gossip DNS")
 		f.Gossip = fi.PtrTo(true)
-		if t.Cluster.Spec.GossipConfig != nil {
-			f.GossipProtocol = t.Cluster.Spec.GossipConfig.Protocol
-			f.GossipListen = t.Cluster.Spec.GossipConfig.Listen
-			f.GossipSecret = t.Cluster.Spec.GossipConfig.Secret
+		if t.NodeupConfig.GossipConfig != nil {
+			f.GossipProtocol = t.NodeupConfig.GossipConfig.Protocol
+			f.GossipListen = t.NodeupConfig.GossipConfig.Listen
+			f.GossipSecret = t.NodeupConfig.GossipConfig.Secret
 
-			if t.Cluster.Spec.GossipConfig.Secondary != nil {
-				f.GossipProtocolSecondary = t.Cluster.Spec.GossipConfig.Secondary.Protocol
-				f.GossipListenSecondary = t.Cluster.Spec.GossipConfig.Secondary.Listen
-				f.GossipSecretSecondary = t.Cluster.Spec.GossipConfig.Secondary.Secret
+			if t.NodeupConfig.GossipConfig.Secondary != nil {
+				f.GossipProtocolSecondary = t.NodeupConfig.GossipConfig.Secondary.Protocol
+				f.GossipListenSecondary = t.NodeupConfig.GossipConfig.Secondary.Listen
+				f.GossipSecretSecondary = t.NodeupConfig.GossipConfig.Secondary.Secret
 			}
 		}
 
@@ -283,11 +283,6 @@ func (t *ProtokubeBuilder) buildEnvFile() (*nodetasks.File, error) {
 
 	if os.Getenv("OSS_REGION") != "" {
 		envVars["OSS_REGION"] = os.Getenv("OSS_REGION")
-	}
-
-	if os.Getenv("ALIYUN_ACCESS_KEY_ID") != "" {
-		envVars["ALIYUN_ACCESS_KEY_ID"] = os.Getenv("ALIYUN_ACCESS_KEY_ID")
-		envVars["ALIYUN_ACCESS_KEY_SECRET"] = os.Getenv("ALIYUN_ACCESS_KEY_SECRET")
 	}
 
 	if os.Getenv("AZURE_STORAGE_ACCOUNT") != "" {

@@ -40,7 +40,7 @@ spec:
   kubernetesApiAccess:
   - 0.0.0.0/0
   - ::/0
-  kubernetesVersion: v1.24.0
+  kubernetesVersion: v1.30.0
   masterPublicName: api.amis.example.com
   networkCIDR: 172.20.0.0/16
   networking:
@@ -50,11 +50,11 @@ spec:
   - 0.0.0.0/0
   - ::/0
   subnets:
-  - cidr: 172.20.32.0/19
+  - cidr: 172.20.128.0/17
     name: us-test-1a
     type: Private
     zone: us-test-1a
-  - cidr: 172.20.0.0/22
+  - cidr: 172.20.0.0/20
     name: utility-us-test-1a
     type: Utility
     zone: us-test-1a
@@ -63,8 +63,6 @@ spec:
       bastionPublicName: bastion.amis.example.com
     dns:
       type: Public
-    masters: private
-    nodes: private
 
 ---
 
@@ -77,9 +75,6 @@ metadata:
   name: apiserver-us-test-1a
 spec:
   image: ami-image
-  instanceMetadata:
-    httpPutResponseHopLimit: 1
-    httpTokens: required
   machineType: m3.medium
   maxSize: 1
   minSize: 1
@@ -98,9 +93,6 @@ metadata:
   name: bastions
 spec:
   image: ami-image
-  instanceMetadata:
-    httpPutResponseHopLimit: 1
-    httpTokens: required
   machineType: t2.micro
   maxSize: 1
   minSize: 1
@@ -119,8 +111,6 @@ metadata:
   name: control-plane-us-test-1a
 spec:
   image: ami-control-plane
-  instanceMetadata:
-    httpTokens: required
   machineType: m3.medium
   maxSize: 1
   minSize: 1
@@ -139,9 +129,6 @@ metadata:
   name: nodes-us-test-1a
 spec:
   image: ami-worker-image
-  instanceMetadata:
-    httpPutResponseHopLimit: 1
-    httpTokens: required
   machineType: t2.medium
   maxSize: 1
   minSize: 1

@@ -24,6 +24,9 @@ import (
 
 // Overlap checks if two subnets overlap
 func Overlap(l, r *net.IPNet) bool {
+	if l == nil || r == nil {
+		return false
+	}
 	return l.Contains(r.IP) || r.Contains(l.IP)
 }
 
@@ -42,13 +45,33 @@ func BelongsTo(parent *net.IPNet, child *net.IPNet) bool {
 	return childMasked.Equal(parentMasked)
 }
 
+// SplitInto1 splits the parent IPNet into 1 subnet
+func SplitInto1(parent *net.IPNet) ([]*net.IPNet, error) {
+	return SplitInto(0, parent)
+}
+
+// SplitInto2 splits the parent IPNet into 2 subnets
+func SplitInto2(parent *net.IPNet) ([]*net.IPNet, error) {
+	return SplitInto(1, parent)
+}
+
+// SplitInto4 splits the parent IPNet into 4 subnets
+func SplitInto4(parent *net.IPNet) ([]*net.IPNet, error) {
+	return SplitInto(2, parent)
+}
+
 // SplitInto8 splits the parent IPNet into 8 subnets
 func SplitInto8(parent *net.IPNet) ([]*net.IPNet, error) {
+	return SplitInto(3, parent)
+}
+
+// SplitInto splits the parent IPNet into subnets with the specified number of additional bits in the prefix.
+func SplitInto(additionalBits uint, parent *net.IPNet) ([]*net.IPNet, error) {
 	networkLength, _ := parent.Mask.Size()
-	networkLength += 3
+	networkLength += int(additionalBits)
 
 	var subnets []*net.IPNet
-	for i := 0; i < 8; i++ {
+	for i := 0; i < 1<<additionalBits; i++ {
 		ip4 := parent.IP.To4()
 		if ip4 != nil {
 			n := binary.BigEndian.Uint32(ip4)

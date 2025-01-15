@@ -29,25 +29,21 @@ type AWSCloudControllerManagerOptionsBuilder struct {
 	*OptionsContext
 }
 
-var _ loader.OptionsBuilder = &AWSCloudControllerManagerOptionsBuilder{}
+var _ loader.ClusterOptionsBuilder = &AWSCloudControllerManagerOptionsBuilder{}
 
 // BuildOptions generates the configurations used for the AWS cloud controller manager manifest
-func (b *AWSCloudControllerManagerOptionsBuilder) BuildOptions(o interface{}) error {
-	clusterSpec := o.(*kops.ClusterSpec)
+func (b *AWSCloudControllerManagerOptionsBuilder) BuildOptions(cluster *kops.Cluster) error {
+	clusterSpec := &cluster.Spec
 
-	if clusterSpec.GetCloudProvider() != kops.CloudProviderAWS {
+	if cluster.GetCloudProvider() != kops.CloudProviderAWS {
 		return nil
 	}
 
-	if clusterSpec.ExternalCloudControllerManager == nil && b.IsKubernetesGTE("1.24") {
+	if clusterSpec.ExternalCloudControllerManager == nil {
 		clusterSpec.ExternalCloudControllerManager = &kops.CloudControllerManagerConfig{}
 	}
 
 	eccm := clusterSpec.ExternalCloudControllerManager
-
-	if eccm == nil {
-		return nil
-	}
 
 	// No significant downside to always doing a leader election.
 	// Also, having multiple control plane nodes requires leader election.
@@ -55,22 +51,16 @@ func (b *AWSCloudControllerManagerOptionsBuilder) BuildOptions(o interface{}) er
 
 	eccm.ClusterName = b.ClusterName
 
-	eccm.ClusterCIDR = clusterSpec.Networking.NonMasqueradeCIDR
+	eccm.AllocateNodeCIDRs = fi.PtrTo(!clusterSpec.IsKopsControllerIPAM())
 
-	eccm.AllocateNodeCIDRs = fi.PtrTo(true)
-	eccm.ConfigureCloudRoutes = fi.PtrTo(false)
+	if eccm.ClusterCIDR == "" && !clusterSpec.IsKopsControllerIPAM() {
+		eccm.ClusterCIDR = clusterSpec.Networking.PodCIDR
+	}
 
 	// TODO: we want to consolidate this with the logic from KCM
 	networking := &clusterSpec.Networking
 	if networking.Kubenet != nil {
 		eccm.ConfigureCloudRoutes = fi.PtrTo(true)
-	} else if networking.GCP != nil {
-		eccm.ConfigureCloudRoutes = fi.PtrTo(false)
-		eccm.CIDRAllocatorType = fi.PtrTo("CloudAllocator")
-
-		if eccm.ClusterCIDR == "" {
-			eccm.ClusterCIDR = clusterSpec.Networking.PodCIDR
-		}
 	} else if networking.External != nil {
 		eccm.ConfigureCloudRoutes = fi.PtrTo(false)
 	} else if UsesCNI(networking) {
@@ -84,24 +74,20 @@ func (b *AWSCloudControllerManagerOptionsBuilder) BuildOptions(o interface{}) er
 
 	if eccm.Image == "" {
 		// See https://us.gcr.io/k8s-artifacts-prod/provider-aws/cloud-controller-manager
-		switch b.KubernetesVersion.Minor {
-		case 22:
-			eccm.Image = "registry.k8s.io/provider-aws/cloud-controller-manager:v1.22.7"
-		case 23:
-			eccm.Image = "registry.k8s.io/provider-aws/cloud-controller-manager:v1.23.6"
-		case 24:
-			eccm.Image = "registry.k8s.io/provider-aws/cloud-controller-manager:v1.24.3"
-		case 25:
-			eccm.Image = "registry.k8s.io/provider-aws/cloud-controller-manager:v1.25.3"
-		case 26:
-			eccm.Image = "registry.k8s.io/provider-aws/cloud-controller-manager:v1.26.0"
+		switch b.ControlPlaneKubernetesVersion().Minor() {
+		case 27:
+			eccm.Image = "registry.k8s.io/provider-aws/cloud-controller-manager:v1.27.9"
+		case 28:
+			eccm.Image = "registry.k8s.io/provider-aws/cloud-controller-manager:v1.28.9"
+		case 29:
+			eccm.Image = "registry.k8s.io/provider-aws/cloud-controller-manager:v1.29.6"
+		case 30:
+			eccm.Image = "registry.k8s.io/provider-aws/cloud-controller-manager:v1.30.3"
+		case 31:
+			eccm.Image = "registry.k8s.io/provider-aws/cloud-controller-manager:v1.31.0"
 		default:
-			eccm.Image = "registry.k8s.io/provider-aws/cloud-controller-manager:v1.26.0"
+			eccm.Image = "registry.k8s.io/provider-aws/cloud-controller-manager:v1.31.0"
 		}
-	}
-
-	if b.IsKubernetesGTE("1.24") && b.IsKubernetesLT("1.25") {
-		eccm.EnableLeaderMigration = fi.PtrTo(true)
 	}
 
 	return nil

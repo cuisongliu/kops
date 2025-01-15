@@ -2,11 +2,7 @@
 # Sourced from https://github.com/kubernetes/autoscaler/
 ---
 # Source: cluster-autoscaler/templates/pdb.yaml
-{{ if IsKubernetesGTE "1.23" }}
 apiVersion: policy/v1
-{{ else }}
-apiVersion: policy/v1beta1
-{{ end }}
 kind: PodDisruptionBudget
 metadata:
   labels:
@@ -270,8 +266,7 @@ metadata:
     k8s-addon: cluster-autoscaler.addons.k8s.io
     k8s-app: cluster-autoscaler
 data:
-  priorities: |-
-    {{- ClusterAutoscalerPriorities | ToYAML | nindent 4 }}
+  priorities: |- {{ ClusterAutoscalerPriorities | nindent 4 }}
 {{ end }}
 ---
 # Source: cluster-autoscaler/templates/deployment.yaml
@@ -289,7 +284,7 @@ spec:
   selector:
     matchLabels:
       app: cluster-autoscaler
-  {{ if not (and UseServiceAccountExternalPermissions (IsKubernetesGTE "1.24")) }}
+  {{ if not (UseServiceAccountExternalPermissions) }}
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -338,6 +333,7 @@ spec:
           command:
             - ./cluster-autoscaler
             - --balance-similar-node-groups={{ .BalanceSimilarNodeGroups }}
+            - --emit-per-nodegroup-metrics={{ .EmitPerNodegroupMetrics }}
             - --cloud-provider={{ GetCloudProvider }}
             {{ if (eq GetCloudProvider "aws") }}
             - --aws-use-static-instance-list={{ .AWSUseStaticInstanceList }}
@@ -348,6 +344,9 @@ spec:
             {{ end }}
             - --ignore-daemonsets-utilization={{ .IgnoreDaemonSetsUtilization }}
             - --scale-down-utilization-threshold={{ .ScaleDownUtilizationThreshold }}
+            {{ if IsKubernetesGTE "1.27.0" }}
+            - --skip-nodes-with-custom-controller-pods={{ .SkipNodesWithCustomControllerPods }}
+            {{ end }}
             - --skip-nodes-with-local-storage={{ .SkipNodesWithLocalStorage }}
             - --skip-nodes-with-system-pods={{ .SkipNodesWithSystemPods }}
             - --scale-down-delay-after-add={{ .ScaleDownDelayAfterAdd }}

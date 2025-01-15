@@ -17,10 +17,12 @@ limitations under the License.
 package awstasks
 
 import (
+	"context"
 	"fmt"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awsup"
@@ -43,7 +45,8 @@ func (s *RouteTableAssociation) CompareWithID() *string {
 }
 
 func (e *RouteTableAssociation) Find(c *fi.CloudupContext) (*RouteTableAssociation, error) {
-	cloud := c.T.Cloud.(awsup.AWSCloud)
+	ctx := c.Context()
+	cloud := awsup.GetCloud(c)
 
 	routeTableID := e.RouteTable.ID
 	subnetID := e.Subnet.ID
@@ -53,10 +56,10 @@ func (e *RouteTableAssociation) Find(c *fi.CloudupContext) (*RouteTableAssociati
 	}
 
 	request := &ec2.DescribeRouteTablesInput{
-		RouteTableIds: []*string{routeTableID},
+		RouteTableIds: []string{fi.ValueOf(routeTableID)},
 	}
 
-	response, err := cloud.EC2().DescribeRouteTables(request)
+	response, err := cloud.EC2().DescribeRouteTables(ctx, request)
 	if err != nil {
 		return nil, fmt.Errorf("error listing RouteTables: %v", err)
 	}
@@ -69,7 +72,7 @@ func (e *RouteTableAssociation) Find(c *fi.CloudupContext) (*RouteTableAssociati
 	}
 	rt := response.RouteTables[0]
 	for _, rta := range rt.Associations {
-		if aws.StringValue(rta.SubnetId) != *subnetID {
+		if aws.ToString(rta.SubnetId) != *subnetID {
 			continue
 		}
 		actual := &RouteTableAssociation{
@@ -114,7 +117,8 @@ func (s *RouteTableAssociation) CheckChanges(a, e, changes *RouteTableAssociatio
 	return nil
 }
 
-func findExistingRouteTableForSubnet(cloud awsup.AWSCloud, subnet *Subnet) (*ec2.RouteTable, error) {
+func findExistingRouteTableForSubnet(cloud awsup.AWSCloud, subnet *Subnet) (*ec2types.RouteTable, error) {
+	ctx := context.TODO()
 	if subnet == nil {
 		return nil, fmt.Errorf("subnet not set")
 	}
@@ -125,9 +129,9 @@ func findExistingRouteTableForSubnet(cloud awsup.AWSCloud, subnet *Subnet) (*ec2
 	subnetID := fi.ValueOf(subnet.ID)
 
 	request := &ec2.DescribeRouteTablesInput{
-		Filters: []*ec2.Filter{awsup.NewEC2Filter("association.subnet-id", subnetID)},
+		Filters: []ec2types.Filter{awsup.NewEC2Filter("association.subnet-id", subnetID)},
 	}
-	response, err := cloud.EC2().DescribeRouteTables(request)
+	response, err := cloud.EC2().DescribeRouteTables(ctx, request)
 	if err != nil {
 		return nil, fmt.Errorf("error listing RouteTables for subnet %q: %v", subnetID, err)
 	}
@@ -139,10 +143,11 @@ func findExistingRouteTableForSubnet(cloud awsup.AWSCloud, subnet *Subnet) (*ec2
 		return nil, fmt.Errorf("found multiple RouteTables attached to subnet")
 	}
 	rt := response.RouteTables[0]
-	return rt, nil
+	return &rt, nil
 }
 
 func (_ *RouteTableAssociation) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *RouteTableAssociation) error {
+	ctx := context.TODO()
 	if a == nil {
 		// TODO: We might do better just to make the subnet the primary key here
 
@@ -154,7 +159,7 @@ func (_ *RouteTableAssociation) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *
 
 		if existing != nil {
 			for _, a := range existing.Associations {
-				if aws.StringValue(a.SubnetId) != aws.StringValue(e.Subnet.ID) {
+				if aws.ToString(a.SubnetId) != aws.ToString(e.Subnet.ID) {
 					continue
 				}
 				klog.V(2).Infof("Creating RouteTableAssociation")
@@ -162,7 +167,7 @@ func (_ *RouteTableAssociation) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *
 					AssociationId: a.RouteTableAssociationId,
 				}
 
-				_, err := t.Cloud.EC2().DisassociateRouteTable(request)
+				_, err := t.Cloud.EC2().DisassociateRouteTable(ctx, request)
 				if err != nil {
 					return fmt.Errorf("error disassociating existing RouteTable from subnet: %v", err)
 				}
@@ -175,7 +180,7 @@ func (_ *RouteTableAssociation) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *
 			RouteTableId: e.RouteTable.ID,
 		}
 
-		response, err := t.Cloud.EC2().AssociateRouteTable(request)
+		response, err := t.Cloud.EC2().AssociateRouteTable(ctx, request)
 		if err != nil {
 			return fmt.Errorf("error creating RouteTableAssociation: %v", err)
 		}

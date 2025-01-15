@@ -28,10 +28,10 @@ type ClusterAutoscalerOptionsBuilder struct {
 	*OptionsContext
 }
 
-var _ loader.OptionsBuilder = &ClusterAutoscalerOptionsBuilder{}
+var _ loader.ClusterOptionsBuilder = &ClusterAutoscalerOptionsBuilder{}
 
-func (b *ClusterAutoscalerOptionsBuilder) BuildOptions(o interface{}) error {
-	clusterSpec := o.(*kops.ClusterSpec)
+func (b *ClusterAutoscalerOptionsBuilder) BuildOptions(o *kops.Cluster) error {
+	clusterSpec := &o.Spec
 	cas := clusterSpec.ClusterAutoscaler
 	if cas == nil || !fi.ValueOf(cas.Enabled) {
 		return nil
@@ -43,18 +43,16 @@ func (b *ClusterAutoscalerOptionsBuilder) BuildOptions(o interface{}) error {
 		v, err := util.ParseKubernetesVersion(clusterSpec.KubernetesVersion)
 		if err == nil {
 			switch v.Minor {
-			case 22:
-				image = "registry.k8s.io/autoscaling/cluster-autoscaler:v1.22.3"
-			case 23:
-				image = "registry.k8s.io/autoscaling/cluster-autoscaler:v1.23.1"
-			case 24:
-				image = "registry.k8s.io/autoscaling/cluster-autoscaler:v1.24.0"
-			case 25:
-				image = "registry.k8s.io/autoscaling/cluster-autoscaler:v1.25.0"
-			case 26:
-				image = "registry.k8s.io/autoscaling/cluster-autoscaler:v1.26.1"
+			case 27:
+				image = "registry.k8s.io/autoscaling/cluster-autoscaler:v1.27.7"
+			case 28:
+				image = "registry.k8s.io/autoscaling/cluster-autoscaler:v1.28.4"
+			case 29:
+				image = "registry.k8s.io/autoscaling/cluster-autoscaler:v1.29.2"
+			case 30:
+				image = "registry.k8s.io/autoscaling/cluster-autoscaler:v1.30.0"
 			default:
-				image = "registry.k8s.io/autoscaling/cluster-autoscaler:v1.26.1"
+				image = "registry.k8s.io/autoscaling/cluster-autoscaler:v1.30.0"
 			}
 		}
 		cas.Image = fi.PtrTo(image)
@@ -69,6 +67,9 @@ func (b *ClusterAutoscalerOptionsBuilder) BuildOptions(o interface{}) error {
 	if cas.ScaleDownUtilizationThreshold == nil {
 		cas.ScaleDownUtilizationThreshold = fi.PtrTo("0.5")
 	}
+	if cas.SkipNodesWithCustomControllerPods == nil {
+		cas.SkipNodesWithCustomControllerPods = fi.PtrTo(true)
+	}
 	if cas.SkipNodesWithLocalStorage == nil {
 		cas.SkipNodesWithLocalStorage = fi.PtrTo(true)
 	}
@@ -77,6 +78,9 @@ func (b *ClusterAutoscalerOptionsBuilder) BuildOptions(o interface{}) error {
 	}
 	if cas.BalanceSimilarNodeGroups == nil {
 		cas.BalanceSimilarNodeGroups = fi.PtrTo(false)
+	}
+	if cas.EmitPerNodegroupMetrics == nil {
+		cas.EmitPerNodegroupMetrics = fi.PtrTo(false)
 	}
 	if cas.AWSUseStaticInstanceList == nil {
 		cas.AWSUseStaticInstanceList = fi.PtrTo(false)

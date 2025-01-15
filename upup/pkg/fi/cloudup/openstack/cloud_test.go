@@ -25,10 +25,10 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/gophercloud/gophercloud"
-	"github.com/gophercloud/gophercloud/openstack/compute/v2/servers"
-	"github.com/gophercloud/gophercloud/openstack/loadbalancer/v2/loadbalancers"
-	l3floatingips "github.com/gophercloud/gophercloud/openstack/networking/v2/extensions/layer3/floatingips"
+	"github.com/gophercloud/gophercloud/v2"
+	"github.com/gophercloud/gophercloud/v2/openstack/compute/v2/servers"
+	"github.com/gophercloud/gophercloud/v2/openstack/loadbalancer/v2/loadbalancers"
+	l3floatingips "github.com/gophercloud/gophercloud/v2/openstack/networking/v2/extensions/layer3/floatingips"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/upup/pkg/fi"
@@ -45,6 +45,8 @@ func Test_OpenstackCloud_MakeCloud(t *testing.T) {
 		"tenant-name=\"\"",
 		"domain-name=\"\"",
 		"domain-id=\"\"",
+		"application-credential-id=\"\"",
+		"application-credential-secret=\"\"",
 		"",
 		"[BlockStorage]",
 		"bs-version=",
@@ -94,7 +96,7 @@ func Test_OpenstackCloud_MakeCloud(t *testing.T) {
 
 	for _, testCase := range tests {
 		t.Run(testCase.desc, func(t *testing.T) {
-			actualCloudConfig := MakeCloudConfig(testCase.cluster.Spec)
+			actualCloudConfig := MakeCloudConfig(testCase.cluster.Spec.CloudProvider.Openstack)
 
 			if !reflect.DeepEqual(actualCloudConfig, testCase.expectedCloudConfig) {
 				t.Errorf("Ingress status differ: expected\n%+#v\n\tgot:\n%+#v\n", testCase.expectedCloudConfig, actualCloudConfig)

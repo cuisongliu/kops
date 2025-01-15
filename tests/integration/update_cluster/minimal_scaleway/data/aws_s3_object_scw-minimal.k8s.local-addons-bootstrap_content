@@ -6,7 +6,7 @@ spec:
   addons:
   - id: k8s-1.16
     manifest: kops-controller.addons.k8s.io/k8s-1.16.yaml
-    manifestHash: 0c5268b968b120625dfa78b48226bc34b464b99673f7149a7e056227e8041396
+    manifestHash: 3f21ba47ab7f804028c5926ca8915d1f654d9beaaa242853b66191b37f31816e
     name: kops-controller.addons.k8s.io
     needsRollingUpdate: control-plane
     selector:
@@ -14,7 +14,7 @@ spec:
     version: 9.99.0
   - id: k8s-1.12
     manifest: coredns.addons.k8s.io/k8s-1.12.yaml
-    manifestHash: da69fe61803873c37fd4ed55f3ed1d820a9c13b265a66590ff3c074933927556
+    manifestHash: 937be8b865e64561798d83473754678866c56416052ca5847a2c1f7fd89422d2
     name: coredns.addons.k8s.io
     selector:
       k8s-addon: coredns.addons.k8s.io
@@ -34,7 +34,7 @@ spec:
     version: 9.99.0
   - id: k8s-1.12
     manifest: dns-controller.addons.k8s.io/k8s-1.12.yaml
-    manifestHash: 1c1440a063d422b06348926cc56809f1a7bc70d5e0bd2c767d50356db1147518
+    manifestHash: 0a47a15f230d099ffcf6979a76c48ed2c59e724303ed30d4db5195114c390dc7
     name: dns-controller.addons.k8s.io
     selector:
       k8s-addon: dns-controller.addons.k8s.io
@@ -54,8 +54,8 @@ spec:
       k8s-addon: scaleway-csi-driver.addons.k8s.io
     version: 9.99.0
   - id: k8s-1.16
-    manifest: networking.cilium.io/k8s-1.16-v1.12.yaml
-    manifestHash: 6fae0d9dfb1e3c9adeaa10ec433a5cd5b738149e5e50bd9c1522618911a8a8f1
+    manifest: networking.cilium.io/k8s-1.16-v1.15.yaml
+    manifestHash: b8ff520e1fab86258a9119be0ce2e56d2975f8658db16d6fb74ebd5a62daa24d
     name: networking.cilium.io
     needsRollingUpdate: all
     selector:

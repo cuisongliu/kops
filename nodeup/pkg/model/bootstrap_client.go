@@ -24,13 +24,13 @@ import (
 
 	"k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/pkg/bootstrap"
+	"k8s.io/kops/pkg/bootstrap/pkibootstrap"
 	"k8s.io/kops/pkg/kopscontrollerclient"
-	"k8s.io/kops/pkg/resolver"
 	"k8s.io/kops/pkg/wellknownports"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awsup"
+	"k8s.io/kops/upup/pkg/fi/cloudup/azure"
 	"k8s.io/kops/upup/pkg/fi/cloudup/do"
-	"k8s.io/kops/upup/pkg/fi/cloudup/gce/gcediscovery"
 	"k8s.io/kops/upup/pkg/fi/cloudup/gce/tpm/gcetpmsigner"
 	"k8s.io/kops/upup/pkg/fi/cloudup/hetzner"
 	"k8s.io/kops/upup/pkg/fi/cloudup/openstack"
@@ -44,16 +44,15 @@ type BootstrapClientBuilder struct {
 }
 
 func (b BootstrapClientBuilder) Build(c *fi.NodeupModelBuilderContext) error {
-	if b.IsMaster || !b.UseKopsControllerForNodeBootstrap() {
+	if b.IsMaster {
 		return nil
 	}
 
 	var authenticator bootstrap.Authenticator
-	var resolver resolver.Resolver
 
 	switch b.CloudProvider() {
 	case kops.CloudProviderAWS:
-		a, err := awsup.NewAWSAuthenticator(b.Cloud.Region())
+		a, err := awsup.NewAWSAuthenticator(c.Context(), b.Cloud.Region())
 		if err != nil {
 			return err
 		}
@@ -64,11 +63,6 @@ func (b BootstrapClientBuilder) Build(c *fi.NodeupModelBuilderContext) error {
 			return err
 		}
 		authenticator = a
-		r, err := gcediscovery.New()
-		if err != nil {
-			return err
-		}
-		resolver = r
 	case kops.CloudProviderHetzner:
 		a, err := hetzner.NewHetznerAuthenticator()
 		if err != nil {
@@ -93,6 +87,19 @@ func (b BootstrapClientBuilder) Build(c *fi.NodeupModelBuilderContext) error {
 			return err
 		}
 		authenticator = a
+	case kops.CloudProviderAzure:
+		a, err := azure.NewAzureAuthenticator()
+		if err != nil {
+			return err
+		}
+		authenticator = a
+
+	case kops.CloudProviderMetal:
+		a, err := pkibootstrap.NewAuthenticatorFromFile("/etc/kubernetes/kops/pki/machine/private.pem")
+		if err != nil {
+			return err
+		}
+		authenticator = a
 
 	default:
 		return fmt.Errorf("unsupported cloud provider for authenticator %q", b.CloudProvider())
@@ -108,7 +115,6 @@ func (b BootstrapClientBuilder) Build(c *fi.NodeupModelBuilderContext) error {
 		Authenticator: authenticator,
 		CAs:           []byte(b.NodeupConfig.CAs[fi.CertificateIDCA]),
 		BaseURL:       baseURL,
-		Resolver:      resolver,
 	}
 
 	bootstrapClientTask := &nodetasks.BootstrapClientTask{

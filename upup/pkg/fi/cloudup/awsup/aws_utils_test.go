@@ -17,16 +17,18 @@ limitations under the License.
 package awsup
 
 import (
+	"context"
 	"reflect"
 	"testing"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"k8s.io/kops/pkg/apis/kops"
 )
 
 func TestValidateRegion(t *testing.T) {
-	allRegions = []*ec2.Region{
+	ctx := context.Background()
+	allRegions = []ec2types.Region{
 		{
 			RegionName: aws.String("us-test-1"),
 		},
@@ -35,14 +37,14 @@ func TestValidateRegion(t *testing.T) {
 		},
 	}
 	for _, region := range []string{"us-test-1", "us-test-2"} {
-		err := ValidateRegion(region)
+		err := ValidateRegion(ctx, region)
 		if err != nil {
 			t.Fatalf("unexpected error validating region %q: %v", region, err)
 		}
 	}
 
 	for _, region := range []string{"is-lost-1", "no-road-2", "no-real-3"} {
-		err := ValidateRegion(region)
+		err := ValidateRegion(ctx, region)
 		if err == nil {
 			t.Fatalf("expected error validating region %q", region)
 		}
@@ -69,23 +71,23 @@ func TestFindRegion(t *testing.T) {
 func TestEC2TagSpecification(t *testing.T) {
 	cases := []struct {
 		Name          string
-		ResourceType  string
+		ResourceType  ec2types.ResourceType
 		Tags          map[string]string
-		Specification []*ec2.TagSpecification
+		Specification []ec2types.TagSpecification
 	}{
 		{
 			Name: "No tags",
 		},
 		{
 			Name:         "simple tag",
-			ResourceType: "vpc",
+			ResourceType: ec2types.ResourceTypeVpc,
 			Tags: map[string]string{
 				"foo": "bar",
 			},
-			Specification: []*ec2.TagSpecification{
+			Specification: []ec2types.TagSpecification{
 				{
-					ResourceType: aws.String("vpc"),
-					Tags: []*ec2.Tag{
+					ResourceType: ec2types.ResourceTypeVpc,
+					Tags: []ec2types.Tag{
 						{
 							Key:   aws.String("foo"),
 							Value: aws.String("bar"),
@@ -99,7 +101,7 @@ func TestEC2TagSpecification(t *testing.T) {
 		t.Run(tc.Name, func(t *testing.T) {
 			s := EC2TagSpecification(tc.ResourceType, tc.Tags)
 			if !reflect.DeepEqual(s, tc.Specification) {
-				t.Fatalf("tag specifications did not match: %q vs %q", s, tc.Specification)
+				t.Fatalf("tag specifications did not match: %+v vs %+v", s, tc.Specification)
 			}
 		})
 	}

@@ -41,7 +41,7 @@ export CHANNELS
 
 export KOPS_RUN_TOO_NEW_VERSION=1
 
-if [[ -z "${DISCOVERY_STORE-}" ]]; then 
+if [[ -z "${DISCOVERY_STORE-}" ]]; then
     DISCOVERY_STORE="${KOPS_STATE_STORE-}"
 fi
 
@@ -98,7 +98,7 @@ function kops-base-from-marker() {
     if [[ "${1}" =~ ^https: ]]; then
         curl -fs "${1}"
     elif [[ "${1}" == "latest" ]]; then
-        curl -fs "https://storage.googleapis.com/kops-ci/bin/latest-ci-updown-green.txt"
+        curl -fs "https://storage.googleapis.com/k8s-staging-kops/kops/releases/markers/master/latest-ci-updown-green.txt"
     else
         curl -fs "https://storage.googleapis.com/k8s-staging-kops/kops/releases/markers/release-${1}/latest-ci.txt"
     fi
@@ -107,7 +107,7 @@ function kops-base-from-marker() {
 # This function will download the latest kops if in a periodic job, otherwise build from the current tree
 function kops-acquire-latest() {
     if [[ "${JOB_TYPE-}" == "periodic" ]]; then
-        KOPS_BASE_URL="$(curl -fs https://storage.googleapis.com/kops-ci/bin/latest-ci-updown-green.txt)"
+        KOPS_BASE_URL="$(curl -fs https://storage.googleapis.com/k8s-staging-kops/kops/releases/markers/master/latest-ci-updown-green.txt)"
         KOPS=$(kops-download-from-base)
         CHANNELS=$(kops-channels-download-from-base)
     else
@@ -137,11 +137,17 @@ function kops-up() {
         create_args="${create_args} --discovery-store=${DISCOVERY_STORE}/${CLUSTER_NAME}/discovery"
     fi
 
+    # TODO: Switch scripts to use KOPS_CONTROL_PLANE_COUNT
+    if [[ -n "${KOPS_CONTROL_PLANE_SIZE:-}" ]]; then
+      echo "Recognized (deprecated) KOPS_CONTROL_PLANE_SIZE=${KOPS_CONTROL_PLANE_SIZE}, please set KOPS_CONTROL_PLANE_COUNT instead"
+      KOPS_CONTROL_PLANE_COUNT=${KOPS_CONTROL_PLANE_SIZE}
+    fi
+
     ${KUBETEST2} \
         --up \
         --kops-binary-path="${KOPS}" \
         --kubernetes-version="${K8S_VERSION}" \
         --create-args="${create_args}" \
-        --control-plane-size="${KOPS_CONTROL_PLANE_SIZE:-1}" \
+        --control-plane-count="${KOPS_CONTROL_PLANE_COUNT:-1}" \
         --template-path="${KOPS_TEMPLATE-}"
 }

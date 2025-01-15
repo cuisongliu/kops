@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 
 	"github.com/octago/sflags/gen/gpflag"
@@ -29,6 +30,8 @@ import (
 	unversioned "k8s.io/kops/pkg/apis/kops"
 	api "k8s.io/kops/pkg/apis/kops/v1alpha2"
 	"k8s.io/kops/tests/e2e/pkg/kops"
+	"k8s.io/kops/upup/pkg/fi/cloudup/gce"
+	"sigs.k8s.io/kubetest2/pkg/artifacts"
 	"sigs.k8s.io/kubetest2/pkg/testers/ginkgo"
 )
 
@@ -38,14 +41,6 @@ type Tester struct {
 
 	kopsCluster        *api.Cluster
 	kopsInstanceGroups []*api.InstanceGroup
-}
-
-func (t *Tester) pretestSetup() error {
-	err := t.AcquireKubectl()
-	if err != nil {
-		return fmt.Errorf("failed to get kubectl package from published releases: %s", err)
-	}
-	return nil
 }
 
 // parseKubeconfig will get the current kubeconfig, and extract the specified field by jsonpath.
@@ -97,6 +92,10 @@ func hasFlag(args string, flag string) bool {
 	return false
 }
 
+func (t *Tester) getKopsVersion() (string, error) {
+	return kops.GetVersion("kops")
+}
+
 func (t *Tester) getKopsCluster() (*api.Cluster, error) {
 	if t.kopsCluster != nil {
 		return t.kopsCluster, nil
@@ -109,7 +108,7 @@ func (t *Tester) getKopsCluster() (*api.Cluster, error) {
 
 	kopsClusterName := currentContext
 
-	cluster, err := kops.GetCluster("kops", kopsClusterName, nil)
+	cluster, err := kops.GetCluster("kops", kopsClusterName, nil, true)
 	if err != nil {
 		return nil, err
 	}
@@ -179,6 +178,44 @@ func (t *Tester) addZoneFlag() error {
 	t.TestArgs += " --gce-zone=" + zone
 
 	// TODO: Pass the new gce-zones flag for 1.21 with all zones?
+
+	return nil
+}
+
+func (t *Tester) addNodeIG() error {
+	cluster, err := t.getKopsCluster()
+	if err != nil {
+		return err
+	}
+
+	igs, err := kops.GetInstanceGroups("kops", cluster.Name, nil)
+	if err != nil {
+		return err
+	}
+
+	var ig *api.InstanceGroup
+	for _, v := range igs {
+		if unversioned.InstanceGroupRole(v.Spec.Role) == unversioned.InstanceGroupRoleNode {
+			ig = v
+		}
+	}
+	if ig.Spec.MaxSize != nil {
+		numNodes := int(*ig.Spec.MaxSize) // we assume that MinSize = Maxsize, this is true for e2e testing
+		klog.Infof("Setting -num-nodes=%v", numNodes)
+		t.TestArgs += " -num-nodes=" + strconv.Itoa(numNodes)
+	}
+
+	// Skip the rest of this function for non gce clusters
+	if cluster.Spec.LegacyCloudProvider != "gce" {
+		return nil
+	}
+
+	nodeTag := gce.TagForRole(cluster.ObjectMeta.Name, unversioned.InstanceGroupRoleNode)
+	klog.Infof("Setting --node-tag=%s", nodeTag)
+	t.TestArgs += " --node-tag=" + nodeTag
+	igName := gce.NameForInstanceGroupManager(cluster.ObjectMeta.Name, ig.ObjectMeta.Name, ig.Spec.Zones[0])
+	klog.Infof("Setting --node-instance-group=%s", igName)
+	t.TestArgs += " --node-instance-group=" + igName
 
 	return nil
 }
@@ -403,6 +440,7 @@ func (t *Tester) execute() error {
 		return fmt.Errorf("failed to initialize tester: %v", err)
 	}
 
+	t.SetRunDir(artifacts.RunDir())
 	help := fs.BoolP("help", "h", false, "")
 	if err := fs.Parse(os.Args); err != nil {
 		return fmt.Errorf("failed to parse flags: %v", err)
@@ -414,10 +452,6 @@ func (t *Tester) execute() error {
 		return nil
 	}
 
-	if err := t.pretestSetup(); err != nil {
-		return err
-	}
-
 	if err := t.addHostFlag(); err != nil {
 		return err
 	}
@@ -427,6 +461,10 @@ func (t *Tester) execute() error {
 	}
 
 	if err := t.addZoneFlag(); err != nil {
+		return err
+	}
+
+	if err := t.addNodeIG(); err != nil {
 		return err
 	}
 

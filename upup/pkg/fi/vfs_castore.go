@@ -160,7 +160,7 @@ func (c *VFSCAStore) ListKeysets() (map[string]*Keyset, error) {
 	ctx := context.TODO()
 
 	baseDir := c.basedir.Join("private")
-	files, err := baseDir.ReadTree()
+	files, err := baseDir.ReadTree(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("error reading directory %q: %v", baseDir, err)
 	}
@@ -182,7 +182,7 @@ func (c *VFSCAStore) ListKeysets() (map[string]*Keyset, error) {
 		name := tokens[0]
 		loadedKeyset, err := c.loadKeyset(ctx, baseDir.Join(name))
 		if err != nil {
-			klog.Warningf("ignoring keyset %q: %w", name, err)
+			klog.Warningf("ignoring keyset %q: %v", name, err)
 			continue
 		}
 
@@ -341,6 +341,8 @@ func (c *VFSCAStore) FindSSHPublicKeys() ([]*kops.SSHCredential, error) {
 }
 
 func (c *VFSCAStore) DeleteSSHCredential() error {
+	ctx := context.TODO()
+
 	p := c.basedir.Join("ssh", "public", "admin")
 
 	files, err := p.ReadDir()
@@ -351,7 +353,7 @@ func (c *VFSCAStore) DeleteSSHCredential() error {
 		return err
 	}
 	for _, f := range files {
-		if err := f.Remove(); err != nil {
+		if err := f.Remove(ctx); err != nil {
 			return err
 		}
 	}

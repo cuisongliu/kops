@@ -41,9 +41,11 @@ function ensure-install-dir() {
 
 # Retry a download until we get it. args: name, sha, urls
 download-or-bust() {
+  echo "== Downloading $1 with hash $2 from $3 =="
   local -r file="$1"
   local -r hash="$2"
-  local -r urls=( $(split-commas "$3") )
+  local -a urls
+  mapfile -t urls < <(split-commas "$3")
 
   if [[ -f "${file}" ]]; then
     if ! validate-hash "${file}" "${hash}"; then
@@ -56,28 +58,28 @@ download-or-bust() {
   while true; do
     for url in "${urls[@]}"; do
       commands=(
-        "curl -f --compressed -Lo "${file}" --connect-timeout 20 --retry 6 --retry-delay 10"
-        "wget --compression=auto -O "${file}" --connect-timeout=20 --tries=6 --wait=10"
-        "curl -f -Lo "${file}" --connect-timeout 20 --retry 6 --retry-delay 10"
-        "wget -O "${file}" --connect-timeout=20 --tries=6 --wait=10"
+        "curl -f --compressed -Lo ${file} --connect-timeout 20 --retry 6 --retry-delay 10"
+        "wget --compression=auto -O ${file} --connect-timeout=20 --tries=6 --wait=10"
+        "curl -f -Lo ${file} --connect-timeout 20 --retry 6 --retry-delay 10"
+        "wget -O ${file} --connect-timeout=20 --tries=6 --wait=10"
       )
       for cmd in "${commands[@]}"; do
-        echo "Attempting download with: ${cmd} {url}"
+        echo "== Downloading ${url} using ${cmd} =="
         if ! (${cmd} "${url}"); then
-          echo "== Download failed with ${cmd} =="
+          echo "== Failed to download ${url} using ${cmd} =="
           continue
         fi
         if ! validate-hash "${file}" "${hash}"; then
-          echo "== Hash validation of ${url} failed. Retrying. =="
+          echo "== Failed to validate hash for ${url} =="
           rm -f "${file}"
         else
-          echo "== Downloaded ${url} (SHA256 = ${hash}) =="
+          echo "== Downloaded ${url} with hash ${hash} =="
           return 0
         fi
       done
     done
 
-    echo "All downloads failed; sleeping before retrying"
+    echo "== All downloads failed; sleeping before retrying =="
     sleep 60
   done
 }
@@ -87,15 +89,15 @@ validate-hash() {
   local -r expected="$2"
   local actual
 
-  actual=$(sha256sum ${file} | awk '{ print $1 }') || true
+  actual=$(sha256sum "${file}" | awk '{ print $1 }') || true
   if [[ "${actual}" != "${expected}" ]]; then
-    echo "== ${file} corrupted, hash ${actual} doesn't match expected ${expected} =="
+    echo "== File ${file} is corrupted; hash ${actual} doesn't match expected ${expected} =="
     return 1
   fi
 }
 
 function split-commas() {
-  echo $1 | tr "," "\n"
+  echo "$1" | tr "," "\n"
 }
 
 function download-release() {
@@ -119,21 +121,19 @@ function download-release() {
 
   chmod +x nodeup
 
-  echo "Running nodeup"
+  echo "== Running nodeup =="
   # We can't run in the foreground because of https://github.com/docker/docker/issues/23793
   ( cd ${INSTALL_DIR}/bin; ./nodeup --install-systemd-unit --conf=${INSTALL_DIR}/conf/kube_env.yaml --v=8  )
 }
 
 ####################################################################################
 
-/bin/systemd-machine-id-setup || echo "failed to set up ensure machine-id configured"
+/bin/systemd-machine-id-setup || echo "== Failed to initialize the machine ID; ensure machine-id configured =="
 
 echo "== nodeup node config starting =="
 ensure-install-dir
 
-echo "H4sIAAAAAAAA/+xWXW/bNhe+968g+qJ3tWQ1ad9V6I1nd43XOvPsZNktTR7LnClSOySVeL9+OKRkO1/DhmLFLooAsXS+eD6e81BC2yAn1mxUVQ4Yq7nhFay8RV7BRHPnwJXMY4ABGIH7xitrOnNmgtYD8EJOdHAe0FEEaMH4+NRHw/TC2JqLXWiW4MFQmCnfu5K9G0VtC+iUNSU7y95k72ImynxplF1Yw3gxWwG2yZ9rbW8XqFqloQLZVcYYN9bsaxvcOPhtyTZcuyhu1DhIBUZArGjIKCIa8OAy14pMwoYH7ZNpOmZig/ElK0gW/Nai+oNTnnMroWRjfcv3bkxpDBhbKyPHUiI4V7JRFv8GjMWZLNC2SgKWDO48oOGammv4WsNY1spRnQsdKmW61C55Da7hAj6rDYi90BDFn1Wt/JKbCjC+U5ZKwFgISjSKpqmK06mfyq+sBow1rEBYI5NyHjz3ylSHZG5gvbV2F5W/cK3k8+pLK2EJzqMSFDbKluBsQAE/B+s5leqFTB3t6tt637gyz4vX/4+dKsrz0ai4b/lTC4hK9tPKExj/96Tr6wFjG+A+IHzkHjrITlazuapSueObVcleEEReRN3MXCFAavr4ZnVtECpFwD+xUjWvoGRJg/ts953LlM0JN0PeKJeg2BbZ67dx1qTQ4BcIG0CEHg5X+6YvYmbS+GeL+HphnTe8TsP9cHei07b6DC3oklFpCL8HcH4LXAJGwIGMEElReVUhVNxbfGj74c4jv4iPlJW6611+HS6hth6G0WL40O8j2tAkv4cOUfXQ/tpR6jU87ULaAWMOREBYWPQlOz8/i5JT/M6cC9T/fsK8UZnqGpYJWzfUzAzueN1oIMGjCD/efFpdL2f/IERuGzBK5m2R/3a7c8eIHQ3OFnHdSlaMRtnbc0JcXsTU04J9z8UOjCwjcM8iSU2s8Wi1BpwfyY7ISnAPtC2T2XTpjnTlPRfbKdD/Je2kUBpWeyMWgMrKkhX1yP0lkYiUKoVNeb57m/IsjkpCS8meaaKId0BAmNAZSxtogw7E+XX3Shy6N+zviuOC6QRqDZFqUjInskNP729PcHCfKCcIki4crvsx0NErsQUZdJrX1y3aHY7+slo7AiqfvwVFRes7RUXMxdzeeajlQb601pcs/ztom16uTpaiGJ1obLzu+9eMgH+876awDlWlTHXBjdTEFX0h0KYb5IKjLFkNtcV9xluuNPm9L0ajuXplrISNuyd+2QsV/bofEOD9m5evYr8fmfbSe7b/yrxpFmmxFpwmkLccc63WeTek/GjwCLGNlTOzQU5UwpUBnD0NnoYHB+VZ/MZqrJxzozbgfHcgeJEfv3HyutMSmTRoPQj/iXS6+zQ4TqKvptsIat5B57bBS3trPiIX0FPUWWSoJ1QTVF4JrhdWOoKLG9ScIn/6BtRvQP1vA/VPAAAA//8BAAD///QUjT9NDQAA" | base64 -d | gzip -d > conf/cluster_spec.yaml
-
-echo "H4sIAAAAAAAA/2zOy07DMBCF4b2fwi+QGlBpkSU2tSouoWkEiMtysCcQsD2WxyY8PkJZRWL/fzrHeKquz/Q9OsxawsTC+MoFcwcBtbQUUkbmFf5ASB5XloIwFIfxfQeMWgYMA2ul7KwWofpX30QuEC1eZappXgnwZ5vKTUEuzSkso3vyqKWhWDL53kNE0ZHDmuYj18AfWsKtfWb7eH7yNb08HQ+vb+N2bTbr3dRuHrbd51m7P7RO+Yvj3f5S/AIAAP//AQAA//9FlrBE9wAAAA==" | base64 -d | gzip -d > conf/kube_env.yaml
+echo "H4sIAAAAAAAA/2zOsWrDMBDG8d1PoT04xlNB0CWirQuJiVM6NNtVuqQOOp2qkxr17UvxFMj+//F9xnNx+8Q/s8OkFVylMb5IxjQCoVaWKSYUWWMFih7XlqkxHE7zeQOCWhHSSXTX2UXdhN1d/RokQ7D4krjEZYXg37ZF2oyS2x5uowN71MpwyIn93kPAZmSHJS5HBpAvreh99Tb/ypmP/cPwdHG73Xaqn9dt3Xz3F/yY0vEwDeOqPFd+bP4AAAD//wEAAP//Wk+EjPcAAAA=" | base64 -d | gzip -d > conf/kube_env.yaml
 
 download-release
 echo "== nodeup node config done =="

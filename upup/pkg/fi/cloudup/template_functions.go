@@ -28,6 +28,7 @@ When defining a new function:
 package cloudup
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -40,7 +41,8 @@ import (
 	"text/template"
 
 	"github.com/Masterminds/sprig/v3"
-	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -50,8 +52,7 @@ import (
 	"k8s.io/kops/pkg/apis/kops"
 	apiModel "k8s.io/kops/pkg/apis/kops/model"
 	"k8s.io/kops/pkg/apis/kops/util"
-	"k8s.io/kops/pkg/apis/nodeup"
-	"k8s.io/kops/pkg/dns"
+	"k8s.io/kops/pkg/bootstrap/pkibootstrap"
 	"k8s.io/kops/pkg/featureflag"
 	"k8s.io/kops/pkg/flagbuilder"
 	"k8s.io/kops/pkg/kubemanifest"
@@ -62,6 +63,7 @@ import (
 	"k8s.io/kops/pkg/wellknownports"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awsup"
+	"k8s.io/kops/upup/pkg/fi/cloudup/azure"
 	"k8s.io/kops/upup/pkg/fi/cloudup/do"
 	"k8s.io/kops/upup/pkg/fi/cloudup/gce"
 	gcetpm "k8s.io/kops/upup/pkg/fi/cloudup/gce/tpm"
@@ -69,6 +71,7 @@ import (
 	"k8s.io/kops/upup/pkg/fi/cloudup/openstack"
 	"k8s.io/kops/upup/pkg/fi/cloudup/scaleway"
 	"k8s.io/kops/util/pkg/env"
+	"k8s.io/kops/util/pkg/maps"
 	"sigs.k8s.io/yaml"
 )
 
@@ -90,7 +93,6 @@ func (tf *TemplateFunctions) AddTo(dest template.FuncMap, secretStore fi.SecretS
 	dest["KubeObjectToApplyYAML"] = kubemanifest.KubeObjectToApplyYAML
 
 	dest["SharedVPC"] = tf.SharedVPC
-	dest["UseBootstrapTokens"] = tf.UseBootstrapTokens
 	// Remember that we may be on a different arch from the target.  Hard-code for now.
 	dest["replace"] = func(s, find, replace string) string {
 		return strings.Replace(s, find, replace, -1)
@@ -114,7 +116,7 @@ func (tf *TemplateFunctions) AddTo(dest template.FuncMap, secretStore fi.SecretS
 		return defaultValue
 	}
 
-	dest["GetCloudProvider"] = cluster.Spec.GetCloudProvider
+	dest["GetCloudProvider"] = cluster.GetCloudProvider
 	dest["GetInstanceGroup"] = tf.GetInstanceGroup
 	dest["GetNodeInstanceGroups"] = tf.GetNodeInstanceGroups
 	dest["GetClusterAutoscalerNodeGroups"] = tf.GetClusterAutoscalerNodeGroups
@@ -134,11 +136,14 @@ func (tf *TemplateFunctions) AddTo(dest template.FuncMap, secretStore fi.SecretS
 		}
 		return false
 	}
-	dest["GossipName"] = func() bool {
-		if dns.IsGossipClusterName(cluster.Name) {
-			return true
+	dest["PublishesDNSRecords"] = func() bool {
+		return cluster.PublishesDNSRecords()
+	}
+	dest["ClusterDNSDomain"] = func() string {
+		if cluster.UsesLegacyGossip() {
+			return "k8s.local"
 		}
-		return false
+		return cluster.Name
 	}
 
 	dest["NodeLocalDNSClusterIP"] = func() string {
@@ -169,10 +174,7 @@ func (tf *TemplateFunctions) AddTo(dest template.FuncMap, secretStore fi.SecretS
 	dest["DNSControllerEnvs"] = tf.DNSControllerEnvs
 	dest["ProxyEnv"] = tf.ProxyEnv
 
-	dest["KopsSystemEnv"] = tf.KopsSystemEnv
-	dest["UseKopsControllerForNodeBootstrap"] = func() bool {
-		return tf.UseKopsControllerForNodeBootstrap()
-	}
+	dest["KopsControllerEnv"] = tf.KopsControllerEnv
 
 	dest["DO_TOKEN"] = func() string {
 		return os.Getenv("DIGITALOCEAN_ACCESS_TOKEN")
@@ -189,7 +191,7 @@ func (tf *TemplateFunctions) AddTo(dest template.FuncMap, secretStore fi.SecretS
 	}
 
 	dest["OPENSTACK_CONF"] = func() string {
-		lines := openstack.MakeCloudConfig(cluster.Spec)
+		lines := openstack.MakeCloudConfig(cluster.Spec.CloudProvider.Openstack)
 		return "[global]\n" + strings.Join(lines, "\n") + "\n"
 	}
 
@@ -253,6 +255,8 @@ func (tf *TemplateFunctions) AddTo(dest template.FuncMap, secretStore fi.SecretS
 				"DISABLE_METRICS":                       "false",
 				"ENABLE_POD_ENI":                        "false",
 				"ENABLE_PREFIX_DELEGATION":              "false",
+				"ENABLE_SUBNET_DISCOVERY":               "true",
+				"NETWORK_POLICY_ENFORCING_MODE":         "standard",
 				"WARM_ENI_TARGET":                       "1",
 				"WARM_PREFIX_TARGET":                    "1",
 				"DISABLE_NETWORK_RESOURCE_PROVISIONING": "false",
@@ -285,7 +289,7 @@ func (tf *TemplateFunctions) AddTo(dest template.FuncMap, secretStore fi.SecretS
 			if c.IPIPMode != "" {
 				return c.IPIPMode
 			}
-			if cluster.Spec.GetCloudProvider() == kops.CloudProviderOpenstack {
+			if cluster.GetCloudProvider() == kops.CloudProviderOpenstack {
 				return "Always"
 			}
 			return "CrossSubnet"
@@ -298,6 +302,15 @@ func (tf *TemplateFunctions) AddTo(dest template.FuncMap, secretStore fi.SecretS
 				return c.VXLANMode
 			}
 			return "CrossSubnet"
+		}
+		dest["CalicoIPv6PoolVXLANMode"] = func() string {
+			if c.EncapsulationMode != "vxlan" {
+				return "Never"
+			}
+			if c.VXLANMode != "" {
+				return c.VXLANMode
+			}
+			return "Never"
 		}
 	}
 
@@ -340,19 +353,28 @@ func (tf *TemplateFunctions) AddTo(dest template.FuncMap, secretStore fi.SecretS
 	dest["UseServiceAccountExternalPermissions"] = tf.UseServiceAccountExternalPermissions
 
 	if cluster.Spec.ClusterAutoscaler != nil {
-		dest["ClusterAutoscalerPriorities"] = func() map[string][]string {
+		dest["ClusterAutoscalerPriorities"] = func() string {
 			priorities := make(map[string][]string)
 			if cluster.Spec.ClusterAutoscaler.CustomPriorityExpanderConfig != nil {
 				priorities = cluster.Spec.ClusterAutoscaler.CustomPriorityExpanderConfig
 			} else {
-				for name, spec := range tf.GetNodeInstanceGroups() {
-
+				igNames := maps.SortedKeys(tf.GetNodeInstanceGroups())
+				for _, name := range igNames {
+					spec := tf.GetNodeInstanceGroups()[name]
 					if spec.Autoscale != nil {
-						priorities[fmt.Sprint(spec.AutoscalePriority)] = append(priorities[fmt.Sprint(spec.AutoscalePriority)], fmt.Sprintf("%s.%s", name, tf.ClusterName()))
+						priorities[strconv.Itoa(int(spec.AutoscalePriority))] = append(priorities[strconv.Itoa(int(spec.AutoscalePriority))], fmt.Sprintf("%s.%s", name, tf.ClusterName()))
 					}
 				}
 			}
-			return priorities
+
+			var prioritiesStr []string
+			for _, prio := range maps.SortedKeys(priorities) {
+				prioritiesStr = append(prioritiesStr, fmt.Sprintf("%s:", prio))
+				for _, value := range priorities[prio] {
+					prioritiesStr = append(prioritiesStr, fmt.Sprintf("- %s", value))
+				}
+			}
+			return strings.Join(prioritiesStr, "\n")
 		}
 		dest["CreateClusterAutoscalerPriorityConfig"] = func() bool {
 			return fi.ValueOf(cluster.Spec.ClusterAutoscaler.CreatePriorityExpenderConfig)
@@ -376,10 +398,6 @@ func (tf *TemplateFunctions) AddTo(dest template.FuncMap, secretStore fi.SecretS
 	dest["ArchitectureOfAMI"] = tf.architectureOfAMI
 
 	dest["ParseTaint"] = util.ParseTaint
-
-	dest["UsesInstanceIDForNodeName"] = func() bool {
-		return nodeup.UsesInstanceIDForNodeName(tf.Cluster)
-	}
 
 	dest["KarpenterEnabled"] = func() bool {
 		return cluster.Spec.Karpenter != nil && cluster.Spec.Karpenter.Enabled
@@ -445,14 +463,27 @@ func (tf *TemplateFunctions) GetInstanceGroup(name string) (*kops.InstanceGroup,
 	return ig, nil
 }
 
-// ControlPlaneControllerReplicas returns the amount of replicas for a controllers that should run in the cluster
-// If the cluster has a highly available control plane, this function will return 2, if it has 1 control plane node, it will return 1
-// deployOnWorkersIfExternalPermissons should be true if a controller runs on worker nodes when external IAM permissions is enabled for the cluster.
-// In this case it is assumed that it can run 2 replicas.
+// ControlPlaneControllerReplicas returns the amount of replicas for a controllers that should run in the cluster.
+// deployOnWorkersIfExternalPermissons indicates if a controller can run on worker nodes when external IAM permissions is enabled for the cluster.
 func (tf *TemplateFunctions) ControlPlaneControllerReplicas(deployOnWorkersIfExternalPermissions bool) int {
+	// Check if we are running on worker nodes
 	if deployOnWorkersIfExternalPermissions && tf.Cluster.Spec.IAM != nil && fi.ValueOf(tf.Cluster.Spec.IAM.UseServiceAccountExternalPermissions) {
-		return 2
+		// If we only have one control plane node, we still only run one instance,
+		// because most controllers still need a lease from the control plane,
+		// so we can't get higher availability by running multiple instances
+		// (though we would get faster time-to-recovery)
+		//
+		// This also supports running with one control-plane node and one worker node,
+		// and we may have spreading constraints that prevent both pods running on
+		// the same worker node.  Issue #15852
+		if tf.HasHighlyAvailableControlPlane() {
+			return 2
+		}
+		return 1
 	}
+
+	// If the cluster has a highly available control plane, we should run two instances of the controller,
+	// otherwise we run one 1.
 	if tf.HasHighlyAvailableControlPlane() {
 		return 2
 	}
@@ -462,10 +493,8 @@ func (tf *TemplateFunctions) ControlPlaneControllerReplicas(deployOnWorkersIfExt
 func (tf *TemplateFunctions) APIServerNodeRole() string {
 	if featureflag.APIServerNodes.Enabled() {
 		return "node-role.kubernetes.io/api-server"
-	} else if tf.Cluster.IsKubernetesGTE("1.24") {
-		return "node-role.kubernetes.io/control-plane"
 	}
-	return "node-role.kubernetes.io/master"
+	return "node-role.kubernetes.io/control-plane"
 }
 
 // HasHighlyAvailableControlPlane returns true of the cluster has more than one control plane node. False otherwise.
@@ -502,8 +531,8 @@ func (tf *TemplateFunctions) CloudControllerConfigArgv() ([]string, error) {
 
 	// take the cloud provider value from clusterSpec if unset
 	if cluster.Spec.ExternalCloudControllerManager.CloudProvider == "" {
-		if cluster.Spec.GetCloudProvider() != "" {
-			argv = append(argv, fmt.Sprintf("--cloud-provider=%s", cluster.Spec.GetCloudProvider()))
+		if cluster.GetCloudProvider() != "" {
+			argv = append(argv, fmt.Sprintf("--cloud-provider=%s", cluster.GetCloudProvider()))
 		} else {
 			return nil, fmt.Errorf("Cloud Provider is not set")
 		}
@@ -514,7 +543,7 @@ func (tf *TemplateFunctions) CloudControllerConfigArgv() ([]string, error) {
 		argv = append(argv, fmt.Sprintf("--use-service-account-credentials=%t", true))
 	}
 
-	if cluster.Spec.GetCloudProvider() != kops.CloudProviderHetzner {
+	if cluster.GetCloudProvider() != kops.CloudProviderHetzner {
 		argv = append(argv, "--cloud-config=/etc/kubernetes/cloud.config")
 	}
 
@@ -596,7 +625,7 @@ func (tf *TemplateFunctions) DNSControllerArgv() ([]string, error) {
 			argv = append(argv, fmt.Sprintf("--gossip-seed-secondary=127.0.0.1:%d", wellknownports.ProtokubeGossipMemberlist))
 		}
 	} else {
-		switch cluster.Spec.GetCloudProvider() {
+		switch cluster.GetCloudProvider() {
 		case kops.CloudProviderAWS:
 			if strings.HasPrefix(os.Getenv("AWS_REGION"), "cn-") {
 				argv = append(argv, "--dns=gossip")
@@ -613,7 +642,7 @@ func (tf *TemplateFunctions) DNSControllerArgv() ([]string, error) {
 			argv = append(argv, "--dns=scaleway")
 
 		default:
-			return nil, fmt.Errorf("unhandled cloudprovider %q", cluster.Spec.GetCloudProvider())
+			return nil, fmt.Errorf("unhandled cloudprovider %q", cluster.GetCloudProvider())
 		}
 	}
 
@@ -648,16 +677,16 @@ func (tf *TemplateFunctions) KopsControllerConfig() (string, error) {
 
 	config := &kopscontrollerconfig.Options{
 		ClusterName: cluster.Name,
-		Cloud:       string(cluster.Spec.GetCloudProvider()),
-		ConfigBase:  cluster.Spec.ConfigBase,
-		SecretStore: cluster.Spec.SecretStore,
+		Cloud:       string(cluster.GetCloudProvider()),
+		ConfigBase:  cluster.Spec.ConfigStore.Base,
+		SecretStore: cluster.Spec.ConfigStore.Secrets,
 	}
 
 	if featureflag.CacheNodeidentityInfo.Enabled() {
 		config.CacheNodeidentityInfo = true
 	}
 
-	if tf.UseKopsControllerForNodeBootstrap() {
+	{
 		certNames := []string{"kubelet", "kubelet-server"}
 		signingCAs := []string{fi.CertificateIDCA}
 		if apiModel.UseCiliumEtcd(cluster) {
@@ -681,10 +710,14 @@ func (tf *TemplateFunctions) KopsControllerConfig() (string, error) {
 			CertNames:             certNames,
 		}
 
-		switch cluster.Spec.GetCloudProvider() {
+		if featureflag.Metal.Enabled() {
+			config.Server.PKI = &pkibootstrap.Options{}
+		}
+
+		switch cluster.GetCloudProvider() {
 		case kops.CloudProviderAWS:
 			nodesRoles := sets.String{}
-			for _, ig := range tf.InstanceGroups {
+			for _, ig := range tf.AllInstanceGroups {
 				if ig.Spec.Role == kops.InstanceGroupRoleNode || ig.Spec.Role == kops.InstanceGroupRoleAPIServer {
 					profile, err := tf.LinkToIAMInstanceProfile(ig)
 					if err != nil {
@@ -713,10 +746,6 @@ func (tf *TemplateFunctions) KopsControllerConfig() (string, error) {
 				Region:     tf.Region,
 			}
 
-			if cluster.Spec.ExternalCloudControllerManager != nil {
-				config.Server.UseInstanceIDForNodeName = true
-			}
-
 		case kops.CloudProviderGCE:
 			c := tf.cloud.(gce.GCECloud)
 
@@ -739,8 +768,17 @@ func (tf *TemplateFunctions) KopsControllerConfig() (string, error) {
 		case kops.CloudProviderScaleway:
 			config.Server.Provider.Scaleway = &scaleway.ScalewayVerifierOptions{}
 
+		case kops.CloudProviderAzure:
+			config.Server.Provider.Azure = &azure.AzureVerifierOptions{
+				ClusterName: tf.ClusterName(),
+			}
+
+		case kops.CloudProviderMetal:
+			// Use crypto public/private keys for Metal
+			config.Server.PKI = &pkibootstrap.Options{}
+
 		default:
-			return "", fmt.Errorf("unsupported cloud provider %s", cluster.Spec.GetCloudProvider())
+			return "", fmt.Errorf("unsupported cloud provider %s", cluster.GetCloudProvider())
 		}
 	}
 
@@ -781,17 +819,19 @@ func (tf *TemplateFunctions) ExternalDNSArgv() ([]string, error) {
 
 	var argv []string
 
-	cloudProvider := cluster.Spec.GetCloudProvider()
+	cloudProvider := cluster.GetCloudProvider()
 
 	switch cloudProvider {
 	case kops.CloudProviderAWS:
 		argv = append(argv, "--provider=aws")
+	case kops.CloudProviderOpenstack:
+		argv = append(argv, "--provider=designate")
 	case kops.CloudProviderGCE:
 		project := cluster.Spec.CloudProvider.GCE.Project
 		argv = append(argv, "--provider=google")
 		argv = append(argv, "--google-project="+project)
 	default:
-		return nil, fmt.Errorf("unhandled cloudprovider %q", cluster.Spec.GetCloudProvider())
+		return nil, fmt.Errorf("unhandled cloudprovider %q", cluster.GetCloudProvider())
 	}
 
 	argv = append(argv, "--events")
@@ -812,7 +852,7 @@ func (tf *TemplateFunctions) ExternalDNSArgv() ([]string, error) {
 }
 
 func (tf *TemplateFunctions) DNSControllerEnvs() map[string]string {
-	if tf.Cluster.Spec.GetCloudProvider() != kops.CloudProviderOpenstack {
+	if tf.Cluster.GetCloudProvider() != kops.CloudProviderOpenstack {
 		return nil
 	}
 	envs := env.BuildSystemComponentEnvVars(&tf.Cluster.Spec)
@@ -852,14 +892,20 @@ func (tf *TemplateFunctions) ProxyEnv() map[string]string {
 	return envs
 }
 
-// KopsSystemEnv builds the env vars for a system component
-func (tf *TemplateFunctions) KopsSystemEnv() []corev1.EnvVar {
+// KopsControllerEnv builds the env vars for the kops-controller component
+func (tf *TemplateFunctions) KopsControllerEnv() []corev1.EnvVar {
 	envMap := env.BuildSystemComponentEnvVars(&tf.Cluster.Spec)
+
+	// kops-controller needs the KOPS_RUN_TOO_NEW_VERSION env var to run newer versions of kubernetes
+	// (if building bootstrap configuration on the fly)
+	if v := os.Getenv("KOPS_RUN_TOO_NEW_VERSION"); v != "" {
+		envMap["KOPS_RUN_TOO_NEW_VERSION"] = v
+	}
 
 	return envMap.ToEnvVars()
 }
 
-// OpenStackCCM returns OpenStack external cloud controller manager current image
+// OpenStackCCMTag returns OpenStack external cloud controller manager current image
 // with tag specified to k8s version
 func (tf *TemplateFunctions) OpenStackCCMTag() string {
 	var tag string
@@ -867,13 +913,7 @@ func (tf *TemplateFunctions) OpenStackCCMTag() string {
 	if err != nil {
 		tag = "latest"
 	} else {
-		if parsed.Minor == 24 {
-			tag = "v1.24.6"
-		} else if parsed.Minor == 25 {
-			tag = "v1.25.5"
-		} else if parsed.Minor == 26 {
-			tag = "v1.26.2"
-		} else if parsed.Minor == 27 {
+		if parsed.Minor == 27 {
 			tag = "v1.27.1"
 		} else {
 			// otherwise we use always .0 ccm image, if needed that can be overrided using clusterspec
@@ -883,7 +923,7 @@ func (tf *TemplateFunctions) OpenStackCCMTag() string {
 	return tag
 }
 
-// OpenStackCSI returns OpenStack csi current image
+// OpenStackCSITag returns OpenStack csi current image
 // with tag specified to k8s version
 func (tf *TemplateFunctions) OpenStackCSITag() string {
 	var tag string
@@ -891,13 +931,7 @@ func (tf *TemplateFunctions) OpenStackCSITag() string {
 	if err != nil {
 		tag = "latest"
 	} else {
-		if parsed.Minor == 24 {
-			tag = "v1.24.6"
-		} else if parsed.Minor == 25 {
-			tag = "v1.25.5"
-		} else if parsed.Minor == 26 {
-			tag = "v1.26.2"
-		} else if parsed.Minor == 27 {
+		if parsed.Minor == 27 {
 			tag = "v1.27.1"
 		} else {
 			// otherwise we use always .0 csi image, if needed that can be overrided using cloud config spec
@@ -925,7 +959,7 @@ type ClusterAutoscalerNodeGroup struct {
 	Other     string
 }
 
-// GetClusterAutoscalerGroups returns a map containing ClusterAutoscaler info for each instance group of type Node.
+// GetClusterAutoscalerNodeGroups returns a map containing ClusterAutoscaler info for each instance group of type Node.
 func (tf *TemplateFunctions) GetClusterAutoscalerNodeGroups() map[string]ClusterAutoscalerNodeGroup {
 	cluster := tf.Cluster
 	groups := make(map[string]ClusterAutoscalerNodeGroup)
@@ -936,10 +970,10 @@ func (tf *TemplateFunctions) GetClusterAutoscalerNodeGroups() map[string]Cluster
 				MinSize:   fi.ValueOf(ig.Spec.MinSize),
 				MaxSize:   fi.ValueOf(ig.Spec.MaxSize),
 			}
-			if cluster.Spec.GetCloudProvider() == kops.CloudProviderGCE {
+			if cluster.GetCloudProvider() == kops.CloudProviderGCE {
 				cloud := tf.cloud.(gce.GCECloud)
 				format := "https://www.googleapis.com/compute/v1/projects/%s/zones/%s/instanceGroups/%s"
-				group.Other = fmt.Sprintf(format, cloud.Project(), ig.Spec.Zones[0], gce.NameForInstanceGroupManager(cluster, ig, ig.Spec.Zones[0]))
+				group.Other = fmt.Sprintf(format, cloud.Project(), ig.Spec.Zones[0], gce.NameForInstanceGroupManager(cluster.ObjectMeta.Name, ig.ObjectMeta.Name, ig.Spec.Zones[0]))
 			} else {
 				group.Other = ig.Name + "." + cluster.Name
 			}
@@ -951,8 +985,8 @@ func (tf *TemplateFunctions) GetClusterAutoscalerNodeGroups() map[string]Cluster
 
 func (tf *TemplateFunctions) architectureOfAMI(amiID string) string {
 	image, _ := tf.cloud.(awsup.AWSCloud).ResolveImage(amiID)
-	switch *image.Architecture {
-	case "x86_64":
+	switch image.Architecture {
+	case ec2types.ArchitectureValuesX8664:
 		return "amd64"
 	}
 	return "arm64"
@@ -984,6 +1018,7 @@ func (tf *TemplateFunctions) podIdentityWebhookConfigMapData() (string, error) {
 }
 
 func karpenterInstanceTypes(cloud awsup.AWSCloud, ig kops.InstanceGroupSpec) ([]string, error) {
+	ctx := context.TODO()
 	var mixedInstancesPolicy *kops.MixedInstancesPolicySpec
 
 	if ig.MachineType == "" && ig.MixedInstancesPolicy == nil {
@@ -1022,55 +1057,55 @@ func karpenterInstanceTypes(cloud awsup.AWSCloud, ig kops.InstanceGroupSpec) ([]
 			arch := ami.Architecture
 			hv := ami.VirtualizationType
 
-			ir := &ec2.InstanceRequirementsRequest{
-				VCpuCount:            &ec2.VCpuCountRangeRequest{},
-				MemoryMiB:            &ec2.MemoryMiBRequest{},
-				BurstablePerformance: fi.PtrTo("included"),
-				InstanceGenerations:  []*string{fi.PtrTo("current")},
+			ir := &ec2types.InstanceRequirementsRequest{
+				VCpuCount:            &ec2types.VCpuCountRangeRequest{},
+				MemoryMiB:            &ec2types.MemoryMiBRequest{},
+				BurstablePerformance: ec2types.BurstablePerformanceIncluded,
+				InstanceGenerations:  []ec2types.InstanceGeneration{ec2types.InstanceGenerationCurrent},
 			}
 			cpu := instanceRequirements.CPU
 			if cpu != nil {
 				if cpu.Max != nil {
 					cpuMax, _ := instanceRequirements.CPU.Max.AsInt64()
-					ir.VCpuCount.Max = &cpuMax
+					ir.VCpuCount.Max = fi.PtrTo(int32(cpuMax))
 				}
 				cpu := instanceRequirements.CPU
 				if cpu != nil {
 					if cpu.Max != nil {
 						cpuMax, _ := instanceRequirements.CPU.Max.AsInt64()
-						ir.VCpuCount.Max = &cpuMax
+						ir.VCpuCount.Max = fi.PtrTo(int32(cpuMax))
 					}
 					if cpu.Min != nil {
 						cpuMin, _ := instanceRequirements.CPU.Min.AsInt64()
-						ir.VCpuCount.Min = &cpuMin
+						ir.VCpuCount.Min = fi.PtrTo(int32(cpuMin))
 					}
 				} else {
-					ir.VCpuCount.Min = fi.PtrTo(int64(0))
+					ir.VCpuCount.Min = fi.PtrTo(int32(0))
 				}
 
 				memory := instanceRequirements.Memory
 				if memory != nil {
 					if memory.Max != nil {
 						memoryMax := instanceRequirements.Memory.Max.ScaledValue(resource.Mega)
-						ir.MemoryMiB.Max = &memoryMax
+						ir.MemoryMiB.Max = fi.PtrTo(int32(memoryMax))
 					}
 					if memory.Min != nil {
 						memoryMin := instanceRequirements.Memory.Min.ScaledValue(resource.Mega)
-						ir.MemoryMiB.Min = &memoryMin
+						ir.MemoryMiB.Min = fi.PtrTo(int32(memoryMin))
 					}
 				} else {
-					ir.MemoryMiB.Min = fi.PtrTo(int64(0))
+					ir.MemoryMiB.Min = fi.PtrTo(int32(0))
 				}
 
-				ir.AcceleratorCount = &ec2.AcceleratorCountRequest{
-					Min: fi.PtrTo(int64(0)),
-					Max: fi.PtrTo(int64(0)),
+				ir.AcceleratorCount = &ec2types.AcceleratorCountRequest{
+					Min: fi.PtrTo(int32(0)),
+					Max: fi.PtrTo(int32(0)),
 				}
 
-				response, err := cloud.EC2().GetInstanceTypesFromInstanceRequirements(
+				response, err := cloud.EC2().GetInstanceTypesFromInstanceRequirements(ctx,
 					&ec2.GetInstanceTypesFromInstanceRequirementsInput{
-						ArchitectureTypes:    []*string{arch},
-						VirtualizationTypes:  []*string{hv},
+						ArchitectureTypes:    []ec2types.ArchitectureType{ec2types.ArchitectureType(arch)},
+						VirtualizationTypes:  []ec2types.VirtualizationType{hv},
 						InstanceRequirements: ir,
 					},
 				)

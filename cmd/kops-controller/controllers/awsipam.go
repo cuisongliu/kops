@@ -23,11 +23,11 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/ec2metadata"
-	"github.com/aws/aws-sdk-go/aws/request"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/feature/ec2/imds"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -36,13 +36,14 @@ import (
 	corev1client "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
+	"k8s.io/kops/util/pkg/awslog"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 )
 
 // NewAWSIPAMReconciler is the constructor for a IPAMReconciler
-func NewAWSIPAMReconciler(mgr manager.Manager) (*AWSIPAMReconciler, error) {
+func NewAWSIPAMReconciler(ctx context.Context, mgr manager.Manager) (*AWSIPAMReconciler, error) {
 	klog.Info("Starting aws ipam controller")
 	r := &AWSIPAMReconciler{
 		client: mgr.GetClient(),
@@ -55,26 +56,21 @@ func NewAWSIPAMReconciler(mgr manager.Manager) (*AWSIPAMReconciler, error) {
 	}
 	r.coreV1Client = coreClient
 
-	config := aws.NewConfig()
-	config = config.WithCredentialsChainVerboseErrors(true)
-
-	s, err := session.NewSession(config)
+	config, err := awsconfig.LoadDefaultConfig(ctx, awslog.WithAWSLogger())
 	if err != nil {
-		return nil, fmt.Errorf("error starting new AWS session: %v", err)
+		return nil, fmt.Errorf("error loading default AWS config: %v", err)
 	}
-	s.Handlers.Send.PushFront(func(r *request.Request) {
-		// Log requests
-		klog.V(4).Infof("AWS API Request: %s/%s", r.ClientInfo.ServiceName, r.Operation.Name)
-	})
 
-	metadata := ec2metadata.New(s, config)
+	metadata := imds.NewFromConfig(config)
 
-	region, err := metadata.Region()
+	resp, err := metadata.GetRegion(ctx, &imds.GetRegionInput{})
 	if err != nil {
 		return nil, fmt.Errorf("error querying ec2 metadata service (for region): %v", err)
 	}
 
-	r.ec2Client = ec2.New(s, config.WithRegion(region))
+	ec2Config := config.Copy()
+	ec2Config.Region = resp.Region
+	r.ec2Client = ec2.NewFromConfig(ec2Config)
 
 	return r, nil
 }
@@ -91,7 +87,7 @@ type AWSIPAMReconciler struct {
 	// coreV1Client is a client-go client for patching nodes
 	coreV1Client *corev1client.CoreV1Client
 
-	ec2Client *ec2.EC2
+	ec2Client *ec2.Client
 }
 
 // +kubebuilder:rbac:groups=,resources=nodes,verbs=get;list;watch;patch
@@ -124,12 +120,12 @@ func (r *AWSIPAMReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			return ctrl.Result{}, err
 		}
 		instanceID := strings.Split(providerURL.Path, "/")[2]
-		eni, err := r.ec2Client.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
-			Filters: []*ec2.Filter{
+		eni, err := r.ec2Client.DescribeNetworkInterfaces(ctx, &ec2.DescribeNetworkInterfacesInput{
+			Filters: []ec2types.Filter{
 				{
 					Name: fi.PtrTo("attachment.instance-id"),
-					Values: []*string{
-						&instanceID,
+					Values: []string{
+						instanceID,
 					},
 				},
 			},
@@ -146,8 +142,9 @@ func (r *AWSIPAMReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			return ctrl.Result{}, fmt.Errorf("unexpected amount of ipv6 prefixes on interface %q: %v", *eni.NetworkInterfaces[0].NetworkInterfaceId, len(eni.NetworkInterfaces[0].Ipv6Prefixes))
 		}
 
-		ipv6Address := aws.StringValue(eni.NetworkInterfaces[0].Ipv6Prefixes[0].Ipv6Prefix)
-		if err := patchNodePodCIDRs(r.coreV1Client, ctx, node, ipv6Address); err != nil {
+		ipv6Address := aws.ToString(eni.NetworkInterfaces[0].Ipv6Prefixes[0].Ipv6Prefix)
+		podCIDRs := []string{ipv6Address}
+		if err := patchNodePodCIDRs(r.coreV1Client, ctx, node, podCIDRs); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -157,6 +154,7 @@ func (r *AWSIPAMReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 func (r *AWSIPAMReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
+		Named("aws_ipam").
 		For(&corev1.Node{}).
 		Complete(r)
 }
@@ -166,26 +164,28 @@ type nodePatchSpec struct {
 	PodCIDRs []string `json:"podCIDRs,omitempty"`
 }
 
-// patchNodeLabels patches the node labels to set the specified labels
-func patchNodePodCIDRs(client *corev1client.CoreV1Client, ctx context.Context, node *corev1.Node, cidr string) error {
-	klog.Infof("assigning cidr %q to node %q", cidr, node.ObjectMeta.Name)
+// patchNodePodCIDRs patches the node podCIDRs to the specified value(s).
+func patchNodePodCIDRs(client *corev1client.CoreV1Client, ctx context.Context, node *corev1.Node, podCIDRs []string) error {
+	klog.Infof("assigning podCIDRs %v to node %q", podCIDRs, node.ObjectMeta.Name)
 	nodePatchSpec := &nodePatchSpec{
-		PodCIDR:  cidr,
-		PodCIDRs: []string{cidr},
+		PodCIDRs: podCIDRs,
+	}
+	if len(podCIDRs) > 0 {
+		nodePatchSpec.PodCIDR = podCIDRs[0]
 	}
 	nodePatch := &nodePatch{
 		Spec: nodePatchSpec,
 	}
 	nodePatchJson, err := json.Marshal(nodePatch)
 	if err != nil {
-		return fmt.Errorf("error building node patch: %v", err)
+		return fmt.Errorf("building node patch: %w", err)
 	}
 
 	klog.V(2).Infof("sending patch for node %q: %q", node.Name, string(nodePatchJson))
 
 	_, err = client.Nodes().Patch(ctx, node.Name, types.StrategicMergePatchType, nodePatchJson, metav1.PatchOptions{})
 	if err != nil {
-		return fmt.Errorf("error applying patch to node: %v", err)
+		return fmt.Errorf("applying patch to node: %w", err)
 	}
 
 	return nil

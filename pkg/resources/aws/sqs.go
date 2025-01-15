@@ -17,10 +17,11 @@ limitations under the License.
 package aws
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
-	"github.com/aws/aws-sdk-go/service/sqs"
+	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"k8s.io/klog/v2"
 	"k8s.io/kops/pkg/resources"
 	"k8s.io/kops/upup/pkg/fi"
@@ -39,6 +40,7 @@ func DumpSQSQueue(op *resources.DumpOperation, r *resources.Resource) error {
 }
 
 func DeleteSQSQueue(cloud fi.Cloud, r *resources.Resource) error {
+	ctx := context.TODO()
 	c := cloud.(awsup.AWSCloud)
 
 	url := r.ID
@@ -47,14 +49,17 @@ func DeleteSQSQueue(cloud fi.Cloud, r *resources.Resource) error {
 	request := &sqs.DeleteQueueInput{
 		QueueUrl: &url,
 	}
-	_, err := c.SQS().DeleteQueue(request)
-	if err != nil {
-		return fmt.Errorf("error deleting SQS queue %q: %v", url, err)
+	if _, err := c.SQS().DeleteQueue(ctx, request); err != nil {
+		if awsup.AWSErrorCode(err) == "AWS.SimpleQueueService.NonExistentQueue" {
+			// Concurrently deleted
+			return nil
+		}
+		return fmt.Errorf("error deleting SQS queue %q: %w", url, err)
 	}
 	return nil
 }
 
-func ListSQSQueues(cloud fi.Cloud, clusterName string) ([]*resources.Resource, error) {
+func ListSQSQueues(cloud fi.Cloud, vpcID, clusterName string) ([]*resources.Resource, error) {
 	c := cloud.(awsup.AWSCloud)
 
 	klog.V(2).Infof("Listing SQS queues")
@@ -63,7 +68,7 @@ func ListSQSQueues(cloud fi.Cloud, clusterName string) ([]*resources.Resource, e
 	request := &sqs.ListQueuesInput{
 		QueueNamePrefix: &queuePrefix,
 	}
-	response, err := c.SQS().ListQueues(request)
+	response, err := c.SQS().ListQueues(context.TODO(), request)
 	if err != nil {
 		return nil, fmt.Errorf("error listing SQS queues: %v", err)
 	}
@@ -75,8 +80,8 @@ func ListSQSQueues(cloud fi.Cloud, clusterName string) ([]*resources.Resource, e
 
 	for _, queueUrl := range response.QueueUrls {
 		resourceTracker := &resources.Resource{
-			Name:    *queueUrl,
-			ID:      *queueUrl,
+			Name:    queueUrl,
+			ID:      queueUrl,
 			Type:    "sqs",
 			Deleter: DeleteSQSQueue,
 			Dumper:  DumpSQSQueue,

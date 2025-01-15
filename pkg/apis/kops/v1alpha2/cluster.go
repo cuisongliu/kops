@@ -49,11 +49,13 @@ type ClusterSpec struct {
 	// The Channel we are following
 	Channel string `json:"channel,omitempty"`
 	// Additional addons that should be installed on the cluster
-	Addons []AddonSpec `json:"addons,omitempty"`
+	Addons      []AddonSpec          `json:"addons,omitempty"`
+	ConfigStore kops.ConfigStoreSpec `json:"-"`
 	// ConfigBase is the path where we store configuration for the cluster
 	// This might be different that the location when the cluster spec itself is stored,
 	// both because this must be accessible to the cluster,
 	// and because it might be on a different cloud or storage system (etcd vs S3)
+	// +k8s:conversion-gen=false
 	ConfigBase    string                 `json:"configBase,omitempty"`
 	CloudProvider kops.CloudProviderSpec `json:"-"`
 	// The CloudProvider to use (aws or gce)
@@ -61,7 +63,7 @@ type ClusterSpec struct {
 	LegacyCloudProvider string `json:"cloudProvider,omitempty"`
 	// GossipConfig for the cluster assuming the use of gossip DNS
 	GossipConfig *GossipConfig `json:"gossipConfig,omitempty"`
-	// Container runtime to use for Kubernetes
+	// ContainerRuntime was removed.
 	ContainerRuntime string `json:"containerRuntime,omitempty"`
 	// The version of kubernetes to install (optional, and can be a "spec" like stable)
 	KubernetesVersion string `json:"kubernetesVersion,omitempty"`
@@ -96,11 +98,14 @@ type ClusterSpec struct {
 	// +k8s:conversion-gen=false
 	Topology *TopologySpec `json:"topology,omitempty"`
 	// SecretStore is the VFS path to where secrets are stored
+	// +k8s:conversion-gen=false
 	SecretStore string `json:"secretStore,omitempty"`
 	// KeyStore is the VFS path to where SSL keys and certificates are stored
+	// +k8s:conversion-gen=false
 	KeyStore string `json:"keyStore,omitempty"`
-	// ConfigStore is the VFS path to where the configuration (Cluster, InstanceGroups etc) is stored
-	ConfigStore string `json:"configStore,omitempty"`
+	// ConfigStore is unused.
+	// +k8s:conversion-gen=false
+	LegacyConfigStore string `json:"configStore,omitempty"`
 	// DNSZone is the DNS zone we should use when configuring DNS
 	// This is because some clouds let us define a managed zone foo.bar, and then have
 	// kubernetes.dev.foo.bar, without needing to define dev.foo.bar as a hosted zone.
@@ -122,7 +127,7 @@ type ClusterSpec struct {
 	// +k8s:conversion-gen=false
 	PodCIDR string `json:"podCIDR,omitempty"`
 	// MasterIPRange                 string `json:",omitempty"`
-	// NonMasqueradeCIDR is the CIDR for the internal k8s network (on which pods & services live)
+	// NonMasqueradeCIDR is the CIDR for the internal k8s network (for pod IPs)
 	// It cannot overlap ServiceClusterIPRange
 	// +k8s:conversion-gen=false
 	NonMasqueradeCIDR string `json:"nonMasqueradeCIDR,omitempty"`
@@ -162,9 +167,10 @@ type ClusterSpec struct {
 	FileAssets []FileAssetSpec `json:"fileAssets,omitempty"`
 	// EtcdClusters stores the configuration for each cluster
 	EtcdClusters []EtcdClusterSpec `json:"etcdClusters,omitempty"`
+	// Docker was removed.
+	Docker *DockerConfig `json:"docker,omitempty"`
 	// Component configurations
 	Containerd                     *ContainerdConfig             `json:"containerd,omitempty"`
-	Docker                         *DockerConfig                 `json:"docker,omitempty"`
 	KubeDNS                        *KubeDNSConfig                `json:"kubeDNS,omitempty"`
 	KubeAPIServer                  *KubeAPIServerConfig          `json:"kubeAPIServer,omitempty"`
 	KubeControllerManager          *KubeControllerManagerConfig  `json:"kubeControllerManager,omitempty"`
@@ -180,6 +186,8 @@ type ClusterSpec struct {
 	CloudConfig         *CloudConfiguration `json:"cloudConfig,omitempty"`
 	ExternalDNS         *ExternalDNSConfig  `json:"externalDns,omitempty"`
 	NTP                 *NTPConfig          `json:"ntp,omitempty"`
+	// Packages specifies additional packages to be installed.
+	Packages []string `json:"packages,omitempty"`
 
 	// NodeTerminationHandler determines the cluster autoscaler configuration.
 	// +k8s:conversion-gen=false
@@ -232,7 +240,7 @@ type ClusterSpec struct {
 	SysctlParameters []string `json:"sysctlParameters,omitempty"`
 	// RollingUpdate defines the default rolling-update settings for instance groups
 	RollingUpdate *RollingUpdate `json:"rollingUpdate,omitempty"`
-	// ClusterAutoscaler defines the cluaster autoscaler configuration.
+	// ClusterAutoscaler defines the cluster autoscaler configuration.
 	ClusterAutoscaler *ClusterAutoscalerConfig `json:"clusterAutoscaler,omitempty"`
 	// WarmPool defines the default warm pool settings for instance groups (AWS only).
 	// +k8s:conversion-gen=false
@@ -255,7 +263,13 @@ type PodIdentityWebhookSpec struct {
 }
 
 type KarpenterConfig struct {
-	Enabled bool `json:"enabled,omitempty"`
+	Enabled       bool               `json:"enabled,omitempty"`
+	LogEncoding   string             `json:"logEncoding,omitempty"`
+	LogLevel      string             `json:"logLevel,omitempty"`
+	Image         string             `json:"image,omitempty"`
+	MemoryLimit   *resource.Quantity `json:"memoryLimit,omitempty"`
+	MemoryRequest *resource.Quantity `json:"memoryRequest,omitempty"`
+	CPURequest    *resource.Quantity `json:"cpuRequest,omitempty"`
 }
 
 // ServiceAccountIssuerDiscoveryConfig configures an OIDC Issuer.
@@ -401,7 +415,7 @@ func (s *AuthenticationSpec) IsEmpty() bool {
 type KopeioAuthenticationSpec struct{}
 
 type AWSAuthenticationSpec struct {
-	// Image is the AWS IAM Authenticator docker image to uses
+	// Image is the AWS IAM Authenticator container image to use.
 	Image string `json:"image,omitempty"`
 	// BackendMode is the AWS IAM Authenticator backend to use. Default MountedFile
 	BackendMode string `json:"backendMode,omitempty"`
@@ -707,9 +721,10 @@ type EtcdMemberSpec struct {
 type SubnetType string
 
 const (
-	SubnetTypePublic  SubnetType = "Public"
-	SubnetTypePrivate SubnetType = "Private"
-	SubnetTypeUtility SubnetType = "Utility"
+	SubnetTypePublic    SubnetType = "Public"
+	SubnetTypePrivate   SubnetType = "Private"
+	SubnetTypeDualStack SubnetType = "DualStack"
+	SubnetTypeUtility   SubnetType = "Utility"
 )
 
 type ClusterSubnetSpec struct {

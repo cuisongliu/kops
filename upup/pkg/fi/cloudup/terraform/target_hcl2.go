@@ -24,6 +24,7 @@ import (
 	"k8s.io/klog/v2"
 	"k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/pkg/featureflag"
+	"k8s.io/kops/upup/pkg/fi/cloudup/scaleway"
 	"k8s.io/kops/upup/pkg/fi/cloudup/terraformWriter"
 )
 
@@ -124,6 +125,9 @@ func (t *TerraformTarget) writeProviders(buf *bytes.Buffer) {
 	}
 	if t.Cloud.ProviderID() != kops.CloudProviderHetzner && t.Cloud.ProviderID() != kops.CloudProviderDO {
 		providerBody["region"] = t.Cloud.Region()
+	}
+	if t.Cloud.ProviderID() == kops.CloudProviderScaleway {
+		providerBody["zone"] = t.Cloud.(scaleway.ScwCloud).Zone()
 	}
 	for k, v := range tfGetProviderExtraConfig(t.clusterSpecTarget) {
 		providerBody[k] = v
@@ -237,11 +241,11 @@ func (t *TerraformTarget) writeTerraform(buf *bytes.Buffer) {
 		providerVersions := map[string]map[string]string{
 			"aws": {
 				"source":  "hashicorp/aws",
-				"version": ">= 4.0.0",
+				"version": ">= 5.0.0",
 			},
 			"google": {
 				"source":  "hashicorp/google",
-				"version": ">= 2.19.0",
+				"version": ">= 5.11.0",
 			},
 			"hcloud": {
 				"source":  "hetznercloud/hcloud",

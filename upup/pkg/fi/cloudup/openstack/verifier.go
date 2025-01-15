@@ -25,10 +25,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/gophercloud/gophercloud"
-	gos "github.com/gophercloud/gophercloud/openstack"
-	"github.com/gophercloud/gophercloud/openstack/compute/v2/servers"
-	"github.com/mitchellh/mapstructure"
+	"github.com/go-viper/mapstructure/v2"
+	"github.com/gophercloud/gophercloud/v2"
+	gos "github.com/gophercloud/gophercloud/v2/openstack"
+	"github.com/gophercloud/gophercloud/v2/openstack/compute/v2/servers"
 	"k8s.io/apimachinery/pkg/api/errors"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -72,7 +72,7 @@ func NewOpenstackVerifier(opt *OpenStackVerifierOptions) (bootstrap.Verifier, er
 	// node-controller should be able to renew it tokens against OpenStack API
 	env.AllowReauth = true
 
-	err = gos.Authenticate(provider, env)
+	err = gos.Authenticate(context.TODO(), provider, env)
 	if err != nil {
 		return nil, err
 	}
@@ -120,13 +120,13 @@ func readKubeConfig() (*restclient.Config, error) {
 		&clientcmd.ConfigOverrides{}).ClientConfig()
 }
 
-func (o openstackVerifier) VerifyToken(ctx context.Context, rawRequest *http.Request, token string, body []byte, useInstanceIDForNodeName bool) (*bootstrap.VerifyResult, error) {
+func (o openstackVerifier) VerifyToken(ctx context.Context, rawRequest *http.Request, token string, body []byte) (*bootstrap.VerifyResult, error) {
 	if !strings.HasPrefix(token, OpenstackAuthenticationTokenPrefix) {
-		return nil, fmt.Errorf("incorrect authorization type")
+		return nil, bootstrap.ErrNotThisVerifier
 	}
 	serverID := strings.TrimPrefix(token, OpenstackAuthenticationTokenPrefix)
 
-	instance, err := servers.Get(o.novaClient, serverID).Extract()
+	instance, err := servers.Get(ctx, o.novaClient, serverID).Extract()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get info for server %q: %w", token, err)
 	}

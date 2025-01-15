@@ -23,6 +23,7 @@ import (
 	"k8s.io/kops/pkg/flagbuilder"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/util/pkg/architectures"
+	"k8s.io/utils/pointer"
 )
 
 func Test_KubeAPIServer_BuildFlags(t *testing.T) {
@@ -92,9 +93,15 @@ func Test_KubeAPIServer_BuildFlags(t *testing.T) {
 		},
 		{
 			kops.KubeAPIServerConfig{
-				TargetRamMB: 320,
+				WatchCache: pointer.Bool(false),
 			},
-			"--secure-port=0 --target-ram-mb=320",
+			"--secure-port=0 --watch-cache=false",
+		},
+		{
+			kops.KubeAPIServerConfig{
+				WatchCacheSizes: []string{"secrets#0", "pods#0"},
+			},
+			"--secure-port=0 --watch-cache-sizes=secrets#0,pods#0",
 		},
 		{
 			kops.KubeAPIServerConfig{
@@ -194,6 +201,13 @@ func TestKubeAPIServerBuilderARM64(t *testing.T) {
 	RunGoldenTest(t, "tests/golden/side-loading", "kube-apiserver-arm64", func(nodeupModelContext *NodeupModelContext, target *fi.NodeupModelBuilderContext) error {
 		builder := KubeAPIServerBuilder{NodeupModelContext: nodeupModelContext}
 		builder.Architecture = architectures.ArchitectureArm64
+		return builder.Build(target)
+	})
+}
+
+func TestKubeAPIServerEnvBuilder(t *testing.T) {
+	RunGoldenTest(t, "tests/golden/envvars", "kube-apiserver", func(nodeupModelContext *NodeupModelContext, target *fi.NodeupModelBuilderContext) error {
+		builder := KubeAPIServerBuilder{NodeupModelContext: nodeupModelContext}
 		return builder.Build(target)
 	})
 }

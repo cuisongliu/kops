@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"strings"
 
+	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/klog/v2"
@@ -58,6 +59,9 @@ const (
 	defaultDOImageJammy       = "ubuntu-22-04-x64"
 	defaultHetznerImageJammy  = "ubuntu-22.04"
 	defaultScalewayImageJammy = "ubuntu_jammy"
+	defaultDOImageNoble       = "ubuntu-24-04-x64"
+	defaultHetznerImageNoble  = "ubuntu-24.04"
+	defaultScalewayImageNoble = "ubuntu_noble"
 )
 
 // TODO: this hardcoded list can be replaced with DescribeInstanceTypes' DedicatedHostsSupported field
@@ -143,7 +147,7 @@ func PopulateInstanceGroupSpec(cluster *kops.Cluster, input *kops.InstanceGroup,
 	}
 
 	if ig.Spec.Tenancy != "" && ig.Spec.Tenancy != "default" {
-		switch cluster.Spec.GetCloudProvider() {
+		switch cluster.GetCloudProvider() {
 		case kops.CloudProviderAWS:
 			if _, ok := awsDedicatedInstanceExceptions[ig.Spec.MachineType]; ok {
 				return nil, fmt.Errorf("invalid dedicated instance type: %s", ig.Spec.MachineType)
@@ -197,10 +201,10 @@ func PopulateInstanceGroupSpec(cluster *kops.Cluster, input *kops.InstanceGroup,
 		igNvidia = true
 	}
 
-	switch cluster.Spec.GetCloudProvider() {
+	switch cluster.GetCloudProvider() {
 	case kops.CloudProviderAWS:
 		if clusterNvidia || igNvidia {
-			mt, err := awsup.GetMachineTypeInfo(cloud.(awsup.AWSCloud), ig.Spec.MachineType)
+			mt, err := awsup.GetMachineTypeInfo(cloud.(awsup.AWSCloud), ec2types.InstanceType(ig.Spec.MachineType))
 			if err != nil {
 				return ig, fmt.Errorf("error looking up machine type info: %v", err)
 			}
@@ -282,11 +286,7 @@ func PopulateInstanceGroupSpec(cluster *kops.Cluster, input *kops.InstanceGroup,
 	{
 		if ig.IsControlPlane() {
 			// (Even though the value is empty, we still expect <Key>=<Value>:<Effect>)
-			if cluster.IsKubernetesLT("1.24") {
-				taints.Insert(nodelabels.RoleLabelMaster16 + "=:" + string(v1.TaintEffectNoSchedule))
-			} else {
-				taints.Insert(nodelabels.RoleLabelControlPlane20 + "=:" + string(v1.TaintEffectNoSchedule))
-			}
+			taints.Insert(nodelabels.RoleLabelControlPlane20 + "=:" + string(v1.TaintEffectNoSchedule))
 		}
 		if ig.IsAPIServerOnly() {
 			// (Even though the value is empty, we still expect <Key>=<Value>:<Effect>)
@@ -307,7 +307,7 @@ func PopulateInstanceGroupSpec(cluster *kops.Cluster, input *kops.InstanceGroup,
 
 // defaultMachineType returns the default MachineType for the instance group, based on the cloudprovider
 func defaultMachineType(cloud fi.Cloud, cluster *kops.Cluster, ig *kops.InstanceGroup) (string, error) {
-	switch cluster.Spec.GetCloudProvider() {
+	switch cluster.GetCloudProvider() {
 	case kops.CloudProviderAWS:
 		if ig.Spec.Manager == kops.InstanceManagerKarpenter {
 			return "", nil
@@ -382,6 +382,6 @@ func defaultMachineType(cloud fi.Cloud, cluster *kops.Cluster, ig *kops.Instance
 		}
 	}
 
-	klog.V(2).Infof("Cannot set default MachineType for CloudProvider=%q, Role=%q", cluster.Spec.GetCloudProvider(), ig.Spec.Role)
+	klog.V(2).Infof("Cannot set default MachineType for CloudProvider=%q, Role=%q", cluster.GetCloudProvider(), ig.Spec.Role)
 	return "", nil
 }

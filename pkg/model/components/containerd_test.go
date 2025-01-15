@@ -20,8 +20,8 @@ import (
 	"testing"
 
 	kopsapi "k8s.io/kops/pkg/apis/kops"
-	"k8s.io/kops/pkg/apis/kops/util"
 	"k8s.io/kops/pkg/assets"
+	"k8s.io/kops/util/pkg/vfs"
 )
 
 func buildContainerdCluster(version string) *kopsapi.Cluster {
@@ -44,86 +44,22 @@ func Test_Build_Containerd_Supported_Version(t *testing.T) {
 	for _, v := range kubernetesVersions {
 
 		c := buildContainerdCluster(v)
-		c.Spec.ContainerRuntime = "containerd"
-		b := assets.NewAssetBuilder(c.Spec.Assets, c.Spec.KubernetesVersion, false)
+		b := assets.NewAssetBuilder(vfs.Context, c.Spec.Assets, false)
 
-		version, err := util.ParseKubernetesVersion(v)
+		optionsContext, err := NewOptionsContext(c, b, b.KubeletSupportedVersion)
 		if err != nil {
-			t.Fatalf("unexpected error from ParseKubernetesVersion %s: %v", v, err)
+			t.Fatalf("unexpected error from NewOptionsContext: %v", err)
 		}
-
 		ob := &ContainerdOptionsBuilder{
-			&OptionsContext{
-				AssetBuilder:      b,
-				KubernetesVersion: *version,
-			},
+			OptionsContext: optionsContext,
 		}
 
-		err = ob.BuildOptions(&c.Spec)
-		if err != nil {
+		if err := ob.BuildOptions(c); err != nil {
 			t.Fatalf("unexpected error from BuildOptions: %v", err)
 		}
 
 		if c.Spec.Containerd.SkipInstall == true {
 			t.Fatalf("expecting install when Kubernetes version >= 1.11: %s", v)
-		}
-	}
-}
-
-func Test_Build_Containerd_Unneeded_Runtime(t *testing.T) {
-	dockerVersions := []string{"1.13.1", "17.03.2", "18.06.3"}
-
-	for _, v := range dockerVersions {
-
-		c := buildContainerdCluster("1.11.0")
-		c.Spec.ContainerRuntime = "docker"
-		c.Spec.Docker = &kopsapi.DockerConfig{
-			Version: &v,
-		}
-		b := assets.NewAssetBuilder(c.Spec.Assets, c.Spec.KubernetesVersion, false)
-
-		ob := &ContainerdOptionsBuilder{
-			&OptionsContext{
-				AssetBuilder: b,
-			},
-		}
-
-		err := ob.BuildOptions(&c.Spec)
-		if err != nil {
-			t.Fatalf("unexpected error from BuildOptions: %v", err)
-		}
-
-		if c.Spec.Containerd.SkipInstall != true {
-			t.Fatalf("unexpected install when Docker version < 19.09: %s", v)
-		}
-	}
-}
-
-func Test_Build_Containerd_Needed_Runtime(t *testing.T) {
-	dockerVersions := []string{"18.09.3", "18.09.9", "19.03.4"}
-
-	for _, v := range dockerVersions {
-
-		c := buildContainerdCluster("1.11.0")
-		c.Spec.ContainerRuntime = "docker"
-		c.Spec.Docker = &kopsapi.DockerConfig{
-			Version: &v,
-		}
-		b := assets.NewAssetBuilder(c.Spec.Assets, c.Spec.KubernetesVersion, false)
-
-		ob := &ContainerdOptionsBuilder{
-			&OptionsContext{
-				AssetBuilder: b,
-			},
-		}
-
-		err := ob.BuildOptions(&c.Spec)
-		if err != nil {
-			t.Fatalf("unexpected error from BuildOptions: %v", err)
-		}
-
-		if c.Spec.Containerd.SkipInstall == true {
-			t.Fatalf("expected install when Docker version >= 19.09: %s", v)
 		}
 	}
 }

@@ -16,9 +16,13 @@ limitations under the License.
 
 package mockautoscaling
 
-import "github.com/aws/aws-sdk-go/service/autoscaling"
+import (
+	"context"
 
-func (m *MockAutoscaling) DescribeWarmPool(input *autoscaling.DescribeWarmPoolInput) (*autoscaling.DescribeWarmPoolOutput, error) {
+	"github.com/aws/aws-sdk-go-v2/service/autoscaling"
+)
+
+func (m *MockAutoscaling) DescribeWarmPool(ctx context.Context, input *autoscaling.DescribeWarmPoolInput, optFns ...func(*autoscaling.Options)) (*autoscaling.DescribeWarmPoolOutput, error) {
 	instances, found := m.WarmPoolInstances[*input.AutoScalingGroupName]
 	if !found {
 		return &autoscaling.DescribeWarmPoolOutput{}, nil
@@ -29,6 +33,6 @@ func (m *MockAutoscaling) DescribeWarmPool(input *autoscaling.DescribeWarmPoolIn
 	return ret, nil
 }
 
-func (m *MockAutoscaling) DeleteWarmPool(*autoscaling.DeleteWarmPoolInput) (*autoscaling.DeleteWarmPoolOutput, error) {
+func (m *MockAutoscaling) DeleteWarmPool(ctx context.Context, input *autoscaling.DeleteWarmPoolInput, optFns ...func(*autoscaling.Options)) (*autoscaling.DeleteWarmPoolOutput, error) {
 	return &autoscaling.DeleteWarmPoolOutput{}, nil
 }

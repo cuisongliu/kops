@@ -65,7 +65,7 @@ spec:
   kubernetesApiAccess:
   - 0.0.0.0/0
   - ::/0
-  kubernetesVersion: v1.25.0
+  kubernetesVersion: v1.32.0
   networkCIDR: 10.0.0.0/16
   networking:
     cni: {}
@@ -74,19 +74,17 @@ spec:
   - 0.0.0.0/0
   - ::/0
   subnets:
-  - cidr: 10.0.32.0/19
+  - cidr: 10.0.128.0/17
     name: us-test1
     type: Private
     zone: us-test1
-  - cidr: 10.0.0.0/22
+  - cidr: 10.0.0.0/20
     name: utility-us-test1
     type: Utility
     zone: us-test1
   topology:
     dns:
-      type: Private
-    masters: private
-    nodes: private
+      type: None
 
 ---
 

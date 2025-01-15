@@ -19,8 +19,8 @@ package azuretasks
 import (
 	"context"
 
-	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2022-05-01/network"
-	"github.com/Azure/go-autorest/autorest/to"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
+	network "github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/network/armnetwork"
 	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/azure"
@@ -29,8 +29,10 @@ import (
 // PublicIPAddress is an Azure Cloud Public IP Address
 // +kops:fitask
 type PublicIPAddress struct {
-	Name          *string
-	Lifecycle     fi.Lifecycle
+	Name      *string
+	Lifecycle fi.Lifecycle
+
+	ID            *string
 	ResourceGroup *ResourceGroup
 
 	Tags map[string]*string
@@ -44,7 +46,7 @@ var (
 
 // CompareWithID returns the Name of the Public IP Address
 func (p *PublicIPAddress) CompareWithID() *string {
-	return p.Name
+	return p.ID
 }
 
 // Find discovers the Public IP Address in the cloud provider
@@ -57,7 +59,7 @@ func (p *PublicIPAddress) Find(c *fi.CloudupContext) (*PublicIPAddress, error) {
 	var found *network.PublicIPAddress
 	for _, v := range l {
 		if *v.Name == *p.Name {
-			found = &v
+			found = v
 			break
 		}
 	}
@@ -65,13 +67,15 @@ func (p *PublicIPAddress) Find(c *fi.CloudupContext) (*PublicIPAddress, error) {
 		return nil, nil
 	}
 
+	p.ID = found.ID
+
 	return &PublicIPAddress{
 		Name:      p.Name,
 		Lifecycle: p.Lifecycle,
 		ResourceGroup: &ResourceGroup{
 			Name: p.ResourceGroup.Name,
 		},
-
+		ID:   found.ID,
 		Tags: found.Tags,
 	}, nil
 }
@@ -112,21 +116,28 @@ func (*PublicIPAddress) RenderAzure(t *azure.AzureAPITarget, a, e, changes *Publ
 	}
 
 	p := network.PublicIPAddress{
-		Location: to.StringPtr(t.Cloud.Region()),
-		Name:     to.StringPtr(*e.Name),
-		PublicIPAddressPropertiesFormat: &network.PublicIPAddressPropertiesFormat{
-			PublicIPAddressVersion:   network.IPv4,
-			PublicIPAllocationMethod: network.Static,
+		Location: to.Ptr(t.Cloud.Region()),
+		Name:     to.Ptr(*e.Name),
+		Properties: &network.PublicIPAddressPropertiesFormat{
+			PublicIPAddressVersion:   to.Ptr(network.IPVersionIPv4),
+			PublicIPAllocationMethod: to.Ptr(network.IPAllocationMethodStatic),
 		},
-		Sku: &network.PublicIPAddressSku{
-			Name: network.PublicIPAddressSkuNameStandard,
+		SKU: &network.PublicIPAddressSKU{
+			Name: to.Ptr(network.PublicIPAddressSKUNameStandard),
 		},
 		Tags: e.Tags,
 	}
 
-	return t.Cloud.PublicIPAddress().CreateOrUpdate(
+	pip, err := t.Cloud.PublicIPAddress().CreateOrUpdate(
 		context.TODO(),
 		*e.ResourceGroup.Name,
 		*e.Name,
 		p)
+	if err != nil {
+		return err
+	}
+
+	e.ID = pip.ID
+
+	return nil
 }

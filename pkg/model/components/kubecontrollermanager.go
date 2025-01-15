@@ -39,11 +39,11 @@ type KubeControllerManagerOptionsBuilder struct {
 	*OptionsContext
 }
 
-var _ loader.OptionsBuilder = &KubeControllerManagerOptionsBuilder{}
+var _ loader.ClusterOptionsBuilder = &KubeControllerManagerOptionsBuilder{}
 
 // BuildOptions generates the configurations used to create kubernetes controller manager manifest
-func (b *KubeControllerManagerOptionsBuilder) BuildOptions(o interface{}) error {
-	clusterSpec := o.(*kops.ClusterSpec)
+func (b *KubeControllerManagerOptionsBuilder) BuildOptions(o *kops.Cluster) error {
+	clusterSpec := &o.Spec
 	if clusterSpec.KubeControllerManager == nil {
 		clusterSpec.KubeControllerManager = &kops.KubeControllerManagerConfig{}
 	}
@@ -54,7 +54,7 @@ func (b *KubeControllerManagerOptionsBuilder) BuildOptions(o interface{}) error 
 	// TLDR; set this too low, and have a few EBS Volumes, and you will spam AWS api
 
 	{
-		klog.V(4).Infof("Kubernetes version %q supports AttachDetachReconcileSyncPeriod; will configure", b.KubernetesVersion)
+		klog.V(4).Infof("Kubernetes version %q supports AttachDetachReconcileSyncPeriod; will configure", b.ControlPlaneKubernetesVersion().String())
 		// If not set ... or set to 0s ... which is stupid
 		if kcm.AttachDetachReconcileSyncPeriod == nil ||
 			kcm.AttachDetachReconcileSyncPeriod.Duration.String() == "0s" {
@@ -76,44 +76,7 @@ func (b *KubeControllerManagerOptionsBuilder) BuildOptions(o interface{}) error 
 	}
 
 	kcm.ClusterName = b.ClusterName
-	if b.IsKubernetesGTE("1.24") {
-		kcm.CloudProvider = "external"
-	} else {
-		switch kops.CloudProviderID(clusterSpec.GetCloudProvider()) {
-		case kops.CloudProviderAWS:
-			kcm.CloudProvider = "aws"
-
-		case kops.CloudProviderGCE:
-			kcm.CloudProvider = "gce"
-			kcm.ClusterName = gce.SafeClusterName(b.ClusterName)
-
-		case kops.CloudProviderDO:
-			kcm.CloudProvider = "external"
-
-		case kops.CloudProviderHetzner:
-			kcm.CloudProvider = "external"
-
-		case kops.CloudProviderOpenstack:
-			kcm.CloudProvider = "openstack"
-
-		case kops.CloudProviderAzure:
-			kcm.CloudProvider = "azure"
-
-		case kops.CloudProviderScaleway:
-			kcm.CloudProvider = "external"
-
-		default:
-			return fmt.Errorf("unknown cloudprovider %q", clusterSpec.GetCloudProvider())
-		}
-	}
-
-	if clusterSpec.ExternalCloudControllerManager == nil {
-		if kcm.CloudProvider == "aws" || kcm.CloudProvider == "gce" {
-			kcm.EnableLeaderMigration = fi.PtrTo(true)
-		}
-	} else {
-		kcm.CloudProvider = "external"
-	}
+	kcm.CloudProvider = "external"
 
 	if kcm.LogLevel == 0 {
 		kcm.LogLevel = 2
@@ -148,7 +111,7 @@ func (b *KubeControllerManagerOptionsBuilder) BuildOptions(o interface{}) error 
 	networking := &clusterSpec.Networking
 	if networking.Kubenet != nil {
 		kcm.ConfigureCloudRoutes = fi.PtrTo(true)
-	} else if networking.GCP != nil {
+	} else if gce.UsesIPAliases(o) {
 		kcm.ConfigureCloudRoutes = fi.PtrTo(false)
 		if kcm.CloudProvider == "external" {
 			// kcm should not allocate node cidrs with the CloudAllocator if we're using the external CCM
@@ -173,11 +136,6 @@ func (b *KubeControllerManagerOptionsBuilder) BuildOptions(o interface{}) error 
 
 	if len(kcm.Controllers) == 0 {
 		var changes []string
-		// @check if the node authorization is enabled and if so enable the tokencleaner controller (disabled by default)
-		// This is responsible for cleaning up bootstrap tokens which have expired
-		if fi.ValueOf(clusterSpec.KubeAPIServer.EnableBootstrapAuthToken) {
-			changes = append(changes, "tokencleaner")
-		}
 		if clusterSpec.IsKopsControllerIPAM() {
 			changes = append(changes, "-nodeipam")
 		}
@@ -186,17 +144,17 @@ func (b *KubeControllerManagerOptionsBuilder) BuildOptions(o interface{}) error 
 		}
 	}
 
-	if clusterSpec.CloudProvider.AWS != nil && clusterSpec.CloudProvider.AWS.EBSCSIDriver != nil && fi.ValueOf(clusterSpec.CloudProvider.AWS.EBSCSIDriver.Enabled) {
+	if clusterSpec.CloudProvider.AWS != nil {
 
 		if kcm.FeatureGates == nil {
 			kcm.FeatureGates = make(map[string]string)
 		}
 
-		if _, found := kcm.FeatureGates["InTreePluginAWSUnregister"]; !found {
+		if _, found := kcm.FeatureGates["InTreePluginAWSUnregister"]; !found && b.ControlPlaneKubernetesVersion().IsLT("1.31") {
 			kcm.FeatureGates["InTreePluginAWSUnregister"] = "true"
 		}
 
-		if _, found := kcm.FeatureGates["CSIMigrationAWS"]; !found && b.IsKubernetesLT("1.27") {
+		if _, found := kcm.FeatureGates["CSIMigrationAWS"]; !found && b.ControlPlaneKubernetesVersion().IsLT("1.27") {
 			kcm.FeatureGates["CSIMigrationAWS"] = "true"
 		}
 	}

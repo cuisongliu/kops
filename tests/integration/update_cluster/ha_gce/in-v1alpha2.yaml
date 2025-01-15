@@ -32,7 +32,8 @@ spec:
       name: c
     memoryRequest: 100Mi
     name: events
-  gceServiceAccount: default
+  cloudConfig:
+    gceServiceAccount: default
   iam:
     legacy: false
   kubelet:
@@ -40,7 +41,7 @@ spec:
   kubernetesApiAccess:
   - 0.0.0.0/0
   - ::/0
-  kubernetesVersion: v1.26.0
+  kubernetesVersion: v1.32.0
   masterPublicName: api.ha-gce.example.com
   networking:
     cni: {}
@@ -56,8 +57,6 @@ spec:
   topology:
     dns:
       type: Public
-    masters: public
-    nodes: public
 
 ---
 

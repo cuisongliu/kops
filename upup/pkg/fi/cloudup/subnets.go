@@ -100,17 +100,9 @@ func assignCIDRsToSubnets(c *kops.Cluster, cloud fi.Cloud) error {
 		return fmt.Errorf("Invalid NetworkCIDR: %q", c.Spec.Networking.NetworkCIDR)
 	}
 
-	// We split the network range into 8 subnets
+	// We split the network range into 2, 4 or 8 subnets
 	// But we then reserve the lowest one for the private block
 	// (and we split _that_ into 8 further subnets, leaving the first one unused/for future use)
-	// Note that this limits us to 7 zones
-	// TODO: Does this make sense on GCE?
-	// TODO: Should we limit this to say 1000 IPs per subnet? (any reason to?)
-
-	bigCIDRs, err := subnet.SplitInto8(cidr)
-	if err != nil {
-		return err
-	}
 
 	var bigSubnets []*kops.ClusterSubnetSpec
 	var littleSubnets []*kops.ClusterSubnetSpec
@@ -118,6 +110,16 @@ func assignCIDRsToSubnets(c *kops.Cluster, cloud fi.Cloud) error {
 	var reserved []*net.IPNet
 	for i := range c.Spec.Networking.Subnets {
 		subnet := &c.Spec.Networking.Subnets[i]
+		if subnet.CIDR != "" {
+			_, cidrSubnet, err := net.ParseCIDR(subnet.CIDR)
+			if err != nil {
+				return fmt.Errorf("invalid subnet %q CIDR: %q", subnet.Name, subnet.CIDR)
+			}
+			// Skip additional subnets
+			if !cidr.Contains(cidrSubnet.IP) {
+				continue
+			}
+		}
 		switch subnet.Type {
 		case kops.SubnetTypeDualStack, kops.SubnetTypePublic, kops.SubnetTypePrivate:
 			bigSubnets = append(bigSubnets, subnet)
@@ -137,6 +139,29 @@ func assignCIDRsToSubnets(c *kops.Cluster, cloud fi.Cloud) error {
 
 			reserved = append(reserved, subnetCIDR)
 		}
+	}
+
+	// Assign a consistent order
+	sort.Sort(ByZone(bigSubnets))
+	sort.Sort(ByZone(littleSubnets))
+
+	// Check how many subnet slices are needed
+	cidrCount := len(bigSubnets)
+	if len(littleSubnets) > 0 {
+		cidrCount += 1
+	}
+	var bigCIDRs []*net.IPNet
+	if cidrCount <= 1 {
+		bigCIDRs, err = subnet.SplitInto1(cidr)
+	} else if cidrCount <= 2 {
+		bigCIDRs, err = subnet.SplitInto2(cidr)
+	} else if cidrCount <= 4 {
+		bigCIDRs, err = subnet.SplitInto4(cidr)
+	} else {
+		bigCIDRs, err = subnet.SplitInto8(cidr)
+	}
+	if err != nil {
+		return err
 	}
 
 	// Remove any CIDRs marked as overlapping
@@ -160,16 +185,30 @@ func assignCIDRsToSubnets(c *kops.Cluster, cloud fi.Cloud) error {
 		return fmt.Errorf("could not find any non-overlapping CIDRs in parent NetworkCIDR; cannot automatically assign CIDR to subnet")
 	}
 
-	littleCIDRs, err := subnet.SplitInto8(bigCIDRs[0])
-	if err != nil {
-		return err
+	// Assign CIDRs to little subnets
+	if len(littleSubnets) > 0 {
+		littleCIDRs, err := subnet.SplitInto8(bigCIDRs[0])
+		if err != nil {
+			return err
+		}
+		bigCIDRs = bigCIDRs[1:]
+
+		for _, subnet := range littleSubnets {
+			if subnet.CIDR != "" {
+				continue
+			}
+
+			if len(littleCIDRs) == 0 {
+				return fmt.Errorf("insufficient (little) CIDRs remaining for automatic CIDR allocation to subnet %q", subnet.Name)
+			}
+			subnet.CIDR = littleCIDRs[0].String()
+			klog.Infof("Assigned CIDR %s to subnet %s", subnet.CIDR, subnet.Name)
+
+			littleCIDRs = littleCIDRs[1:]
+		}
 	}
-	bigCIDRs = bigCIDRs[1:]
 
-	// Assign a consistent order
-	sort.Sort(ByZone(bigSubnets))
-	sort.Sort(ByZone(littleSubnets))
-
+	// Assign CIDRs to big subnets
 	for _, subnet := range bigSubnets {
 		if subnet.CIDR != "" {
 			continue
@@ -185,20 +224,6 @@ func assignCIDRsToSubnets(c *kops.Cluster, cloud fi.Cloud) error {
 		klog.Infof("Assigned CIDR %s to subnet %s", subnet.CIDR, subnet.Name)
 
 		bigCIDRs = bigCIDRs[1:]
-	}
-
-	for _, subnet := range littleSubnets {
-		if subnet.CIDR != "" {
-			continue
-		}
-
-		if len(littleCIDRs) == 0 {
-			return fmt.Errorf("insufficient (little) CIDRs remaining for automatic CIDR allocation to subnet %q", subnet.Name)
-		}
-		subnet.CIDR = littleCIDRs[0].String()
-		klog.Infof("Assigned CIDR %s to subnet %s", subnet.CIDR, subnet.Name)
-
-		littleCIDRs = littleCIDRs[1:]
 	}
 
 	return nil

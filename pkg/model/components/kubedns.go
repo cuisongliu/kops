@@ -29,11 +29,11 @@ type KubeDnsOptionsBuilder struct {
 	Context *OptionsContext
 }
 
-var _ loader.OptionsBuilder = &KubeDnsOptionsBuilder{}
+var _ loader.ClusterOptionsBuilder = &KubeDnsOptionsBuilder{}
 
 // BuildOptions fills in the kubedns model
-func (b *KubeDnsOptionsBuilder) BuildOptions(o interface{}) error {
-	clusterSpec := o.(*kops.ClusterSpec)
+func (b *KubeDnsOptionsBuilder) BuildOptions(cluster *kops.Cluster) error {
+	clusterSpec := &cluster.Spec
 
 	if clusterSpec.KubeDNS == nil {
 		clusterSpec.KubeDNS = &kops.KubeDNSConfig{}
@@ -74,7 +74,7 @@ func (b *KubeDnsOptionsBuilder) BuildOptions(o interface{}) error {
 		clusterSpec.KubeDNS.MemoryLimit = &defaultMemoryLimit
 	}
 
-	if clusterSpec.IsIPv6Only() && clusterSpec.GetCloudProvider() == kops.CloudProviderAWS {
+	if clusterSpec.IsIPv6Only() && cluster.GetCloudProvider() == kops.CloudProviderAWS {
 		if len(clusterSpec.KubeDNS.UpstreamNameservers) == 0 {
 			clusterSpec.KubeDNS.UpstreamNameservers = []string{"fd00:ec2::253"}
 		}
@@ -110,7 +110,7 @@ func (b *KubeDnsOptionsBuilder) BuildOptions(o interface{}) error {
 	}
 
 	if nodeLocalDNS.Image == nil {
-		nodeLocalDNS.Image = fi.PtrTo("registry.k8s.io/dns/k8s-dns-node-cache:1.22.20")
+		nodeLocalDNS.Image = fi.PtrTo("registry.k8s.io/dns/k8s-dns-node-cache:1.23.0")
 	}
 
 	return nil

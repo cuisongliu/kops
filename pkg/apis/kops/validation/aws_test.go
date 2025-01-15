@@ -20,8 +20,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/kops/cloudmock/aws/mockec2"
 
@@ -29,11 +29,10 @@ import (
 	"k8s.io/kops/upup/pkg/fi/cloudup/awsup"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/kops/pkg/apis/kops"
 )
 
-func TestAWSValidateExternalCloudConfig(t *testing.T) {
+func TestAWSValidateEBSCSIDriver(t *testing.T) {
 	grid := []struct {
 		Input          kops.ClusterSpec
 		ExpectedErrors []string
@@ -49,7 +48,7 @@ func TestAWSValidateExternalCloudConfig(t *testing.T) {
 					},
 				},
 			},
-			ExpectedErrors: []string{"Forbidden::spec.externalCloudControllerManager"},
+			ExpectedErrors: []string{"Forbidden::spec.cloudProvider.aws.ebsCSIDriver.enabled"},
 		},
 		{
 			Input: kops.ClusterSpec{
@@ -80,7 +79,7 @@ func TestAWSValidateExternalCloudConfig(t *testing.T) {
 		cluster := &kops.Cluster{
 			Spec: g.Input,
 		}
-		errs := awsValidateExternalCloudControllerManager(cluster)
+		errs := awsValidateEBSCSIDriver(cluster)
 
 		testErrors(t, g.Input, errs, g.ExpectedErrors)
 	}
@@ -239,18 +238,18 @@ func TestValidateInstanceGroupSpec(t *testing.T) {
 	mockEC2 := &mockec2.MockEC2{}
 	cloud.MockEC2 = mockEC2
 
-	mockEC2.Images = append(mockEC2.Images, &ec2.Image{
+	mockEC2.Images = append(mockEC2.Images, &ec2types.Image{
 		CreationDate:   aws.String("2016-10-21T20:07:19.000Z"),
 		ImageId:        aws.String("ami-073c8c0760395aab8"),
 		Name:           aws.String("focal"),
 		OwnerId:        aws.String(awsup.WellKnownAccountUbuntu),
 		RootDeviceName: aws.String("/dev/xvda"),
-		Architecture:   aws.String("x86_64"),
+		Architecture:   ec2types.ArchitectureValuesX8664,
 	})
 
 	for _, g := range grid {
 		ig := &kops.InstanceGroup{
-			ObjectMeta: v1.ObjectMeta{
+			ObjectMeta: metav1.ObjectMeta{
 				Name: "test-nodes",
 			},
 			Spec: g.Input,
@@ -340,18 +339,18 @@ func TestMixedInstancePolicies(t *testing.T) {
 	mockEC2 := &mockec2.MockEC2{}
 	cloud.MockEC2 = mockEC2
 
-	mockEC2.Images = append(mockEC2.Images, &ec2.Image{
+	mockEC2.Images = append(mockEC2.Images, &ec2types.Image{
 		CreationDate:   aws.String("2016-10-21T20:07:19.000Z"),
 		ImageId:        aws.String("ami-073c8c0760395aab8"),
 		Name:           aws.String("focal"),
 		OwnerId:        aws.String(awsup.WellKnownAccountUbuntu),
 		RootDeviceName: aws.String("/dev/xvda"),
-		Architecture:   aws.String("x86_64"),
+		Architecture:   ec2types.ArchitectureValuesX8664,
 	})
 
 	for _, g := range grid {
 		ig := &kops.InstanceGroup{
-			ObjectMeta: v1.ObjectMeta{
+			ObjectMeta: metav1.ObjectMeta{
 				Name: "test-nodes",
 			},
 			Spec: g.Input,
@@ -368,13 +367,13 @@ func TestInstanceMetadataOptions(t *testing.T) {
 	mockEC2 := &mockec2.MockEC2{}
 	cloud.MockEC2 = mockEC2
 
-	mockEC2.Images = append(mockEC2.Images, &ec2.Image{
+	mockEC2.Images = append(mockEC2.Images, &ec2types.Image{
 		CreationDate:   aws.String("2016-10-21T20:07:19.000Z"),
 		ImageId:        aws.String("ami-073c8c0760395aab8"),
 		Name:           aws.String("focal"),
 		OwnerId:        aws.String(awsup.WellKnownAccountUbuntu),
 		RootDeviceName: aws.String("/dev/xvda"),
-		Architecture:   aws.String("x86_64"),
+		Architecture:   ec2types.ArchitectureValuesX8664,
 	})
 
 	tests := []struct {
@@ -383,7 +382,7 @@ func TestInstanceMetadataOptions(t *testing.T) {
 	}{
 		{
 			ig: &kops.InstanceGroup{
-				ObjectMeta: v1.ObjectMeta{
+				ObjectMeta: metav1.ObjectMeta{
 					Name: "some-ig",
 				},
 				Spec: kops.InstanceGroupSpec{
@@ -399,7 +398,7 @@ func TestInstanceMetadataOptions(t *testing.T) {
 		},
 		{
 			ig: &kops.InstanceGroup{
-				ObjectMeta: v1.ObjectMeta{
+				ObjectMeta: metav1.ObjectMeta{
 					Name: "some-ig",
 				},
 				Spec: kops.InstanceGroupSpec{
@@ -585,6 +584,9 @@ func TestLoadBalancerSubnets(t *testing.T) {
 						Type:  kops.LoadBalancerTypeInternal,
 					},
 				},
+				CloudProvider: kops.CloudProviderSpec{
+					AWS: &kops.AWSSpec{},
+				},
 			},
 		}
 		if test.class != nil {
@@ -600,7 +602,7 @@ func TestLoadBalancerSubnets(t *testing.T) {
 			})
 		}
 		cluster.Spec.API.LoadBalancer.Subnets = test.lbSubnets
-		errs := awsValidateCluster(&cluster)
+		errs := awsValidateCluster(&cluster, true)
 		testErrors(t, test, errs, test.expected)
 	}
 }
@@ -668,9 +670,12 @@ func TestAWSAuthentication(t *testing.T) {
 						IdentityMappings: test.identityMappings,
 					},
 				},
+				CloudProvider: kops.CloudProviderSpec{
+					AWS: &kops.AWSSpec{},
+				},
 			},
 		}
-		errs := awsValidateCluster(&cluster)
+		errs := awsValidateCluster(&cluster, true)
 		testErrors(t, test, errs, test.expected)
 	}
 }

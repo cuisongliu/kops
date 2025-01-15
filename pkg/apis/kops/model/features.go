@@ -17,15 +17,8 @@ limitations under the License.
 package model
 
 import (
-	"github.com/blang/semver/v4"
 	"k8s.io/kops/pkg/apis/kops"
-	"k8s.io/kops/pkg/apis/kops/util"
 )
-
-// UseKopsControllerForNodeBootstrap is true if nodeup should use kops-controller for bootstrapping.
-func UseKopsControllerForNodeBootstrap(cloudProvider kops.CloudProviderID) bool {
-	return cloudProvider != kops.CloudProviderAzure
-}
 
 // UseChallengeCallback is true if we should use a callback challenge during node provisioning with kops-controller.
 func UseChallengeCallback(cloudProvider kops.CloudProviderID) bool {
@@ -36,6 +29,8 @@ func UseChallengeCallback(cloudProvider kops.CloudProviderID) bool {
 		return true
 	case kops.CloudProviderScaleway:
 		return true
+	case kops.CloudProviderAzure:
+		return true
 	default:
 		return false
 	}
@@ -44,17 +39,17 @@ func UseChallengeCallback(cloudProvider kops.CloudProviderID) bool {
 // UseKopsControllerForNodeConfig checks if nodeup should use kops-controller to get nodeup.Config.
 func UseKopsControllerForNodeConfig(cluster *kops.Cluster) bool {
 	if cluster.UsesLegacyGossip() {
-		switch cluster.Spec.GetCloudProvider() {
+		switch cluster.GetCloudProvider() {
 		case kops.CloudProviderGCE:
 			// We can use cloud-discovery here.
-		case kops.CloudProviderHetzner, kops.CloudProviderScaleway:
-			// We don't have a cloud-discovery mechanism implemented in nodeup for hetzner,
+		case kops.CloudProviderHetzner, kops.CloudProviderScaleway, kops.CloudProviderDO:
+			// We don't have a cloud-discovery mechanism implemented in nodeup for many clouds,
 			// but we assume that we're using a load balancer with a fixed IP address
 		default:
 			return false
 		}
 	}
-	return UseKopsControllerForNodeBootstrap(cluster.Spec.GetCloudProvider())
+	return true
 }
 
 // UseCiliumEtcd is true if we are using the Cilium etcd cluster.
@@ -72,6 +67,14 @@ func UseCiliumEtcd(cluster *kops.Cluster) bool {
 	return false
 }
 
-func UseExternalECRCredentialsProvider(k8sVersion semver.Version, cloudProvider kops.CloudProviderID) bool {
-	return util.IsKubernetesGTE("1.27", k8sVersion) && cloudProvider == kops.CloudProviderAWS
+// Configures a Kubelet Credential Provider if Kubernetes is newer than a specific version
+func UseExternalKubeletCredentialProvider(k8sVersion *KubernetesVersion, cloudProvider kops.CloudProviderID) bool {
+	switch cloudProvider {
+	case kops.CloudProviderGCE:
+		return k8sVersion.IsGTE("1.29")
+	case kops.CloudProviderAWS:
+		return k8sVersion.IsGTE("1.27")
+	default:
+		return false
+	}
 }

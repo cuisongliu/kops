@@ -148,6 +148,11 @@ resource "aws_autoscaling_group" "bastion-privateflannel-example-com" {
     value               = "bastion.privateflannel.example.com"
   }
   tag {
+    key                 = "aws-node-termination-handler/managed"
+    propagate_at_launch = true
+    value               = ""
+  }
+  tag {
     key                 = "k8s.io/role/bastion"
     propagate_at_launch = true
     value               = "1"
@@ -188,6 +193,11 @@ resource "aws_autoscaling_group" "master-us-test-1a-masters-privateflannel-examp
     key                 = "Name"
     propagate_at_launch = true
     value               = "master-us-test-1a.masters.privateflannel.example.com"
+  }
+  tag {
+    key                 = "aws-node-termination-handler/managed"
+    propagate_at_launch = true
+    value               = ""
   }
   tag {
     key                 = "k8s.io/cluster-autoscaler/node-template/label/kops.k8s.io/kops-controller-pki"
@@ -250,6 +260,11 @@ resource "aws_autoscaling_group" "nodes-privateflannel-example-com" {
     value               = "nodes.privateflannel.example.com"
   }
   tag {
+    key                 = "aws-node-termination-handler/managed"
+    propagate_at_launch = true
+    value               = ""
+  }
+  tag {
     key                 = "k8s.io/cluster-autoscaler/node-template/label/node-role.kubernetes.io/node"
     propagate_at_launch = true
     value               = ""
@@ -270,6 +285,90 @@ resource "aws_autoscaling_group" "nodes-privateflannel-example-com" {
     value               = "owned"
   }
   vpc_zone_identifier = [aws_subnet.us-test-1a-privateflannel-example-com.id]
+}
+
+resource "aws_autoscaling_lifecycle_hook" "bastion-NTHLifecycleHook" {
+  autoscaling_group_name = aws_autoscaling_group.bastion-privateflannel-example-com.id
+  default_result         = "CONTINUE"
+  heartbeat_timeout      = 300
+  lifecycle_transition   = "autoscaling:EC2_INSTANCE_TERMINATING"
+  name                   = "bastion-NTHLifecycleHook"
+}
+
+resource "aws_autoscaling_lifecycle_hook" "master-us-test-1a-NTHLifecycleHook" {
+  autoscaling_group_name = aws_autoscaling_group.master-us-test-1a-masters-privateflannel-example-com.id
+  default_result         = "CONTINUE"
+  heartbeat_timeout      = 300
+  lifecycle_transition   = "autoscaling:EC2_INSTANCE_TERMINATING"
+  name                   = "master-us-test-1a-NTHLifecycleHook"
+}
+
+resource "aws_autoscaling_lifecycle_hook" "nodes-NTHLifecycleHook" {
+  autoscaling_group_name = aws_autoscaling_group.nodes-privateflannel-example-com.id
+  default_result         = "CONTINUE"
+  heartbeat_timeout      = 300
+  lifecycle_transition   = "autoscaling:EC2_INSTANCE_TERMINATING"
+  name                   = "nodes-NTHLifecycleHook"
+}
+
+resource "aws_cloudwatch_event_rule" "privateflannel-example-com-ASGLifecycle" {
+  event_pattern = file("${path.module}/data/aws_cloudwatch_event_rule_privateflannel.example.com-ASGLifecycle_event_pattern")
+  name          = "privateflannel.example.com-ASGLifecycle"
+  tags = {
+    "KubernetesCluster"                                = "privateflannel.example.com"
+    "Name"                                             = "privateflannel.example.com-ASGLifecycle"
+    "kubernetes.io/cluster/privateflannel.example.com" = "owned"
+  }
+}
+
+resource "aws_cloudwatch_event_rule" "privateflannel-example-com-InstanceScheduledChange" {
+  event_pattern = file("${path.module}/data/aws_cloudwatch_event_rule_privateflannel.example.com-InstanceScheduledChange_event_pattern")
+  name          = "privateflannel.example.com-InstanceScheduledChange"
+  tags = {
+    "KubernetesCluster"                                = "privateflannel.example.com"
+    "Name"                                             = "privateflannel.example.com-InstanceScheduledChange"
+    "kubernetes.io/cluster/privateflannel.example.com" = "owned"
+  }
+}
+
+resource "aws_cloudwatch_event_rule" "privateflannel-example-com-InstanceStateChange" {
+  event_pattern = file("${path.module}/data/aws_cloudwatch_event_rule_privateflannel.example.com-InstanceStateChange_event_pattern")
+  name          = "privateflannel.example.com-InstanceStateChange"
+  tags = {
+    "KubernetesCluster"                                = "privateflannel.example.com"
+    "Name"                                             = "privateflannel.example.com-InstanceStateChange"
+    "kubernetes.io/cluster/privateflannel.example.com" = "owned"
+  }
+}
+
+resource "aws_cloudwatch_event_rule" "privateflannel-example-com-SpotInterruption" {
+  event_pattern = file("${path.module}/data/aws_cloudwatch_event_rule_privateflannel.example.com-SpotInterruption_event_pattern")
+  name          = "privateflannel.example.com-SpotInterruption"
+  tags = {
+    "KubernetesCluster"                                = "privateflannel.example.com"
+    "Name"                                             = "privateflannel.example.com-SpotInterruption"
+    "kubernetes.io/cluster/privateflannel.example.com" = "owned"
+  }
+}
+
+resource "aws_cloudwatch_event_target" "privateflannel-example-com-ASGLifecycle-Target" {
+  arn  = aws_sqs_queue.privateflannel-example-com-nth.arn
+  rule = aws_cloudwatch_event_rule.privateflannel-example-com-ASGLifecycle.id
+}
+
+resource "aws_cloudwatch_event_target" "privateflannel-example-com-InstanceScheduledChange-Target" {
+  arn  = aws_sqs_queue.privateflannel-example-com-nth.arn
+  rule = aws_cloudwatch_event_rule.privateflannel-example-com-InstanceScheduledChange.id
+}
+
+resource "aws_cloudwatch_event_target" "privateflannel-example-com-InstanceStateChange-Target" {
+  arn  = aws_sqs_queue.privateflannel-example-com-nth.arn
+  rule = aws_cloudwatch_event_rule.privateflannel-example-com-InstanceStateChange.id
+}
+
+resource "aws_cloudwatch_event_target" "privateflannel-example-com-SpotInterruption-Target" {
+  arn  = aws_sqs_queue.privateflannel-example-com-nth.arn
+  rule = aws_cloudwatch_event_rule.privateflannel-example-com-SpotInterruption.id
 }
 
 resource "aws_ebs_volume" "us-test-1a-etcd-events-privateflannel-example-com" {
@@ -307,12 +406,12 @@ resource "aws_ebs_volume" "us-test-1a-etcd-main-privateflannel-example-com" {
 }
 
 resource "aws_eip" "us-test-1a-privateflannel-example-com" {
+  domain = "vpc"
   tags = {
     "KubernetesCluster"                                = "privateflannel.example.com"
     "Name"                                             = "us-test-1a.privateflannel.example.com"
     "kubernetes.io/cluster/privateflannel.example.com" = "owned"
   }
-  vpc = true
 }
 
 resource "aws_elb" "api-privateflannel-example-com" {
@@ -465,7 +564,7 @@ resource "aws_launch_template" "bastion-privateflannel-example-com" {
     http_endpoint               = "enabled"
     http_protocol_ipv6          = "disabled"
     http_put_response_hop_limit = 1
-    http_tokens                 = "optional"
+    http_tokens                 = "required"
   }
   monitoring {
     enabled = false
@@ -482,6 +581,7 @@ resource "aws_launch_template" "bastion-privateflannel-example-com" {
     tags = {
       "KubernetesCluster"                                = "privateflannel.example.com"
       "Name"                                             = "bastion.privateflannel.example.com"
+      "aws-node-termination-handler/managed"             = ""
       "k8s.io/role/bastion"                              = "1"
       "kops.k8s.io/instancegroup"                        = "bastion"
       "kubernetes.io/cluster/privateflannel.example.com" = "owned"
@@ -492,6 +592,7 @@ resource "aws_launch_template" "bastion-privateflannel-example-com" {
     tags = {
       "KubernetesCluster"                                = "privateflannel.example.com"
       "Name"                                             = "bastion.privateflannel.example.com"
+      "aws-node-termination-handler/managed"             = ""
       "k8s.io/role/bastion"                              = "1"
       "kops.k8s.io/instancegroup"                        = "bastion"
       "kubernetes.io/cluster/privateflannel.example.com" = "owned"
@@ -500,6 +601,7 @@ resource "aws_launch_template" "bastion-privateflannel-example-com" {
   tags = {
     "KubernetesCluster"                                = "privateflannel.example.com"
     "Name"                                             = "bastion.privateflannel.example.com"
+    "aws-node-termination-handler/managed"             = ""
     "k8s.io/role/bastion"                              = "1"
     "kops.k8s.io/instancegroup"                        = "bastion"
     "kubernetes.io/cluster/privateflannel.example.com" = "owned"
@@ -535,7 +637,7 @@ resource "aws_launch_template" "master-us-test-1a-masters-privateflannel-example
     http_endpoint               = "enabled"
     http_protocol_ipv6          = "disabled"
     http_put_response_hop_limit = 1
-    http_tokens                 = "optional"
+    http_tokens                 = "required"
   }
   monitoring {
     enabled = false
@@ -552,6 +654,7 @@ resource "aws_launch_template" "master-us-test-1a-masters-privateflannel-example
     tags = {
       "KubernetesCluster"                                                                                     = "privateflannel.example.com"
       "Name"                                                                                                  = "master-us-test-1a.masters.privateflannel.example.com"
+      "aws-node-termination-handler/managed"                                                                  = ""
       "k8s.io/cluster-autoscaler/node-template/label/kops.k8s.io/kops-controller-pki"                         = ""
       "k8s.io/cluster-autoscaler/node-template/label/node-role.kubernetes.io/control-plane"                   = ""
       "k8s.io/cluster-autoscaler/node-template/label/node.kubernetes.io/exclude-from-external-load-balancers" = ""
@@ -566,6 +669,7 @@ resource "aws_launch_template" "master-us-test-1a-masters-privateflannel-example
     tags = {
       "KubernetesCluster"                                                                                     = "privateflannel.example.com"
       "Name"                                                                                                  = "master-us-test-1a.masters.privateflannel.example.com"
+      "aws-node-termination-handler/managed"                                                                  = ""
       "k8s.io/cluster-autoscaler/node-template/label/kops.k8s.io/kops-controller-pki"                         = ""
       "k8s.io/cluster-autoscaler/node-template/label/node-role.kubernetes.io/control-plane"                   = ""
       "k8s.io/cluster-autoscaler/node-template/label/node.kubernetes.io/exclude-from-external-load-balancers" = ""
@@ -578,6 +682,7 @@ resource "aws_launch_template" "master-us-test-1a-masters-privateflannel-example
   tags = {
     "KubernetesCluster"                                                                                     = "privateflannel.example.com"
     "Name"                                                                                                  = "master-us-test-1a.masters.privateflannel.example.com"
+    "aws-node-termination-handler/managed"                                                                  = ""
     "k8s.io/cluster-autoscaler/node-template/label/kops.k8s.io/kops-controller-pki"                         = ""
     "k8s.io/cluster-autoscaler/node-template/label/node-role.kubernetes.io/control-plane"                   = ""
     "k8s.io/cluster-autoscaler/node-template/label/node.kubernetes.io/exclude-from-external-load-balancers" = ""
@@ -614,7 +719,7 @@ resource "aws_launch_template" "nodes-privateflannel-example-com" {
     http_endpoint               = "enabled"
     http_protocol_ipv6          = "disabled"
     http_put_response_hop_limit = 1
-    http_tokens                 = "optional"
+    http_tokens                 = "required"
   }
   monitoring {
     enabled = false
@@ -631,6 +736,7 @@ resource "aws_launch_template" "nodes-privateflannel-example-com" {
     tags = {
       "KubernetesCluster"                                                          = "privateflannel.example.com"
       "Name"                                                                       = "nodes.privateflannel.example.com"
+      "aws-node-termination-handler/managed"                                       = ""
       "k8s.io/cluster-autoscaler/node-template/label/node-role.kubernetes.io/node" = ""
       "k8s.io/role/node"                                                           = "1"
       "kops.k8s.io/instancegroup"                                                  = "nodes"
@@ -642,6 +748,7 @@ resource "aws_launch_template" "nodes-privateflannel-example-com" {
     tags = {
       "KubernetesCluster"                                                          = "privateflannel.example.com"
       "Name"                                                                       = "nodes.privateflannel.example.com"
+      "aws-node-termination-handler/managed"                                       = ""
       "k8s.io/cluster-autoscaler/node-template/label/node-role.kubernetes.io/node" = ""
       "k8s.io/role/node"                                                           = "1"
       "kops.k8s.io/instancegroup"                                                  = "nodes"
@@ -651,6 +758,7 @@ resource "aws_launch_template" "nodes-privateflannel-example-com" {
   tags = {
     "KubernetesCluster"                                                          = "privateflannel.example.com"
     "Name"                                                                       = "nodes.privateflannel.example.com"
+    "aws-node-termination-handler/managed"                                       = ""
     "k8s.io/cluster-autoscaler/node-template/label/node-role.kubernetes.io/node" = ""
     "k8s.io/role/node"                                                           = "1"
     "kops.k8s.io/instancegroup"                                                  = "nodes"
@@ -664,6 +772,7 @@ resource "aws_lb" "bastion-privateflannel-example-com" {
   internal                         = false
   load_balancer_type               = "network"
   name                             = "bastion-privateflannel-ex-753531"
+  security_groups                  = [aws_security_group.bastion-elb-privateflannel-example-com.id]
   subnet_mapping {
     subnet_id = aws_subnet.utility-us-test-1a-privateflannel-example-com.id
   }
@@ -912,14 +1021,6 @@ resource "aws_s3_object" "privateflannel-example-com-addons-kubelet-api-rbac-add
   server_side_encryption = "AES256"
 }
 
-resource "aws_s3_object" "privateflannel-example-com-addons-leader-migration-rbac-addons-k8s-io-k8s-1-23" {
-  bucket                 = "testingBucket"
-  content                = file("${path.module}/data/aws_s3_object_privateflannel.example.com-addons-leader-migration.rbac.addons.k8s.io-k8s-1.23_content")
-  key                    = "clusters.example.com/privateflannel.example.com/addons/leader-migration.rbac.addons.k8s.io/k8s-1.23.yaml"
-  provider               = aws.files
-  server_side_encryption = "AES256"
-}
-
 resource "aws_s3_object" "privateflannel-example-com-addons-limit-range-addons-k8s-io" {
   bucket                 = "testingBucket"
   content                = file("${path.module}/data/aws_s3_object_privateflannel.example.com-addons-limit-range.addons.k8s.io_content")
@@ -932,6 +1033,14 @@ resource "aws_s3_object" "privateflannel-example-com-addons-networking-flannel-k
   bucket                 = "testingBucket"
   content                = file("${path.module}/data/aws_s3_object_privateflannel.example.com-addons-networking.flannel-k8s-1.25_content")
   key                    = "clusters.example.com/privateflannel.example.com/addons/networking.flannel/k8s-1.25.yaml"
+  provider               = aws.files
+  server_side_encryption = "AES256"
+}
+
+resource "aws_s3_object" "privateflannel-example-com-addons-node-termination-handler-aws-k8s-1-11" {
+  bucket                 = "testingBucket"
+  content                = file("${path.module}/data/aws_s3_object_privateflannel.example.com-addons-node-termination-handler.aws-k8s-1.11_content")
+  key                    = "clusters.example.com/privateflannel.example.com/addons/node-termination-handler.aws/k8s-1.11.yaml"
   provider               = aws.files
   server_side_encryption = "AES256"
 }
@@ -950,6 +1059,17 @@ resource "aws_security_group" "api-elb-privateflannel-example-com" {
   tags = {
     "KubernetesCluster"                                = "privateflannel.example.com"
     "Name"                                             = "api-elb.privateflannel.example.com"
+    "kubernetes.io/cluster/privateflannel.example.com" = "owned"
+  }
+  vpc_id = aws_vpc.privateflannel-example-com.id
+}
+
+resource "aws_security_group" "bastion-elb-privateflannel-example-com" {
+  description = "Security group for bastion ELB"
+  name        = "bastion-elb.privateflannel.example.com"
+  tags = {
+    "KubernetesCluster"                                = "privateflannel.example.com"
+    "Name"                                             = "bastion-elb.privateflannel.example.com"
     "kubernetes.io/cluster/privateflannel.example.com" = "owned"
   }
   vpc_id = aws_vpc.privateflannel-example-com.id
@@ -988,11 +1108,11 @@ resource "aws_security_group" "nodes-privateflannel-example-com" {
   vpc_id = aws_vpc.privateflannel-example-com.id
 }
 
-resource "aws_security_group_rule" "from-0-0-0-0--0-ingress-tcp-22to22-bastion-privateflannel-example-com" {
+resource "aws_security_group_rule" "from-0-0-0-0--0-ingress-tcp-22to22-bastion-elb-privateflannel-example-com" {
   cidr_blocks       = ["0.0.0.0/0"]
   from_port         = 22
   protocol          = "tcp"
-  security_group_id = aws_security_group.bastion-privateflannel-example-com.id
+  security_group_id = aws_security_group.bastion-elb-privateflannel-example-com.id
   to_port           = 22
   type              = "ingress"
 }
@@ -1006,11 +1126,11 @@ resource "aws_security_group_rule" "from-0-0-0-0--0-ingress-tcp-443to443-api-elb
   type              = "ingress"
 }
 
-resource "aws_security_group_rule" "from-172-20-4-0--22-ingress-tcp-22to22-bastion-privateflannel-example-com" {
+resource "aws_security_group_rule" "from-172-20-4-0--22-ingress-tcp-22to22-bastion-elb-privateflannel-example-com" {
   cidr_blocks       = ["172.20.4.0/22"]
   from_port         = 22
   protocol          = "tcp"
-  security_group_id = aws_security_group.bastion-privateflannel-example-com.id
+  security_group_id = aws_security_group.bastion-elb-privateflannel-example-com.id
   to_port           = 22
   type              = "ingress"
 }
@@ -1033,6 +1153,42 @@ resource "aws_security_group_rule" "from-api-elb-privateflannel-example-com-egre
   type              = "egress"
 }
 
+resource "aws_security_group_rule" "from-bastion-elb-privateflannel-example-com-egress-all-0to0-0-0-0-0--0" {
+  cidr_blocks       = ["0.0.0.0/0"]
+  from_port         = 0
+  protocol          = "-1"
+  security_group_id = aws_security_group.bastion-elb-privateflannel-example-com.id
+  to_port           = 0
+  type              = "egress"
+}
+
+resource "aws_security_group_rule" "from-bastion-elb-privateflannel-example-com-egress-all-0to0-__--0" {
+  from_port         = 0
+  ipv6_cidr_blocks  = ["::/0"]
+  protocol          = "-1"
+  security_group_id = aws_security_group.bastion-elb-privateflannel-example-com.id
+  to_port           = 0
+  type              = "egress"
+}
+
+resource "aws_security_group_rule" "from-bastion-elb-privateflannel-example-com-ingress-icmp-3to4-bastion-privateflannel-example-com" {
+  from_port                = 3
+  protocol                 = "icmp"
+  security_group_id        = aws_security_group.bastion-privateflannel-example-com.id
+  source_security_group_id = aws_security_group.bastion-elb-privateflannel-example-com.id
+  to_port                  = 4
+  type                     = "ingress"
+}
+
+resource "aws_security_group_rule" "from-bastion-elb-privateflannel-example-com-ingress-tcp-22to22-bastion-privateflannel-example-com" {
+  from_port                = 22
+  protocol                 = "tcp"
+  security_group_id        = aws_security_group.bastion-privateflannel-example-com.id
+  source_security_group_id = aws_security_group.bastion-elb-privateflannel-example-com.id
+  to_port                  = 22
+  type                     = "ingress"
+}
+
 resource "aws_security_group_rule" "from-bastion-privateflannel-example-com-egress-all-0to0-0-0-0-0--0" {
   cidr_blocks       = ["0.0.0.0/0"]
   from_port         = 0
@@ -1049,6 +1205,15 @@ resource "aws_security_group_rule" "from-bastion-privateflannel-example-com-egre
   security_group_id = aws_security_group.bastion-privateflannel-example-com.id
   to_port           = 0
   type              = "egress"
+}
+
+resource "aws_security_group_rule" "from-bastion-privateflannel-example-com-ingress-icmp-3to4-bastion-elb-privateflannel-example-com" {
+  from_port                = 3
+  protocol                 = "icmp"
+  security_group_id        = aws_security_group.bastion-elb-privateflannel-example-com.id
+  source_security_group_id = aws_security_group.bastion-privateflannel-example-com.id
+  to_port                  = 4
+  type                     = "ingress"
 }
 
 resource "aws_security_group_rule" "from-bastion-privateflannel-example-com-ingress-tcp-22to22-masters-privateflannel-example-com" {
@@ -1186,11 +1351,29 @@ resource "aws_security_group_rule" "icmp-pmtu-api-elb-0-0-0-0--0" {
   type              = "ingress"
 }
 
+resource "aws_security_group_rule" "icmp-pmtu-cp-to-elb" {
+  from_port                = 3
+  protocol                 = "icmp"
+  security_group_id        = aws_security_group.api-elb-privateflannel-example-com.id
+  source_security_group_id = aws_security_group.masters-privateflannel-example-com.id
+  to_port                  = 4
+  type                     = "ingress"
+}
+
+resource "aws_security_group_rule" "icmp-pmtu-elb-to-cp" {
+  from_port                = 3
+  protocol                 = "icmp"
+  security_group_id        = aws_security_group.masters-privateflannel-example-com.id
+  source_security_group_id = aws_security_group.api-elb-privateflannel-example-com.id
+  to_port                  = 4
+  type                     = "ingress"
+}
+
 resource "aws_security_group_rule" "icmp-pmtu-ssh-nlb-0-0-0-0--0" {
   cidr_blocks       = ["0.0.0.0/0"]
   from_port         = 3
   protocol          = "icmp"
-  security_group_id = aws_security_group.bastion-privateflannel-example-com.id
+  security_group_id = aws_security_group.bastion-elb-privateflannel-example-com.id
   to_port           = 4
   type              = "ingress"
 }
@@ -1199,9 +1382,20 @@ resource "aws_security_group_rule" "icmp-pmtu-ssh-nlb-172-20-4-0--22" {
   cidr_blocks       = ["172.20.4.0/22"]
   from_port         = 3
   protocol          = "icmp"
-  security_group_id = aws_security_group.bastion-privateflannel-example-com.id
+  security_group_id = aws_security_group.bastion-elb-privateflannel-example-com.id
   to_port           = 4
   type              = "ingress"
+}
+
+resource "aws_sqs_queue" "privateflannel-example-com-nth" {
+  message_retention_seconds = 300
+  name                      = "privateflannel-example-com-nth"
+  policy                    = file("${path.module}/data/aws_sqs_queue_privateflannel-example-com-nth_policy")
+  tags = {
+    "KubernetesCluster"                                = "privateflannel.example.com"
+    "Name"                                             = "privateflannel-example-com-nth"
+    "kubernetes.io/cluster/privateflannel.example.com" = "owned"
+  }
 }
 
 resource "aws_subnet" "us-test-1a-privateflannel-example-com" {
@@ -1213,8 +1407,6 @@ resource "aws_subnet" "us-test-1a-privateflannel-example-com" {
     "KubernetesCluster"                                = "privateflannel.example.com"
     "Name"                                             = "us-test-1a.privateflannel.example.com"
     "SubnetType"                                       = "Private"
-    "kops.k8s.io/instance-group/master-us-test-1a"     = "true"
-    "kops.k8s.io/instance-group/nodes"                 = "true"
     "kubernetes.io/cluster/privateflannel.example.com" = "owned"
     "kubernetes.io/role/internal-elb"                  = "1"
   }
@@ -1230,7 +1422,6 @@ resource "aws_subnet" "utility-us-test-1a-privateflannel-example-com" {
     "KubernetesCluster"                                = "privateflannel.example.com"
     "Name"                                             = "utility-us-test-1a.privateflannel.example.com"
     "SubnetType"                                       = "Utility"
-    "kops.k8s.io/instance-group/bastion"               = "true"
     "kubernetes.io/cluster/privateflannel.example.com" = "owned"
     "kubernetes.io/role/elb"                           = "1"
   }
@@ -1270,7 +1461,7 @@ terraform {
     aws = {
       "configuration_aliases" = [aws.files]
       "source"                = "hashicorp/aws"
-      "version"               = ">= 4.0.0"
+      "version"               = ">= 5.0.0"
     }
   }
 }

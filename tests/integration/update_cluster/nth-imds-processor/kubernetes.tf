@@ -334,7 +334,7 @@ resource "aws_launch_template" "master-us-test-1a-masters-nthimdsprocessor-longc
     http_endpoint               = "enabled"
     http_protocol_ipv6          = "disabled"
     http_put_response_hop_limit = 1
-    http_tokens                 = "optional"
+    http_tokens                 = "required"
   }
   monitoring {
     enabled = false
@@ -413,7 +413,7 @@ resource "aws_launch_template" "nodes-nthimdsprocessor-longclustername-example-c
     http_endpoint               = "enabled"
     http_protocol_ipv6          = "disabled"
     http_put_response_hop_limit = 1
-    http_tokens                 = "optional"
+    http_tokens                 = "required"
   }
   monitoring {
     enabled = false
@@ -794,8 +794,6 @@ resource "aws_subnet" "us-test-1a-nthimdsprocessor-longclustername-example-com" 
     "KubernetesCluster"                                                  = "nthimdsprocessor.longclustername.example.com"
     "Name"                                                               = "us-test-1a.nthimdsprocessor.longclustername.example.com"
     "SubnetType"                                                         = "Public"
-    "kops.k8s.io/instance-group/master-us-test-1a"                       = "true"
-    "kops.k8s.io/instance-group/nodes"                                   = "true"
     "kubernetes.io/cluster/nthimdsprocessor.longclustername.example.com" = "owned"
     "kubernetes.io/role/elb"                                             = "1"
     "kubernetes.io/role/internal-elb"                                    = "1"
@@ -836,7 +834,7 @@ terraform {
     aws = {
       "configuration_aliases" = [aws.files]
       "source"                = "hashicorp/aws"
-      "version"               = ">= 4.0.0"
+      "version"               = ">= 5.0.0"
     }
   }
 }

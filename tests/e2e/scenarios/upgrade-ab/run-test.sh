@@ -45,7 +45,7 @@ if [[ "$K8S_VERSION_B" == "ci" ]]; then
   K8S_VERSION_B=https://storage.googleapis.com/k8s-release-dev/ci/$(curl https://storage.googleapis.com/k8s-release-dev/ci/latest.txt)
   TEST_PACKAGE_MARKER="latest.txt"
   TEST_PACKAGE_DIR="ci"
-  TEST_PACKAGE_BUCKET="k8s-release-dev"
+  TEST_PACKAGE_URL="https://storage.googleapis.com/k8s-release-dev"
 fi
 
 export KOPS_BASE_URL
@@ -83,11 +83,24 @@ if [[ ${KOPS_IRSA-} = true ]]; then
   create_args="${create_args} --discovery-store=${DISCOVERY_STORE}/${CLUSTER_NAME}/discovery"
 fi
 
+# TODO: remove once we stop testing upgrades from kops <1.29
+if [[ "${CLUSTER_NAME}" == *"tests-kops-aws.k8s.io" && "${KOPS_VERSION_A}" =~ v1.2[678].* ]]; then
+  create_args="${create_args} --dns=none"
+fi
+
+# TODO: Switch scripts to use KOPS_CONTROL_PLANE_COUNT
+if [[ -n "${KOPS_CONTROL_PLANE_SIZE:-}" ]]; then
+  echo "Recognized (deprecated) KOPS_CONTROL_PLANE_SIZE=${KOPS_CONTROL_PLANE_SIZE}, please set KOPS_CONTROL_PLANE_COUNT instead"
+  KOPS_CONTROL_PLANE_COUNT=${KOPS_CONTROL_PLANE_SIZE}
+fi
+
+# Note that we use --control-plane-size, even though it is deprecated, because we have to support old versions
+# in the upgrade test.
 ${KUBETEST2} \
     --up \
     --kops-binary-path="${KOPS_A}" \
     --kubernetes-version="${K8S_VERSION_A}" \
-    --control-plane-size="${KOPS_CONTROL_PLANE_SIZE:-1}" \
+    --control-plane-size="${KOPS_CONTROL_PLANE_COUNT:-1}" \
     --template-path="${KOPS_TEMPLATE:-}" \
     --create-args="--networking calico ${KOPS_EXTRA_FLAGS:-} ${create_args}"
 
@@ -119,6 +132,9 @@ kubectl get nodes -owide --kubeconfig "${KUBECONFIG_A}"
 # Sleep to ensure channels has done its thing
 sleep 120s
 
+# Make sure configuration B has been applied (e.g. new load balancer is ready)
+"${KOPS_B}" validate cluster --wait=10m
+
 ${CHANNELS} apply channel "$KOPS_STATE_STORE"/"${CLUSTER_NAME}"/addons/bootstrap-channel.yaml --yes -v4
 
 "${KOPS_B}" rolling-update cluster
@@ -146,7 +162,7 @@ if [[ -n ${TEST_PACKAGE_MARKER-} ]]; then
     test_package_args+=" --test-package-dir=${TEST_PACKAGE_DIR-}"
   fi
   if [[ -n ${TEST_PACKAGE_BUCKET-} ]]; then
-    test_package_args+=" --test-package-bucket=${TEST_PACKAGE_BUCKET-}"
+    test_package_args+=" --test-package-url=${TEST_PACKAGE_URL-}"
   fi
 else
   test_package_args+=" --test-package-version=${TEST_PACKAGE_VERSION}"

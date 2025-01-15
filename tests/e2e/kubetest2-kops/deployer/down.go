@@ -22,6 +22,7 @@ import (
 
 	"k8s.io/klog/v2"
 	"k8s.io/kops/tests/e2e/kubetest2-kops/gce"
+	"k8s.io/kops/tests/e2e/pkg/kops"
 	"sigs.k8s.io/kubetest2/pkg/boskos"
 	"sigs.k8s.io/kubetest2/pkg/exec"
 )
@@ -30,6 +31,13 @@ func (d *deployer) Down() error {
 	if err := d.init(); err != nil {
 		return err
 	}
+
+	// There is no point running the rest of this function if the cluster doesn't exist
+	cluster, _ := kops.GetCluster(d.KopsBinaryPath, d.ClusterName, nil, false)
+	if cluster == nil {
+		return nil
+	}
+
 	if err := d.DumpClusterLogs(); err != nil {
 		klog.Warningf("Dumping cluster logs at the start of Down() failed: %s", err)
 	}
@@ -45,6 +53,16 @@ func (d *deployer) Down() error {
 		"--name", d.ClusterName,
 		"--yes",
 	}
+	version, err := kops.GetVersion(d.KopsBinaryPath)
+	if err != nil {
+		return err
+	}
+	if version > "1.29" {
+		args = append(args,
+			"--interval=60s",
+			"--wait=60m",
+		)
+	}
 	klog.Info(strings.Join(args, " "))
 	cmd := exec.Command(args[0], args[1:]...)
 	cmd.SetEnv(d.env()...)
@@ -56,6 +74,7 @@ func (d *deployer) Down() error {
 
 	if d.CloudProvider == "gce" && d.createBucket {
 		gce.DeleteGCSBucket(d.stateStore(), d.GCPProject)
+		gce.DeleteGCSBucket(d.stagingStore(), d.GCPProject)
 	}
 
 	if d.boskos != nil {

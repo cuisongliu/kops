@@ -25,22 +25,26 @@ import (
 )
 
 type SpecBuilder struct {
-	OptionsLoader *loader.OptionsLoader
+	OptionsLoader *loader.OptionsLoader[*kopsapi.Cluster]
 }
 
-func (l *SpecBuilder) BuildCompleteSpec(clusterSpec *kopsapi.ClusterSpec) (*kopsapi.ClusterSpec, error) {
-	loaded, err := l.OptionsLoader.Build(clusterSpec)
+func (l *SpecBuilder) BuildCompleteSpec(cluster *kopsapi.Cluster) (*kopsapi.Cluster, error) {
+	// Control-plane kubelet config = (base kubelet config + control-plane kubelet config)
+	controlPlaneKubelet := &kopsapi.KubeletConfigSpec{}
+	if cluster.Spec.Kubelet != nil {
+		reflectutils.JSONMergeStruct(controlPlaneKubelet, cluster.Spec.Kubelet)
+	}
+	if cluster.Spec.ControlPlaneKubelet != nil {
+		reflectutils.JSONMergeStruct(controlPlaneKubelet, cluster.Spec.ControlPlaneKubelet)
+	}
+	cluster.Spec.ControlPlaneKubelet = controlPlaneKubelet
+
+	loaded, err := l.OptionsLoader.Build(cluster)
 	if err != nil {
 		return nil, err
 	}
-	completed := &kopsapi.ClusterSpec{}
-	*completed = *(loaded.(*kopsapi.ClusterSpec))
-
-	// Control-plane kubelet config = (base kubelet config + control-plane kubelet config)
-	controlPlaneKubelet := &kopsapi.KubeletConfigSpec{}
-	reflectutils.JSONMergeStruct(controlPlaneKubelet, completed.Kubelet)
-	reflectutils.JSONMergeStruct(controlPlaneKubelet, completed.ControlPlaneKubelet)
-	completed.ControlPlaneKubelet = controlPlaneKubelet
+	completed := &kopsapi.Cluster{}
+	*completed = *loaded
 
 	klog.V(1).Infof("options: %s", fi.DebugAsJsonStringIndent(completed))
 	return completed, nil

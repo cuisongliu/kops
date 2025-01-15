@@ -27,10 +27,10 @@ type KubeSchedulerOptionsBuilder struct {
 	*OptionsContext
 }
 
-var _ loader.OptionsBuilder = &KubeSchedulerOptionsBuilder{}
+var _ loader.ClusterOptionsBuilder = &KubeSchedulerOptionsBuilder{}
 
-func (b *KubeSchedulerOptionsBuilder) BuildOptions(o interface{}) error {
-	clusterSpec := o.(*kops.ClusterSpec)
+func (b *KubeSchedulerOptionsBuilder) BuildOptions(o *kops.Cluster) error {
+	clusterSpec := &o.Spec
 	if clusterSpec.KubeScheduler == nil {
 		clusterSpec.KubeScheduler = &kops.KubeSchedulerConfig{}
 	}
@@ -57,17 +57,17 @@ func (b *KubeSchedulerOptionsBuilder) BuildOptions(o interface{}) error {
 		}
 	}
 
-	if clusterSpec.CloudProvider.AWS != nil && clusterSpec.CloudProvider.AWS.EBSCSIDriver != nil && fi.ValueOf(clusterSpec.CloudProvider.AWS.EBSCSIDriver.Enabled) {
+	if clusterSpec.CloudProvider.AWS != nil {
 
 		if config.FeatureGates == nil {
 			config.FeatureGates = make(map[string]string)
 		}
 
-		if _, found := config.FeatureGates["InTreePluginAWSUnregister"]; !found {
+		if _, found := config.FeatureGates["InTreePluginAWSUnregister"]; !found && b.ControlPlaneKubernetesVersion().IsLT("1.31") {
 			config.FeatureGates["InTreePluginAWSUnregister"] = "true"
 		}
 
-		if _, found := config.FeatureGates["CSIMigrationAWS"]; !found && b.IsKubernetesLT("1.27") {
+		if _, found := config.FeatureGates["CSIMigrationAWS"]; !found && b.ControlPlaneKubernetesVersion().IsLT("1.27") {
 			config.FeatureGates["CSIMigrationAWS"] = "true"
 		}
 	}

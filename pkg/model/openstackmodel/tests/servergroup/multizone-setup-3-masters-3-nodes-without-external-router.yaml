@@ -20,7 +20,6 @@ AvailabilityZone: zone-1
 ConfigDrive: false
 Flavor: blc.1-2
 FloatingIP: null
-ForAPIServer: false
 GroupName: master-a
 ID: null
 Image: image
@@ -44,7 +43,6 @@ Name: master-a-1-cluster
 Port:
   AdditionalSecurityGroups: null
   AllowedAddressPairs: null
-  ForAPIServer: false
   ID: null
   InstanceGroupName: master-a
   Lifecycle: Sync
@@ -80,6 +78,7 @@ Port:
   - KopsInstanceGroup=master-a
   - KopsName=port-master-a-1
   - KubernetesCluster=cluster
+  WellKnownServices: null
 Region: region
 Role: ControlPlane
 SSHKey: kubernetes.cluster-ba_d8_85_a0_5b_50_b0_01_e0_b2_b0_ae_5d_f6_7a_d1
@@ -87,9 +86,9 @@ SecurityGroups: null
 ServerGroup:
   ClusterName: cluster
   ID: null
-  IGName: master-a
+  IGMap:
+    master-a: 1
   Lifecycle: Sync
-  MaxSize: 1
   Name: cluster-master-a
   Policies:
   - anti-affinity
@@ -98,12 +97,12 @@ UserData:
   task:
     Lifecycle: ""
     Name: master-a
+WellKnownServices: null
 ---
 AvailabilityZone: zone-2
 ConfigDrive: false
 Flavor: blc.1-2
 FloatingIP: null
-ForAPIServer: false
 GroupName: master-b
 ID: null
 Image: image
@@ -127,7 +126,6 @@ Name: master-b-1-cluster
 Port:
   AdditionalSecurityGroups: null
   AllowedAddressPairs: null
-  ForAPIServer: false
   ID: null
   InstanceGroupName: master-b
   Lifecycle: Sync
@@ -163,6 +161,7 @@ Port:
   - KopsInstanceGroup=master-b
   - KopsName=port-master-b-1
   - KubernetesCluster=cluster
+  WellKnownServices: null
 Region: region
 Role: ControlPlane
 SSHKey: kubernetes.cluster-ba_d8_85_a0_5b_50_b0_01_e0_b2_b0_ae_5d_f6_7a_d1
@@ -170,9 +169,9 @@ SecurityGroups: null
 ServerGroup:
   ClusterName: cluster
   ID: null
-  IGName: master-b
+  IGMap:
+    master-b: 1
   Lifecycle: Sync
-  MaxSize: 1
   Name: cluster-master-b
   Policies:
   - anti-affinity
@@ -181,12 +180,12 @@ UserData:
   task:
     Lifecycle: ""
     Name: master-b
+WellKnownServices: null
 ---
 AvailabilityZone: zone-3
 ConfigDrive: false
 Flavor: blc.1-2
 FloatingIP: null
-ForAPIServer: false
 GroupName: master-c
 ID: null
 Image: image
@@ -210,7 +209,6 @@ Name: master-c-1-cluster
 Port:
   AdditionalSecurityGroups: null
   AllowedAddressPairs: null
-  ForAPIServer: false
   ID: null
   InstanceGroupName: master-c
   Lifecycle: Sync
@@ -246,6 +244,7 @@ Port:
   - KopsInstanceGroup=master-c
   - KopsName=port-master-c-1
   - KubernetesCluster=cluster
+  WellKnownServices: null
 Region: region
 Role: ControlPlane
 SSHKey: kubernetes.cluster-ba_d8_85_a0_5b_50_b0_01_e0_b2_b0_ae_5d_f6_7a_d1
@@ -253,9 +252,9 @@ SecurityGroups: null
 ServerGroup:
   ClusterName: cluster
   ID: null
-  IGName: master-c
+  IGMap:
+    master-c: 1
   Lifecycle: Sync
-  MaxSize: 1
   Name: cluster-master-c
   Policies:
   - anti-affinity
@@ -264,12 +263,12 @@ UserData:
   task:
     Lifecycle: ""
     Name: master-c
+WellKnownServices: null
 ---
 AvailabilityZone: zone-1
 ConfigDrive: false
 Flavor: blc.1-2
 FloatingIP: null
-ForAPIServer: false
 GroupName: node-a
 ID: null
 Image: image
@@ -290,7 +289,6 @@ Name: node-a-1-cluster
 Port:
   AdditionalSecurityGroups: null
   AllowedAddressPairs: null
-  ForAPIServer: false
   ID: null
   InstanceGroupName: node-a
   Lifecycle: Sync
@@ -320,6 +318,7 @@ Port:
   - KopsInstanceGroup=node-a
   - KopsName=port-node-a-1
   - KubernetesCluster=cluster
+  WellKnownServices: null
 Region: region
 Role: Node
 SSHKey: kubernetes.cluster-ba_d8_85_a0_5b_50_b0_01_e0_b2_b0_ae_5d_f6_7a_d1
@@ -327,9 +326,9 @@ SecurityGroups: null
 ServerGroup:
   ClusterName: cluster
   ID: null
-  IGName: node-a
+  IGMap:
+    node-a: 1
   Lifecycle: Sync
-  MaxSize: 1
   Name: cluster-node-a
   Policies:
   - anti-affinity
@@ -338,12 +337,12 @@ UserData:
   task:
     Lifecycle: ""
     Name: node-a
+WellKnownServices: null
 ---
 AvailabilityZone: zone-2
 ConfigDrive: false
 Flavor: blc.1-2
 FloatingIP: null
-ForAPIServer: false
 GroupName: node-b
 ID: null
 Image: image
@@ -364,7 +363,6 @@ Name: node-b-1-cluster
 Port:
   AdditionalSecurityGroups: null
   AllowedAddressPairs: null
-  ForAPIServer: false
   ID: null
   InstanceGroupName: node-b
   Lifecycle: Sync
@@ -394,6 +392,7 @@ Port:
   - KopsInstanceGroup=node-b
   - KopsName=port-node-b-1
   - KubernetesCluster=cluster
+  WellKnownServices: null
 Region: region
 Role: Node
 SSHKey: kubernetes.cluster-ba_d8_85_a0_5b_50_b0_01_e0_b2_b0_ae_5d_f6_7a_d1
@@ -401,9 +400,9 @@ SecurityGroups: null
 ServerGroup:
   ClusterName: cluster
   ID: null
-  IGName: node-b
+  IGMap:
+    node-b: 1
   Lifecycle: Sync
-  MaxSize: 1
   Name: cluster-node-b
   Policies:
   - anti-affinity
@@ -412,12 +411,12 @@ UserData:
   task:
     Lifecycle: ""
     Name: node-b
+WellKnownServices: null
 ---
 AvailabilityZone: zone-3
 ConfigDrive: false
 Flavor: blc.1-2
 FloatingIP: null
-ForAPIServer: false
 GroupName: node-c
 ID: null
 Image: image
@@ -438,7 +437,6 @@ Name: node-c-1-cluster
 Port:
   AdditionalSecurityGroups: null
   AllowedAddressPairs: null
-  ForAPIServer: false
   ID: null
   InstanceGroupName: node-c
   Lifecycle: Sync
@@ -468,6 +466,7 @@ Port:
   - KopsInstanceGroup=node-c
   - KopsName=port-node-c-1
   - KubernetesCluster=cluster
+  WellKnownServices: null
 Region: region
 Role: Node
 SSHKey: kubernetes.cluster-ba_d8_85_a0_5b_50_b0_01_e0_b2_b0_ae_5d_f6_7a_d1
@@ -475,9 +474,9 @@ SecurityGroups: null
 ServerGroup:
   ClusterName: cluster
   ID: null
-  IGName: node-c
+  IGMap:
+    node-c: 1
   Lifecycle: Sync
-  MaxSize: 1
   Name: cluster-node-c
   Policies:
   - anti-affinity
@@ -486,6 +485,7 @@ UserData:
   task:
     Lifecycle: ""
     Name: node-c
+WellKnownServices: null
 ---
 Lifecycle: ""
 Name: apiserver-aggregator-ca
@@ -655,7 +655,6 @@ PublicACL: null
 ---
 AdditionalSecurityGroups: null
 AllowedAddressPairs: null
-ForAPIServer: false
 ID: null
 InstanceGroupName: master-a
 Lifecycle: Sync
@@ -691,10 +690,10 @@ Tags:
 - KopsInstanceGroup=master-a
 - KopsName=port-master-a-1
 - KubernetesCluster=cluster
+WellKnownServices: null
 ---
 AdditionalSecurityGroups: null
 AllowedAddressPairs: null
-ForAPIServer: false
 ID: null
 InstanceGroupName: master-b
 Lifecycle: Sync
@@ -730,10 +729,10 @@ Tags:
 - KopsInstanceGroup=master-b
 - KopsName=port-master-b-1
 - KubernetesCluster=cluster
+WellKnownServices: null
 ---
 AdditionalSecurityGroups: null
 AllowedAddressPairs: null
-ForAPIServer: false
 ID: null
 InstanceGroupName: master-c
 Lifecycle: Sync
@@ -769,10 +768,10 @@ Tags:
 - KopsInstanceGroup=master-c
 - KopsName=port-master-c-1
 - KubernetesCluster=cluster
+WellKnownServices: null
 ---
 AdditionalSecurityGroups: null
 AllowedAddressPairs: null
-ForAPIServer: false
 ID: null
 InstanceGroupName: node-a
 Lifecycle: Sync
@@ -802,10 +801,10 @@ Tags:
 - KopsInstanceGroup=node-a
 - KopsName=port-node-a-1
 - KubernetesCluster=cluster
+WellKnownServices: null
 ---
 AdditionalSecurityGroups: null
 AllowedAddressPairs: null
-ForAPIServer: false
 ID: null
 InstanceGroupName: node-b
 Lifecycle: Sync
@@ -835,10 +834,10 @@ Tags:
 - KopsInstanceGroup=node-b
 - KopsName=port-node-b-1
 - KubernetesCluster=cluster
+WellKnownServices: null
 ---
 AdditionalSecurityGroups: null
 AllowedAddressPairs: null
-ForAPIServer: false
 ID: null
 InstanceGroupName: node-c
 Lifecycle: Sync
@@ -868,57 +867,58 @@ Tags:
 - KopsInstanceGroup=node-c
 - KopsName=port-node-c-1
 - KubernetesCluster=cluster
+WellKnownServices: null
 ---
 ClusterName: cluster
 ID: null
-IGName: master-a
+IGMap:
+  master-a: 1
 Lifecycle: Sync
-MaxSize: 1
 Name: cluster-master-a
 Policies:
 - anti-affinity
 ---
 ClusterName: cluster
 ID: null
-IGName: master-b
+IGMap:
+  master-b: 1
 Lifecycle: Sync
-MaxSize: 1
 Name: cluster-master-b
 Policies:
 - anti-affinity
 ---
 ClusterName: cluster
 ID: null
-IGName: master-c
+IGMap:
+  master-c: 1
 Lifecycle: Sync
-MaxSize: 1
 Name: cluster-master-c
 Policies:
 - anti-affinity
 ---
 ClusterName: cluster
 ID: null
-IGName: node-a
+IGMap:
+  node-a: 1
 Lifecycle: Sync
-MaxSize: 1
 Name: cluster-node-a
 Policies:
 - anti-affinity
 ---
 ClusterName: cluster
 ID: null
-IGName: node-b
+IGMap:
+  node-b: 1
 Lifecycle: Sync
-MaxSize: 1
 Name: cluster-node-b
 Policies:
 - anti-affinity
 ---
 ClusterName: cluster
 ID: null
-IGName: node-c
+IGMap:
+  node-c: 1
 Lifecycle: Sync
-MaxSize: 1
 Name: cluster-node-c
 Policies:
 - anti-affinity

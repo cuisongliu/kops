@@ -32,8 +32,7 @@ spec:
                 operator: Exists
       containers:
       - args:
-        - --allocate-node-cidrs=true
-        - --cluster-cidr=::/0
+        - --allocate-node-cidrs=false
         - --cluster-name=minimal-ipv6.example.com
         - --configure-cloud-routes=false
         - --leader-elect=true
@@ -44,7 +43,7 @@ spec:
         env:
         - name: KUBERNETES_SERVICE_HOST
           value: 127.0.0.1
-        image: registry.k8s.io/provider-aws/cloud-controller-manager:v1.25.3
+        image: registry.k8s.io/provider-aws/cloud-controller-manager:v1.31.0
         imagePullPolicy: IfNotPresent
         name: aws-cloud-controller-manager
         resources:

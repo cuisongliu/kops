@@ -146,6 +146,7 @@ type ServerRescueType string
 
 // List of rescue types.
 const (
+	// Deprecated: Use ServerRescueTypeLinux64 instead.
 	ServerRescueTypeLinux32 ServerRescueType = "linux32"
 	ServerRescueTypeLinux64 ServerRescueType = "linux64"
 )
@@ -191,6 +192,7 @@ func (s *Server) GetDNSPtrForIP(ip net.IP) (string, error) {
 // ServerClient is a client for the servers API.
 type ServerClient struct {
 	client *Client
+	Action *ResourceActionClient
 }
 
 // GetByID retrieves a server by its ID. If the server does not exist, nil is returned.
@@ -241,7 +243,7 @@ type ServerListOpts struct {
 }
 
 func (l ServerListOpts) values() url.Values {
-	vals := l.ListOpts.values()
+	vals := l.ListOpts.Values()
 	if l.Name != "" {
 		vals.Add("name", l.Name)
 	}

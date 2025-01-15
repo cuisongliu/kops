@@ -22,9 +22,9 @@
     },
     {
       "Action": [
-        "s3:GetObject",
         "s3:DeleteObject",
         "s3:DeleteObjectVersion",
+        "s3:GetObject",
         "s3:PutObject"
       ],
       "Effect": "Allow",
@@ -32,9 +32,9 @@
     },
     {
       "Action": [
-        "s3:GetObject",
         "s3:DeleteObject",
         "s3:DeleteObjectVersion",
+        "s3:GetObject",
         "s3:PutObject"
       ],
       "Effect": "Allow",
@@ -67,8 +67,8 @@
     {
       "Action": [
         "route53:ChangeResourceRecordSets",
-        "route53:ListResourceRecordSets",
-        "route53:GetHostedZone"
+        "route53:GetHostedZone",
+        "route53:ListResourceRecordSets"
       ],
       "Effect": "Allow",
       "Resource": [
@@ -107,8 +107,8 @@
       },
       "Effect": "Allow",
       "Resource": [
-        "arn:aws-test:ec2:*:*:volume/*",
-        "arn:aws-test:ec2:*:*:snapshot/*"
+        "arn:aws-test:ec2:*:*:snapshot/*",
+        "arn:aws-test:ec2:*:*:volume/*"
       ]
     },
     {
@@ -126,8 +126,8 @@
       },
       "Effect": "Allow",
       "Resource": [
-        "arn:aws-test:ec2:*:*:volume/*",
-        "arn:aws-test:ec2:*:*:snapshot/*"
+        "arn:aws-test:ec2:*:*:snapshot/*",
+        "arn:aws-test:ec2:*:*:volume/*"
       ]
     },
     {
@@ -172,6 +172,7 @@
         "autoscaling:DescribeTags",
         "ec2:DescribeAccountAttributes",
         "ec2:DescribeAvailabilityZones",
+        "ec2:DescribeImages",
         "ec2:DescribeInstanceTypes",
         "ec2:DescribeInstances",
         "ec2:DescribeLaunchTemplateVersions",
@@ -183,16 +184,23 @@
         "ec2:DescribeVolumes",
         "ec2:DescribeVolumesModifications",
         "ec2:DescribeVpcs",
+        "ec2:GetInstanceTypesFromInstanceRequirements",
         "elasticloadbalancing:DescribeListeners",
         "elasticloadbalancing:DescribeLoadBalancerAttributes",
         "elasticloadbalancing:DescribeLoadBalancerPolicies",
         "elasticloadbalancing:DescribeLoadBalancers",
         "elasticloadbalancing:DescribeTargetGroups",
         "elasticloadbalancing:DescribeTargetHealth",
+        "iam:CreateServiceLinkedRole",
         "iam:GetServerCertificate",
         "iam:ListServerCertificates",
+        "kms:CreateGrant",
+        "kms:Decrypt",
         "kms:DescribeKey",
-        "kms:GenerateRandom"
+        "kms:Encrypt",
+        "kms:GenerateDataKey*",
+        "kms:GenerateRandom",
+        "kms:ReEncrypt*"
       ],
       "Effect": "Allow",
       "Resource": "*"

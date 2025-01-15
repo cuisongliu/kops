@@ -21,8 +21,8 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"k8s.io/kops/cloudmock/aws/mockec2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awsup"
@@ -34,8 +34,10 @@ func TestParseRemovalRule(t *testing.T) {
 	testNotParse(t, "port=a")
 	testNotParse(t, "port=22-23")
 
-	testParsesAsPort(t, "port=22", 22)
-	testParsesAsPort(t, "port=443", 443)
+	testParsesAsPort(t, "port=22", 22, 22)
+	testParsesAsPort(t, "port=443", 443, 443)
+	testParsesAsPort(t, "port=22:23", 22, 23)
+	testParsesAsPort(t, "port=-1", -1, -1)
 }
 
 func testNotParse(t *testing.T, rule string) {
@@ -45,7 +47,7 @@ func testNotParse(t *testing.T, rule string) {
 	}
 }
 
-func testParsesAsPort(t *testing.T, rule string, port int) {
+func testParsesAsPort(t *testing.T, rule string, fromPort int, toPort int) {
 	r, err := ParseRemovalRule(rule)
 	if err != nil {
 		t.Fatalf("unexpected failure to parse rule %q: %v", rule, err)
@@ -54,43 +56,50 @@ func testParsesAsPort(t *testing.T, rule string, port int) {
 	if !ok {
 		t.Fatalf("unexpected rule type for rule %q: %T", r, err)
 	}
-	if portRemovalRule.Port != port {
-		t.Fatalf("unexpected port for %q, expecting %d, got %q", rule, port, r)
+	if portRemovalRule.FromPort != fromPort {
+		t.Fatalf("unexpected fromPort for %q, expecting %d, got %q", rule, fromPort, r)
+	}
+	if portRemovalRule.ToPort != toPort {
+		t.Fatalf("unexpected toPort for %q, expecting %d, got %q", rule, toPort, r)
 	}
 }
 
 func TestPortRemovalRule(t *testing.T) {
-	r := &PortRemovalRule{Port: 22}
-	testMatches(t, r, &ec2.SecurityGroupRule{FromPort: aws.Int64(22), ToPort: aws.Int64(22)})
+	r := &PortRemovalRule{FromPort: 22, ToPort: 23}
+	testMatches(t, r, &ec2types.SecurityGroupRule{FromPort: aws.Int32(22), ToPort: aws.Int32(23)})
 
-	testNotMatches(t, r, &ec2.SecurityGroupRule{FromPort: aws.Int64(0), ToPort: aws.Int64(0)})
-	testNotMatches(t, r, &ec2.SecurityGroupRule{FromPort: aws.Int64(23), ToPort: aws.Int64(23)})
-	testNotMatches(t, r, &ec2.SecurityGroupRule{FromPort: aws.Int64(20), ToPort: aws.Int64(22)})
-	testNotMatches(t, r, &ec2.SecurityGroupRule{FromPort: aws.Int64(22), ToPort: aws.Int64(23)})
-	testNotMatches(t, r, &ec2.SecurityGroupRule{ToPort: aws.Int64(22)})
-	testNotMatches(t, r, &ec2.SecurityGroupRule{FromPort: aws.Int64(22)})
-	testNotMatches(t, r, &ec2.SecurityGroupRule{})
+	testNotMatches(t, r, &ec2types.SecurityGroupRule{FromPort: aws.Int32(0), ToPort: aws.Int32(0)})
+	testNotMatches(t, r, &ec2types.SecurityGroupRule{FromPort: aws.Int32(22), ToPort: aws.Int32(22)})
+	testNotMatches(t, r, &ec2types.SecurityGroupRule{FromPort: aws.Int32(23), ToPort: aws.Int32(23)})
+	testNotMatches(t, r, &ec2types.SecurityGroupRule{FromPort: aws.Int32(20), ToPort: aws.Int32(23)})
+	testNotMatches(t, r, &ec2types.SecurityGroupRule{FromPort: aws.Int32(22), ToPort: aws.Int32(24)})
+	testNotMatches(t, r, &ec2types.SecurityGroupRule{ToPort: aws.Int32(23)})
+	testNotMatches(t, r, &ec2types.SecurityGroupRule{FromPort: aws.Int32(22)})
+	testNotMatches(t, r, &ec2types.SecurityGroupRule{})
+
+	r = &PortRemovalRule{FromPort: -1, ToPort: -1}
+	testMatches(t, r, &ec2types.SecurityGroupRule{FromPort: aws.Int32(-1), ToPort: aws.Int32(-1)})
 }
 
 func TestPortRemovalRule_Zero(t *testing.T) {
-	r := &PortRemovalRule{Port: 0}
-	testMatches(t, r, &ec2.SecurityGroupRule{FromPort: aws.Int64(0), ToPort: aws.Int64(0)})
+	r := &PortRemovalRule{FromPort: 0, ToPort: 0}
+	testMatches(t, r, &ec2types.SecurityGroupRule{FromPort: aws.Int32(0), ToPort: aws.Int32(0)})
 
-	testNotMatches(t, r, &ec2.SecurityGroupRule{FromPort: aws.Int64(0), ToPort: aws.Int64(20)})
-	testNotMatches(t, r, &ec2.SecurityGroupRule{ToPort: aws.Int64(0)})
-	testNotMatches(t, r, &ec2.SecurityGroupRule{FromPort: aws.Int64(0)})
-	testNotMatches(t, r, &ec2.SecurityGroupRule{})
+	testNotMatches(t, r, &ec2types.SecurityGroupRule{FromPort: aws.Int32(0), ToPort: aws.Int32(20)})
+	testNotMatches(t, r, &ec2types.SecurityGroupRule{ToPort: aws.Int32(0)})
+	testNotMatches(t, r, &ec2types.SecurityGroupRule{FromPort: aws.Int32(0)})
+	testNotMatches(t, r, &ec2types.SecurityGroupRule{})
 }
 
-func testMatches(t *testing.T, rule *PortRemovalRule, permission *ec2.SecurityGroupRule) {
+func testMatches(t *testing.T, rule *PortRemovalRule, permission *ec2types.SecurityGroupRule) {
 	if !rule.Matches(permission) {
-		t.Fatalf("rule %q failed to match permission %q", rule, permission)
+		t.Fatalf("rule %+v failed to match permission %+v", rule, permission)
 	}
 }
 
-func testNotMatches(t *testing.T, rule *PortRemovalRule, permission *ec2.SecurityGroupRule) {
+func testNotMatches(t *testing.T, rule *PortRemovalRule, permission *ec2types.SecurityGroupRule) {
 	if rule.Matches(permission) {
-		t.Fatalf("rule %q unexpectedly matched permission %q", rule, permission)
+		t.Fatalf("rule %+v unexpectedly matched permission %+v", rule, permission)
 	}
 }
 
@@ -128,18 +137,7 @@ func TestSecurityGroupCreate(t *testing.T) {
 		sg1 := allTasks["sg1"].(*SecurityGroup)
 		vpc1 := allTasks["vpc1"].(*VPC)
 
-		target := &awsup.AWSAPITarget{
-			Cloud: cloud,
-		}
-
-		context, err := fi.NewCloudupContext(ctx, target, nil, cloud, nil, nil, nil, allTasks)
-		if err != nil {
-			t.Fatalf("error building context: %v", err)
-		}
-
-		if err := context.RunTasks(testRunTasksOptions); err != nil {
-			t.Fatalf("unexpected error during Run: %v", err)
-		}
+		runTasks(t, cloud, allTasks)
 
 		if fi.ValueOf(sg1.ID) == "" {
 			t.Fatalf("ID not set after create")
@@ -149,11 +147,11 @@ func TestSecurityGroupCreate(t *testing.T) {
 			t.Fatalf("Expected exactly one SecurityGroup; found %v", c.SecurityGroups)
 		}
 
-		expected := &ec2.SecurityGroup{
+		expected := &ec2types.SecurityGroup{
 			Description: s("Description"),
 			GroupId:     sg1.ID,
 			VpcId:       vpc1.ID,
-			Tags: []*ec2.Tag{
+			Tags: []ec2types.Tag{
 				{
 					Key:   aws.String("Name"),
 					Value: aws.String("sg1"),

@@ -17,49 +17,34 @@ limitations under the License.
 package awsup
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 	"sync"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/arn"
-	"github.com/aws/aws-sdk-go/aws/awserr"
-	"github.com/aws/aws-sdk-go/aws/endpoints"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/autoscaling"
-	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/aws/aws-sdk-go/service/elb"
-	elbv2 "github.com/aws/aws-sdk-go/service/elbv2"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsv2 "github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	autoscalingtypes "github.com/aws/aws-sdk-go-v2/service/autoscaling/types"
+	ec2 "github.com/aws/aws-sdk-go-v2/service/ec2"
+	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	elbtypes "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancing/types"
+	elbv2types "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2/types"
+	iamtypes "github.com/aws/aws-sdk-go-v2/service/iam/types"
+	"github.com/aws/smithy-go"
 	"k8s.io/klog/v2"
 	"k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/pkg/truncate"
 )
 
 // allRegions is the list of all regions; tests will set the values
-var allRegions []*ec2.Region
+var allRegions []ec2types.Region
 var allRegionsMutex sync.Mutex
 
-// isRegionCompiledInToAWSSDK checks if the specified region is in the AWS SDK
-func isRegionCompiledInToAWSSDK(region string) bool {
-	resolver := endpoints.DefaultResolver()
-	partitions := resolver.(endpoints.EnumPartitions).Partitions()
-	for _, p := range partitions {
-		for _, r := range p.Regions() {
-			if r.ID() == region {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 // ValidateRegion checks that an AWS region name is valid
-func ValidateRegion(region string) error {
-	if isRegionCompiledInToAWSSDK(region) {
-		return nil
-	}
-
+func ValidateRegion(ctx context.Context, region string) error {
 	allRegionsMutex.Lock()
 	defer allRegionsMutex.Unlock()
 
@@ -71,20 +56,18 @@ func ValidateRegion(region string) error {
 		if awsRegion == "" {
 			awsRegion = "us-east-1"
 		}
-		config := aws.NewConfig().WithRegion(awsRegion)
-		config = config.WithCredentialsChainVerboseErrors(true)
+		cfg, err := loadAWSConfig(ctx, awsRegion)
+		if err != nil {
+			return fmt.Errorf("error loading AWS config: %v", err)
+		}
 
-		sess, err := session.NewSessionWithOptions(session.Options{
-			Config:            *config,
-			SharedConfigState: session.SharedConfigEnable,
-		})
 		if err != nil {
 			return fmt.Errorf("error starting a new AWS session: %v", err)
 		}
 
-		client := ec2.New(sess, config)
+		client := ec2.NewFromConfig(cfg)
 
-		response, err := client.DescribeRegions(request)
+		response, err := client.DescribeRegions(ctx, request)
 		if err != nil {
 			return fmt.Errorf("got an error while querying for valid regions (verify your AWS credentials?): %v", err)
 		}
@@ -92,7 +75,7 @@ func ValidateRegion(region string) error {
 	}
 
 	for _, r := range allRegions {
-		name := aws.StringValue(r.RegionName)
+		name := awsv2.ToString(r.RegionName)
 		if name == region {
 			return nil
 		}
@@ -130,88 +113,90 @@ func FindRegion(cluster *kops.Cluster) (string, error) {
 }
 
 // FindEC2Tag find the value of the tag with the specified key
-func FindEC2Tag(tags []*ec2.Tag, key string) (string, bool) {
+func FindEC2Tag(tags []ec2types.Tag, key string) (string, bool) {
 	for _, tag := range tags {
-		if key == aws.StringValue(tag.Key) {
-			return aws.StringValue(tag.Value), true
+		if key == aws.ToString(tag.Key) {
+			return aws.ToString(tag.Value), true
 		}
 	}
 	return "", false
 }
 
 // FindASGTag find the value of the tag with the specified key
-func FindASGTag(tags []*autoscaling.TagDescription, key string) (string, bool) {
+func FindASGTag(tags []autoscalingtypes.TagDescription, key string) (string, bool) {
 	for _, tag := range tags {
-		if key == aws.StringValue(tag.Key) {
-			return aws.StringValue(tag.Value), true
+		if key == aws.ToString(tag.Key) {
+			return aws.ToString(tag.Value), true
 		}
 	}
 	return "", false
 }
 
 // FindELBTag find the value of the tag with the specified key
-func FindELBTag(tags []*elb.Tag, key string) (string, bool) {
+func FindELBTag(tags []elbtypes.Tag, key string) (string, bool) {
 	for _, tag := range tags {
-		if key == aws.StringValue(tag.Key) {
-			return aws.StringValue(tag.Value), true
+		if key == aws.ToString(tag.Key) {
+			return aws.ToString(tag.Value), true
 		}
 	}
 	return "", false
 }
 
 // FindELBV2Tag find the value of the tag with the specified key
-func FindELBV2Tag(tags []*elbv2.Tag, key string) (string, bool) {
+func FindELBV2Tag(tags []elbv2types.Tag, key string) (string, bool) {
 	for _, tag := range tags {
-		if key == aws.StringValue(tag.Key) {
-			return aws.StringValue(tag.Value), true
+		if key == aws.ToString(tag.Key) {
+			return aws.ToString(tag.Value), true
 		}
 	}
 	return "", false
 }
 
-// AWSErrorCode returns the aws error code, if it is an awserr.Error, otherwise ""
+// AWSErrorCode returns the aws error code, if it is an awserr.Error or smithy.APIError, otherwise ""
 func AWSErrorCode(err error) string {
-	if awsError, ok := err.(awserr.Error); ok {
-		return awsError.Code()
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.ErrorCode()
 	}
 	return ""
 }
 
-// AWSErrorMessage returns the aws error message, if it is an awserr.Error, otherwise ""
+// AWSErrorMessage returns the aws error message, if it is an awserr.Error or smithy.APIError, otherwise ""
 func AWSErrorMessage(err error) string {
-	if awsError, ok := err.(awserr.Error); ok {
-		return awsError.Message()
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.ErrorMessage()
 	}
 	return ""
 }
 
 // EC2TagSpecification converts a map of tags to an EC2 TagSpecification
-func EC2TagSpecification(resourceType string, tags map[string]string) []*ec2.TagSpecification {
+func EC2TagSpecification(resourceType ec2types.ResourceType, tags map[string]string) []ec2types.TagSpecification {
 	if len(tags) == 0 {
 		return nil
 	}
-	specification := &ec2.TagSpecification{
-		ResourceType: aws.String(resourceType),
-		Tags:         make([]*ec2.Tag, 0),
+	specification := ec2types.TagSpecification{
+		ResourceType: resourceType,
+		Tags:         make([]ec2types.Tag, 0),
 	}
 	for k, v := range tags {
-		specification.Tags = append(specification.Tags, &ec2.Tag{
+		specification.Tags = append(specification.Tags, ec2types.Tag{
 			Key:   aws.String(k),
 			Value: aws.String(v),
 		})
 	}
 
-	return []*ec2.TagSpecification{specification}
+	return []ec2types.TagSpecification{specification}
 }
 
 // ELBv2Tags converts a map of tags to ELBv2 Tags
-func ELBv2Tags(tags map[string]string) []*elbv2.Tag {
+func ELBv2Tags(tags map[string]string) []elbv2types.Tag {
 	if len(tags) == 0 {
 		return nil
 	}
-	elbv2Tags := make([]*elbv2.Tag, 0)
+	elbv2Tags := make([]elbv2types.Tag, 0)
 	for k, v := range tags {
-		elbv2Tags = append(elbv2Tags, &elbv2.Tag{
+		elbv2Tags = append(elbv2Tags, elbv2types.Tag{
 			Key:   aws.String(k),
 			Value: aws.String(v),
 		})
@@ -241,8 +226,8 @@ func GetResourceName32(cluster string, prefix string) string {
 	return truncate.TruncateString(s, opt)
 }
 
-// GetTargetGroupNameFromARN will attempt to parse a target group ARN and return its name
-func GetTargetGroupNameFromARN(targetGroupARN string) (string, error) {
+// NameForExternalTargetGroup will attempt to calculate a meaningful name for a target group given an ARN.
+func NameForExternalTargetGroup(targetGroupARN string) (string, error) {
 	parsed, err := arn.Parse(targetGroupARN)
 	if err != nil {
 		return "", fmt.Errorf("error parsing target group ARN: %v", err)
@@ -252,4 +237,12 @@ func GetTargetGroupNameFromARN(targetGroupARN string) (string, error) {
 		return "", fmt.Errorf("error parsing target group ARN resource: %q", parsed.Resource)
 	}
 	return resource[1], nil
+}
+
+func IsIAMNoSuchEntityException(err error) bool {
+	if err == nil {
+		return false
+	}
+	var nse *iamtypes.NoSuchEntityException
+	return errors.As(err, &nse)
 }

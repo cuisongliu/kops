@@ -76,11 +76,10 @@ kops create cluster [CLUSTER] [flags]
       --channel string                          Channel for default versions and configuration to use (default "stable")
       --cloud string                            Cloud provider to use - aws, digitalocean, gce, hetzner, openstack
       --cloud-labels string                     A list of key/value pairs used to tag all instance groups (for example "Owner=John Doe,Team=Some Team").
-      --container-runtime string                Container runtime to use: containerd, docker
       --control-plane-count int32               Number of control-plane nodes. Defaults to one control-plane node per control-plane-zone
       --control-plane-image string              Machine image for control-plane nodes. Takes precedence over --image
       --control-plane-security-groups strings   Additional pre-created security groups to add to control-plane nodes.
-      --control-plane-size string               Machine type for control-plane nodes
+      --control-plane-size strings              Machine type(s) for control-plane nodes
       --control-plane-tenancy string            Tenancy of the control-plane group (AWS only): default or dedicated
       --control-plane-volume-size int32         Instance volume size (in GB) for control-plane nodes
       --control-plane-zones strings             Zones in which to run control-plane nodes. (must be an odd number)
@@ -99,13 +98,13 @@ kops create cluster [CLUSTER] [flags]
       --ipv6                                    Use IPv6 for the pod network (AWS only)
       --kubernetes-feature-gates strings        List of Kubernetes feature gates to enable/disable
       --kubernetes-version string               Version of Kubernetes to run (defaults to version in channel)
-      --network-cidr string                     Network CIDR to use
+      --network-cidr strings                    Network CIDR(s) to use
       --network-id string                       Shared Network or VPC to use
-      --networking string                       Networking mode.  kubenet, external, flannel-vxlan (or flannel), flannel-udp, calico, canal, kube-router, amazonvpc, cilium, cilium-etcd, cni. (default "cilium")
+      --networking string                       Networking mode.  kubenet, external, flannel-vxlan (or flannel), flannel-udp, calico, canal, kube-router, amazonvpc, cilium, cilium-etcd, kindnet, cni. (default "cilium")
       --node-count int32                        Total number of worker nodes. Defaults to one node per zone
       --node-image string                       Machine image for worker nodes. Takes precedence over --image
       --node-security-groups strings            Additional pre-created security groups to add to worker nodes.
-      --node-size string                        Machine type for worker nodes
+      --node-size strings                       Machine type(s) for worker nodes
       --node-tenancy string                     Tenancy of the node group (AWS only): default or dedicated
       --node-volume-size int32                  Instance volume size (in GB) for worker nodes
       --os-dns-servers string                   comma separated list of DNS Servers which is used in network
@@ -119,7 +118,7 @@ kops create cluster [CLUSTER] [flags]
       --out string                              Path to write any local output
   -o, --output string                           Output format. One of json or yaml. Used with the --dry-run flag.
       --project string                          Project to use (must be set on GCE)
-      --set strings                             Directly set values in the spec
+      --set strings                             Directly set values in the spec (default [])
       --ssh-access strings                      Restrict SSH access to this CIDR.  If not set, uses the value of the admin-access flag.
       --ssh-public-key string                   SSH public key to use
       --subnets strings                         Shared subnets to use

@@ -1,9 +1,10 @@
 CloudProvider: openstack
 ClusterName: ha.example.com
 Image: ubuntu-20.04
-KubernetesVersion: v1.25.0
+KubernetesVersion: v1.32.0
 ControlPlaneCount: 3
-NetworkCIDR: 10.0.0.0/16
+NetworkCIDRs:
+  - 10.0.0.0/16
 Networking: calico
 Zones:
   - us-test1
@@ -12,8 +13,10 @@ OpenstackExternalNet: vlan1
 OpenstackExternalSubnet: vlan1subnet
 OpenstackLBSubnet: vlan1lbsubnet
 OpenstackDNSServers: 1.1.1.1
-ControlPlaneSize: m1.medium
-NodeSize: m1.large
+ControlPlaneSizes:
+- m1.medium
+NodeSizes:
+- m1.large
 APILoadBalancerType: public
 Topology: private
 DNSType: none

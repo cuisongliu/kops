@@ -17,11 +17,11 @@ limitations under the License.
 package instancegroups
 
 import (
+	"context"
 	"testing"
 
-	"github.com/aws/aws-sdk-go/service/autoscaling"
-	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/aws/aws-sdk-go/service/ec2/ec2iface"
+	autoscalingtypes "github.com/aws/aws-sdk-go-v2/service/autoscaling/types"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/stretchr/testify/assert"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/kops/cloudmock/aws/mockautoscaling"
@@ -29,11 +29,13 @@ import (
 	"k8s.io/kops/pkg/cloudinstances"
 	"k8s.io/kops/pkg/validation"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awsup"
+	"k8s.io/kops/util/pkg/awsinterfaces"
 )
 
 // Here we have three nodes that are up to date, while three warm nodes need updating.
 // Only the initial cluster validation should be run
 func TestRollingUpdateOnlyWarmPoolNodes(t *testing.T) {
+	ctx := context.TODO()
 	c, cloud := getTestSetup()
 	k8sClient := c.K8sClient
 	groups := make(map[string]*cloudinstances.CloudInstanceGroup)
@@ -44,12 +46,13 @@ func TestRollingUpdateOnlyWarmPoolNodes(t *testing.T) {
 
 	assert.Equal(t, 3, len(groups["node-1"].NeedUpdate), "number of nodes needing update")
 
-	err := c.RollingUpdate(groups, &kops.InstanceGroupList{})
+	err := c.RollingUpdate(ctx, groups, &kops.InstanceGroupList{})
 	assert.NoError(t, err, "rolling update")
 	assert.Equal(t, 1, validator.numValidations, "number of validations")
 }
 
 func TestRollingWarmPoolBeforeJoinedNodes(t *testing.T) {
+	ctx := context.TODO()
 	c, cloud := getTestSetup()
 	k8sClient := c.K8sClient
 	groups := make(map[string]*cloudinstances.CloudInstanceGroup)
@@ -61,7 +64,7 @@ func TestRollingWarmPoolBeforeJoinedNodes(t *testing.T) {
 	}
 	cloud.MockEC2 = warmPoolBeforeJoinedNodesTest
 
-	err := c.RollingUpdate(groups, &kops.InstanceGroupList{})
+	err := c.RollingUpdate(ctx, groups, &kops.InstanceGroupList{})
 
 	assert.NoError(t, err, "rolling update")
 
@@ -72,7 +75,7 @@ type countingValidator struct {
 	numValidations int
 }
 
-func (c *countingValidator) Validate() (*validation.ValidationCluster, error) {
+func (c *countingValidator) Validate(ctx context.Context) (*validation.ValidationCluster, error) {
 	c.numValidations++
 	return &validation.ValidationCluster{}, nil
 }
@@ -82,13 +85,12 @@ func makeGroupWithWarmPool(groups map[string]*cloudinstances.CloudInstanceGroup,
 
 	group := groups[name]
 
-	wpInstances := []*autoscaling.Instance{}
-	warmStoppedState := autoscaling.LifecycleStateWarmedStopped
+	wpInstances := []autoscalingtypes.Instance{}
 	for i := 0; i < warmCount; i++ {
 		id := name + "-wp-" + string(rune('a'+i))
-		instance := &autoscaling.Instance{
+		instance := autoscalingtypes.Instance{
 			InstanceId:     &id,
-			LifecycleState: &warmStoppedState,
+			LifecycleState: autoscalingtypes.LifecycleStateWarmedStopped,
 		}
 		wpInstances = append(wpInstances, instance)
 
@@ -103,13 +105,13 @@ func makeGroupWithWarmPool(groups map[string]*cloudinstances.CloudInstanceGroup,
 }
 
 type warmPoolBeforeJoinedNodesTest struct {
-	ec2iface.EC2API
+	awsinterfaces.EC2API
 	t               *testing.T
 	numTerminations int
 }
 
-func (t *warmPoolBeforeJoinedNodesTest) TerminateInstances(input *ec2.TerminateInstancesInput) (*ec2.TerminateInstancesOutput, error) {
+func (t *warmPoolBeforeJoinedNodesTest) TerminateInstances(ctx context.Context, input *ec2.TerminateInstancesInput, optFns ...func(*ec2.Options)) (*ec2.TerminateInstancesOutput, error) {
 	t.numTerminations++
 
-	return t.EC2API.TerminateInstances(input)
+	return t.EC2API.TerminateInstances(ctx, input, optFns...)
 }

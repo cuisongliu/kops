@@ -5,7 +5,9 @@ metadata:
   name: vpc.example.com
 spec:
   api:
-    dns: {}
+    loadBalancer:
+      class: Network
+      type: Public
   authorization:
     rbac: {}
   channel: stable
@@ -38,8 +40,7 @@ spec:
   kubernetesApiAccess:
   - 0.0.0.0/0
   - ::/0
-  kubernetesVersion: v1.26.0
-  masterPublicName: api.vpc.example.com
+  kubernetesVersion: v1.32.0
   networkCIDR: 10.0.0.0/12
   networkID: vpc-12345678
   networking:
@@ -49,15 +50,13 @@ spec:
   - 0.0.0.0/0
   - ::/0
   subnets:
-  - cidr: 10.2.0.0/15
+  - cidr: 10.0.0.0/12
     name: us-test-1a
     type: Public
     zone: us-test-1a
   topology:
     dns:
-      type: Public
-    masters: public
-    nodes: public
+      type: None
 
 ---
 
@@ -69,9 +68,7 @@ metadata:
     kops.k8s.io/cluster: vpc.example.com
   name: control-plane-us-test-1a
 spec:
-  image: 099720109477/ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-server-20230616
-  instanceMetadata:
-    httpTokens: required
+  image: 099720109477/ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-20241206
   machineType: m3.medium
   maxSize: 1
   minSize: 1
@@ -89,10 +86,7 @@ metadata:
     kops.k8s.io/cluster: vpc.example.com
   name: nodes-us-test-1a
 spec:
-  image: 099720109477/ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-server-20230616
-  instanceMetadata:
-    httpPutResponseHopLimit: 1
-    httpTokens: required
+  image: 099720109477/ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-20241206
   machineType: t2.medium
   maxSize: 1
   minSize: 1

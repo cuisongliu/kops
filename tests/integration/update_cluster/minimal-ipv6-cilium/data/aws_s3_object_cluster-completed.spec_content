@@ -13,33 +13,27 @@ spec:
   channel: stable
   cloudConfig:
     awsEBSCSIDriver:
-      enabled: true
-      version: v1.14.1
+      version: v1.38.1
     manageStorageClasses: true
     nodeIPFamilies:
     - ipv6
     - ipv4
   cloudControllerManager:
-    allocateNodeCIDRs: true
-    clusterCIDR: ::/0
+    allocateNodeCIDRs: false
     clusterName: minimal-ipv6.example.com
     configureCloudRoutes: false
-    image: registry.k8s.io/provider-aws/cloud-controller-manager:v1.25.3
+    image: registry.k8s.io/provider-aws/cloud-controller-manager:v1.31.0
     leaderElection:
       leaderElect: true
   cloudProvider: aws
   clusterDNSDomain: cluster.local
   configBase: memfs://clusters.example.com/minimal-ipv6.example.com
-  configStore: memfs://clusters.example.com/minimal-ipv6.example.com
-  containerRuntime: containerd
   containerd:
     logLevel: info
     runc:
-      version: 1.1.5
-    version: 1.6.20
+      version: 1.2.4
+    version: 1.7.25
   dnsZone: Z1AFAKE1ZON3YO
-  docker:
-    skipInstall: true
   etcdClusters:
   - backups:
       backupStore: memfs://clusters.example.com/minimal-ipv6.example.com/backups/etcd/main
@@ -49,7 +43,7 @@ spec:
     manager:
       backupRetentionDays: 90
     name: main
-    version: 3.5.9
+    version: 3.5.17
   - backups:
       backupStore: memfs://clusters.example.com/minimal-ipv6.example.com/backups/etcd/events
     etcdMembers:
@@ -58,7 +52,7 @@ spec:
     manager:
       backupRetentionDays: 90
     name: events
-    version: 3.5.9
+    version: 3.5.17
   externalDns:
     provider: dns-controller
   iam:
@@ -87,10 +81,7 @@ spec:
     - https://127.0.0.1:4001
     etcdServersOverrides:
     - /events#https://127.0.0.1:4002
-    featureGates:
-      CSIMigrationAWS: "true"
-      InTreePluginAWSUnregister: "true"
-    image: registry.k8s.io/kube-apiserver:v1.25.0
+    image: registry.k8s.io/kube-apiserver:v1.32.0
     kubeletPreferredAddressTypes:
     - InternalIP
     - Hostname
@@ -118,10 +109,7 @@ spec:
     controllers:
     - '*'
     - -nodeipam
-    featureGates:
-      CSIMigrationAWS: "true"
-      InTreePluginAWSUnregister: "true"
-    image: registry.k8s.io/kube-controller-manager:v1.25.0
+    image: registry.k8s.io/kube-controller-manager:v1.32.0
     leaderElection:
       leaderElect: true
     logLevel: 2
@@ -136,7 +124,7 @@ spec:
     nodeLocalDNS:
       cpuRequest: 25m
       enabled: false
-      image: registry.k8s.io/dns/k8s-dns-node-cache:1.22.20
+      image: registry.k8s.io/dns/k8s-dns-node-cache:1.23.0
       memoryRequest: 5Mi
     provider: CoreDNS
     serverIP: fd00:5e4f:ce::a
@@ -144,13 +132,10 @@ spec:
     - fd00:ec2::253
   kubeProxy:
     cpuRequest: 100m
-    image: registry.k8s.io/kube-proxy:v1.25.0
+    image: registry.k8s.io/kube-proxy:v1.32.0
     logLevel: 2
   kubeScheduler:
-    featureGates:
-      CSIMigrationAWS: "true"
-      InTreePluginAWSUnregister: "true"
-    image: registry.k8s.io/kube-scheduler:v1.25.0
+    image: registry.k8s.io/kube-scheduler:v1.32.0
     leaderElection:
       leaderElect: true
     logLevel: 2
@@ -163,9 +148,6 @@ spec:
     clusterDomain: cluster.local
     enableDebuggingHandlers: true
     evictionHard: memory.available<100Mi,nodefs.available<10%,nodefs.inodesFree<5%,imagefs.available<10%,imagefs.inodesFree<5%
-    featureGates:
-      CSIMigrationAWS: "true"
-      InTreePluginAWSUnregister: "true"
     kubeconfigPath: /var/lib/kubelet/kubeconfig
     logLevel: 2
     podInfraContainerImage: registry.k8s.io/pause:3.9
@@ -177,7 +159,7 @@ spec:
   kubernetesApiAccess:
   - 0.0.0.0/0
   - ::/0
-  kubernetesVersion: 1.25.0
+  kubernetesVersion: 1.32.0
   masterKubelet:
     anonymousAuth: false
     cgroupDriver: systemd
@@ -187,9 +169,6 @@ spec:
     clusterDomain: cluster.local
     enableDebuggingHandlers: true
     evictionHard: memory.available<100Mi,nodefs.available<10%,nodefs.inodesFree<5%,imagefs.available<10%,imagefs.inodesFree<5%
-    featureGates:
-      CSIMigrationAWS: "true"
-      InTreePluginAWSUnregister: "true"
     kubeconfigPath: /var/lib/kubelet/kubeconfig
     logLevel: 2
     podInfraContainerImage: registry.k8s.io/pause:3.9
@@ -218,19 +197,37 @@ spec:
       enableBPFMasquerade: false
       enableEndpointHealthChecking: true
       enableL7Proxy: true
+      enableLocalRedirectPolicy: false
       enableRemoteNodeIdentity: true
       enableUnreachableRoutes: false
       hubble:
         enabled: false
       identityAllocationMode: crd
       identityChangeGracePeriod: 5s
+      ingress:
+        enabled: false
       ipam: kubernetes
       memoryRequest: 128Mi
       monitorAggregation: medium
       sidecarIstioProxyImage: cilium/istio_proxy
       toFqdnsDnsRejectResponseCode: refused
       tunnel: disabled
-      version: v1.12.10
+      version: v1.16.5
+  nodeTerminationHandler:
+    cpuRequest: 50m
+    deleteSQSMsgIfNodeNotFound: false
+    enableRebalanceDraining: false
+    enableRebalanceMonitoring: false
+    enableScheduledEventDraining: true
+    enableSpotInterruptionDraining: true
+    enabled: true
+    excludeFromLoadBalancers: true
+    managedASGTag: aws-node-termination-handler/managed
+    memoryRequest: 64Mi
+    podTerminationGracePeriod: -1
+    prometheusEnable: false
+    taintNode: false
+    version: v1.22.0
   nonMasqueradeCIDR: ::/0
   secretStore: memfs://clusters.example.com/minimal-ipv6.example.com/secrets
   serviceClusterIPRange: fd00:5e4f:ce::/108
@@ -269,5 +266,3 @@ spec:
   topology:
     dns:
       type: Public
-    masters: private
-    nodes: private

@@ -42,30 +42,32 @@ type Ocean struct {
 	Name      *string
 	Lifecycle fi.Lifecycle
 
-	MinSize                  *int64
-	MaxSize                  *int64
-	UtilizeReservedInstances *bool
-	UtilizeCommitments       *bool
-	FallbackToOnDemand       *bool
-	DrainingTimeout          *int64
-	GracePeriod              *int64
-	InstanceTypesWhitelist   []string
-	InstanceTypesBlacklist   []string
-	Tags                     map[string]string
-	UserData                 fi.Resource
-	ImageID                  *string
-	IAMInstanceProfile       *awstasks.IAMInstanceProfile
-	SSHKey                   *awstasks.SSHKey
-	Subnets                  []*awstasks.Subnet
-	SecurityGroups           []*awstasks.SecurityGroup
-	Monitoring               *bool
-	AssociatePublicIPAddress *bool
-	UseAsTemplateOnly        *bool
-	RootVolumeOpts           *RootVolumeOpts
-	AutoScalerOpts           *AutoScalerOpts
-	InstanceMetadataOptions  *InstanceMetadataOptions
-	SpreadNodesBy            *string
-	AvailabilityVsCost       *string
+	MinSize                         *int64
+	MaxSize                         *int64
+	UtilizeReservedInstances        *bool
+	UtilizeCommitments              *bool
+	FallbackToOnDemand              *bool
+	DrainingTimeout                 *int64
+	GracePeriod                     *int64
+	InstanceTypesWhitelist          []string
+	InstanceTypesBlacklist          []string
+	Tags                            map[string]string
+	UserData                        fi.Resource
+	ImageID                         *string
+	IAMInstanceProfile              *awstasks.IAMInstanceProfile
+	SSHKey                          *awstasks.SSHKey
+	Subnets                         []*awstasks.Subnet
+	SecurityGroups                  []*awstasks.SecurityGroup
+	Monitoring                      *bool
+	AssociatePublicIPAddress        *bool
+	UseAsTemplateOnly               *bool
+	RootVolumeOpts                  *RootVolumeOpts
+	AutoScalerOpts                  *AutoScalerOpts
+	InstanceMetadataOptions         *InstanceMetadataOptions
+	SpreadNodesBy                   *string
+	AvailabilityVsCost              *string
+	ResourceTagSpecificationVolumes *bool
+	AutoScalerAggressiveScaleDown   *bool
 }
 
 var (
@@ -134,7 +136,7 @@ func (o *Ocean) find(svc spotinst.InstanceGroupService) (*aws.Cluster, error) {
 var _ fi.CloudupHasCheckExisting = &Ocean{}
 
 func (o *Ocean) Find(c *fi.CloudupContext) (*Ocean, error) {
-	cloud := c.T.Cloud.(awsup.AWSCloud)
+	cloud := awsup.GetCloud(c)
 
 	ocean, err := o.find(cloud.Spotinst().Ocean())
 	if err != nil {
@@ -304,6 +306,11 @@ func (o *Ocean) Find(c *fi.CloudupContext) (*Ocean, error) {
 			actual.InstanceMetadataOptions.HTTPTokens = fi.PtrTo(fi.ValueOf(lc.InstanceMetadataOptions.HTTPTokens))
 			actual.InstanceMetadataOptions.HTTPPutResponseHopLimit = fi.PtrTo(int64(fi.ValueOf(lc.InstanceMetadataOptions.HTTPPutResponseHopLimit)))
 		}
+
+		//
+		if lc.ResourceTagSpecification != nil {
+			actual.ResourceTagSpecificationVolumes = fi.PtrTo(fi.ValueOf(lc.ResourceTagSpecification.Volumes.ShouldTag))
+		}
 	}
 
 	// Auto Scaler.
@@ -318,9 +325,14 @@ func (o *Ocean) Find(c *fi.CloudupContext) (*Ocean, error) {
 
 			// Scale down.
 			if down := ocean.AutoScaler.Down; down != nil {
-				actual.AutoScalerOpts.Down = &AutoScalerDownOpts{
-					MaxPercentage:     down.MaxScaleDownPercentage,
-					EvaluationPeriods: down.EvaluationPeriods,
+				if down.MaxScaleDownPercentage != nil || down.EvaluationPeriods != nil {
+					actual.AutoScalerOpts.Down = &AutoScalerDownOpts{
+						MaxPercentage:     down.MaxScaleDownPercentage,
+						EvaluationPeriods: down.EvaluationPeriods,
+					}
+				}
+				if down.AggressiveScaleDown != nil {
+					actual.AutoScalerAggressiveScaleDown = down.AggressiveScaleDown.IsEnabled
 				}
 			}
 
@@ -341,7 +353,7 @@ func (o *Ocean) Find(c *fi.CloudupContext) (*Ocean, error) {
 }
 
 func (o *Ocean) CheckExisting(c *fi.CloudupContext) bool {
-	cloud := c.T.Cloud.(awsup.AWSCloud)
+	cloud := awsup.GetCloud(c)
 	ocean, err := o.find(cloud.Spotinst().Ocean())
 	return err == nil && ocean != nil
 }
@@ -483,6 +495,16 @@ func (_ *Ocean) create(cloud awsup.AWSCloud, a, e, changes *Ocean) error {
 					ocean.Compute.LaunchSpecification.SetInstanceMetadataOptions(opt)
 				}
 			}
+			//
+			{
+				if e.ResourceTagSpecificationVolumes != nil {
+					opt := new(aws.ResourceTagSpecification)
+					vol := new(aws.Volumes)
+					vol.SetShouldTag(fi.PtrTo(fi.ValueOf(e.ResourceTagSpecificationVolumes)))
+					opt.SetVolumes(vol)
+					ocean.Compute.LaunchSpecification.SetResourceTagSpecification(opt)
+				}
+			}
 			if !fi.ValueOf(e.UseAsTemplateOnly) {
 				// User data.
 				{
@@ -567,6 +589,16 @@ func (_ *Ocean) create(cloud awsup.AWSCloud, a, e, changes *Ocean) error {
 					autoScaler.ResourceLimits = &aws.AutoScalerResourceLimits{
 						MaxVCPU:      limits.MaxVCPU,
 						MaxMemoryGiB: limits.MaxMemory,
+					}
+				}
+				// create AutoScalerAggressiveScaleDown
+				{
+					if e.AutoScalerAggressiveScaleDown != nil {
+						aggressiveScaleDown := new(aws.AggressiveScaleDown)
+						if down := autoScaler.Down; down == nil {
+							autoScaler.Down = new(aws.AutoScalerDown)
+						}
+						autoScaler.Down.SetAggressiveScaleDown(aggressiveScaleDown.SetIsEnabled(fi.PtrTo(*e.AutoScalerAggressiveScaleDown)))
 					}
 				}
 
@@ -830,7 +862,22 @@ func (_ *Ocean) update(cloud awsup.AWSCloud, a, e, changes *Ocean) error {
 					changed = true
 				}
 			}
-
+			// ResourceTagSpecificationVolumes.
+			{
+				if changes.ResourceTagSpecificationVolumes != nil {
+					if ocean.Compute == nil {
+						ocean.Compute = new(aws.Compute)
+					}
+					if ocean.Compute.LaunchSpecification == nil {
+						ocean.Compute.LaunchSpecification = new(aws.LaunchSpecification)
+					}
+					opt := new(aws.ResourceTagSpecification)
+					opt.Volumes.SetShouldTag(fi.PtrTo(fi.ValueOf(e.ResourceTagSpecificationVolumes)))
+					ocean.Compute.LaunchSpecification.SetResourceTagSpecification(opt)
+					changes.ResourceTagSpecificationVolumes = nil
+					changed = true
+				}
+			}
 			// Template.
 			{
 				if changes.UseAsTemplateOnly != nil {
@@ -1053,6 +1100,15 @@ func (_ *Ocean) update(cloud awsup.AWSCloud, a, e, changes *Ocean) error {
 				} else if a.AutoScalerOpts.ResourceLimits != nil {
 					autoScaler.SetResourceLimits(nil)
 				}
+				// AutoScaler aggressive scale down
+				if changes.AutoScalerAggressiveScaleDown != nil {
+					aggressiveScaleDown := new(aws.AggressiveScaleDown)
+					if down := autoScaler.Down; down == nil {
+						autoScaler.Down = new(aws.AutoScalerDown)
+					}
+					autoScaler.Down.SetAggressiveScaleDown(aggressiveScaleDown.SetIsEnabled(fi.PtrTo(*changes.AutoScalerAggressiveScaleDown)))
+					changes.AutoScalerAggressiveScaleDown = nil
+				}
 
 				ocean.SetAutoScaler(autoScaler)
 				changed = true
@@ -1108,34 +1164,36 @@ type terraformOcean struct {
 	DrainingTimeout          *int64 `cty:"draining_timeout"`
 	GracePeriod              *int64 `cty:"grace_period"`
 
-	UseAsTemplateOnly        *bool                      `cty:"use_as_template_only"`
-	Monitoring               *bool                      `cty:"monitoring"`
-	EBSOptimized             *bool                      `cty:"ebs_optimized"`
-	ImageID                  *string                    `cty:"image_id"`
-	AssociatePublicIPAddress *bool                      `cty:"associate_public_ip_address"`
-	RootVolumeSize           *int64                     `cty:"root_volume_size"`
-	UserData                 *terraformWriter.Literal   `cty:"user_data"`
-	IAMInstanceProfile       *terraformWriter.Literal   `cty:"iam_instance_profile"`
-	KeyName                  *terraformWriter.Literal   `cty:"key_name"`
-	SecurityGroups           []*terraformWriter.Literal `cty:"security_groups"`
-	SpreadNodesBy            *string                    `cty:"spread_nodes_by"`
-	AvailabilityVsCost       *string                    `cty:"availability_vs_cost"`
+	UseAsTemplateOnly               *bool                      `cty:"use_as_template_only"`
+	Monitoring                      *bool                      `cty:"monitoring"`
+	EBSOptimized                    *bool                      `cty:"ebs_optimized"`
+	ImageID                         *string                    `cty:"image_id"`
+	AssociatePublicIPAddress        *bool                      `cty:"associate_public_ip_address"`
+	RootVolumeSize                  *int64                     `cty:"root_volume_size"`
+	UserData                        *terraformWriter.Literal   `cty:"user_data"`
+	IAMInstanceProfile              *terraformWriter.Literal   `cty:"iam_instance_profile"`
+	KeyName                         *terraformWriter.Literal   `cty:"key_name"`
+	SecurityGroups                  []*terraformWriter.Literal `cty:"security_groups"`
+	SpreadNodesBy                   *string                    `cty:"spread_nodes_by"`
+	AvailabilityVsCost              *string                    `cty:"availability_vs_cost"`
+	ResourceTagSpecificationVolumes *bool                      `cty:"resource_tag_specification_volumes"`
 }
 
 func (_ *Ocean) RenderTerraform(t *terraform.TerraformTarget, a, e, changes *Ocean) error {
 	cloud := t.Cloud.(awsup.AWSCloud)
 
 	tf := &terraformOcean{
-		Name:                     e.Name,
-		Region:                   fi.PtrTo(cloud.Region()),
-		UseAsTemplateOnly:        e.UseAsTemplateOnly,
-		FallbackToOnDemand:       e.FallbackToOnDemand,
-		UtilizeReservedInstances: e.UtilizeReservedInstances,
-		UtilizeCommitments:       e.UtilizeCommitments,
-		DrainingTimeout:          e.DrainingTimeout,
-		GracePeriod:              e.GracePeriod,
-		SpreadNodesBy:            e.SpreadNodesBy,
-		AvailabilityVsCost:       e.AvailabilityVsCost,
+		Name:                            e.Name,
+		Region:                          fi.PtrTo(cloud.Region()),
+		UseAsTemplateOnly:               e.UseAsTemplateOnly,
+		FallbackToOnDemand:              e.FallbackToOnDemand,
+		UtilizeReservedInstances:        e.UtilizeReservedInstances,
+		UtilizeCommitments:              e.UtilizeCommitments,
+		DrainingTimeout:                 e.DrainingTimeout,
+		GracePeriod:                     e.GracePeriod,
+		SpreadNodesBy:                   e.SpreadNodesBy,
+		AvailabilityVsCost:              e.AvailabilityVsCost,
+		ResourceTagSpecificationVolumes: e.ResourceTagSpecificationVolumes,
 	}
 
 	// Image.
@@ -1333,4 +1391,20 @@ func NormalizeClusterOrientation(orientation *string) ClusterOrientation {
 	}
 
 	return out
+}
+
+func ptrInt32ToPtrInt64(i *int32) *int64 {
+	if i == nil {
+		return nil
+	}
+	v := int64(*i)
+	return fi.PtrTo(v)
+}
+
+func ptrInt64ToPtrInt32(i *int64) *int32 {
+	if i == nil {
+		return nil
+	}
+	v := int32(*i)
+	return fi.PtrTo(v)
 }

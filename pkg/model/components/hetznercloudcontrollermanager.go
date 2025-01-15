@@ -27,13 +27,13 @@ type HetznerCloudControllerManagerOptionsBuilder struct {
 	*OptionsContext
 }
 
-var _ loader.OptionsBuilder = &HetznerCloudControllerManagerOptionsBuilder{}
+var _ loader.ClusterOptionsBuilder = &HetznerCloudControllerManagerOptionsBuilder{}
 
 // BuildOptions generates the configurations used for the Hetzner cloud controller manager manifest
-func (b *HetznerCloudControllerManagerOptionsBuilder) BuildOptions(o interface{}) error {
-	clusterSpec := o.(*kops.ClusterSpec)
+func (b *HetznerCloudControllerManagerOptionsBuilder) BuildOptions(cluster *kops.Cluster) error {
+	clusterSpec := &cluster.Spec
 
-	if clusterSpec.GetCloudProvider() != kops.CloudProviderHetzner {
+	if cluster.GetCloudProvider() != kops.CloudProviderHetzner {
 		return nil
 	}
 
@@ -55,7 +55,7 @@ func (b *HetznerCloudControllerManagerOptionsBuilder) BuildOptions(o interface{}
 	eccm.ConfigureCloudRoutes = fi.PtrTo(false)
 
 	if eccm.Image == "" {
-		eccm.Image = "hetznercloud/hcloud-cloud-controller-manager:v1.16.0"
+		eccm.Image = "hetznercloud/hcloud-cloud-controller-manager:v1.19.0"
 	}
 
 	return nil

@@ -21,10 +21,13 @@ spec:
   iam:
     useServiceAccountExternalPermissions: true
   karpenter:
+    cpuRequest: 100m
     enabled: true
+    memoryRequest: 500Mi
+    memoryLimit: 2Gi
   kubelet:
     anonymousAuth: false
-  kubernetesVersion: v1.25.0
+  kubernetesVersion: v1.32.0
   masterPublicName: api.minimal.example.com
   networkCIDR: 172.20.0.0/16
   networking:
@@ -35,9 +38,6 @@ spec:
     discoveryStore: memfs://discovery.example.com/minimal.example.com
   sshAccess:
     - 0.0.0.0/0
-  topology:
-    masters: public
-    nodes: public
   subnets:
   - cidr: 172.20.32.0/19
     name: us-test-1a

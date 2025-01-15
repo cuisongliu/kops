@@ -17,10 +17,12 @@ limitations under the License.
 package aws
 
 import (
+	"context"
 	"fmt"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"k8s.io/klog/v2"
 
 	"k8s.io/kops/pkg/resources"
@@ -29,6 +31,7 @@ import (
 )
 
 func DeleteENI(cloud fi.Cloud, r *resources.Resource) error {
+	ctx := context.TODO()
 	c := cloud.(awsup.AWSCloud)
 
 	id := r.ID
@@ -37,7 +40,7 @@ func DeleteENI(cloud fi.Cloud, r *resources.Resource) error {
 	request := &ec2.DeleteNetworkInterfaceInput{
 		NetworkInterfaceId: &id,
 	}
-	_, err := c.EC2().DeleteNetworkInterface(request)
+	_, err := c.EC2().DeleteNetworkInterface(ctx, request)
 	if err != nil {
 		if awsup.AWSErrorCode(err) == "InvalidNetworkInterfaceID.NotFound" {
 			// Concurrently deleted
@@ -55,7 +58,7 @@ func DeleteENI(cloud fi.Cloud, r *resources.Resource) error {
 func DumpENI(op *resources.DumpOperation, r *resources.Resource) error {
 	data := make(map[string]interface{})
 	data["id"] = r.ID
-	data["type"] = ec2.ResourceTypeNetworkInterface
+	data["type"] = ec2types.ResourceTypeNetworkInterface
 	data["raw"] = r.Obj
 
 	op.Dump.Resources = append(op.Dump.Resources, data)
@@ -63,53 +66,58 @@ func DumpENI(op *resources.DumpOperation, r *resources.Resource) error {
 	return nil
 }
 
-func DescribeENIs(cloud fi.Cloud, clusterName string) (map[string]*ec2.NetworkInterface, error) {
+func DescribeENIs(cloud fi.Cloud, vpcID, clusterName string) (map[string]ec2types.NetworkInterface, error) {
+	if vpcID == "" {
+		return nil, nil
+	}
+
+	ctx := context.TODO()
 	c := cloud.(awsup.AWSCloud)
 
-	enis := make(map[string]*ec2.NetworkInterface)
+	vpcFilter := awsup.NewEC2Filter("vpc-id", vpcID)
+	statusFilter := awsup.NewEC2Filter("status", string(ec2types.NetworkInterfaceStatusAvailable))
+	enis := make(map[string]ec2types.NetworkInterface)
 	klog.V(2).Info("Listing ENIs")
 	for _, filters := range buildEC2FiltersForCluster(clusterName) {
 		request := &ec2.DescribeNetworkInterfacesInput{
-			Filters: filters,
+			Filters: append(filters, vpcFilter, statusFilter),
 		}
-		response, err := c.EC2().DescribeNetworkInterfaces(request)
-		if err != nil {
-			return nil, fmt.Errorf("error listing ENIs: %v", err)
-		}
-
-		for _, eni := range response.NetworkInterfaces {
-			// Skip ENIs that are attached
-			if eni.Attachment != nil {
-				continue
+		paginator := ec2.NewDescribeNetworkInterfacesPaginator(c.EC2(), request)
+		for paginator.HasMorePages() {
+			dnio, err := paginator.NextPage(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("error listing ENIs: %v", err)
 			}
-			enis[aws.StringValue(eni.NetworkInterfaceId)] = eni
+			for _, eni := range dnio.NetworkInterfaces {
+				enis[aws.ToString(eni.NetworkInterfaceId)] = eni
+			}
 		}
 	}
 
 	return enis, nil
 }
 
-func ListENIs(cloud fi.Cloud, clusterName string) ([]*resources.Resource, error) {
-	enis, err := DescribeENIs(cloud, clusterName)
+func ListENIs(cloud fi.Cloud, vpcID, clusterName string) ([]*resources.Resource, error) {
+	enis, err := DescribeENIs(cloud, vpcID, clusterName)
 	if err != nil {
 		return nil, err
 	}
 
 	var resourceTrackers []*resources.Resource
 	for _, v := range enis {
-		eniID := aws.StringValue(v.NetworkInterfaceId)
+		eniID := aws.ToString(v.NetworkInterfaceId)
 
 		resourceTracker := &resources.Resource{
 			ID:      eniID,
-			Type:    ec2.ResourceTypeNetworkInterface,
+			Type:    string(ec2types.ResourceTypeNetworkInterface),
 			Deleter: DeleteENI,
 			Dumper:  DumpENI,
 			Obj:     v,
-			Shared:  !HasOwnedTag(ec2.ResourceTypeNetworkInterface+":"+eniID, v.TagSet, clusterName),
+			Shared:  !HasOwnedTag(string(ec2types.ResourceTypeNetworkInterface)+":"+eniID, v.TagSet, clusterName),
 		}
 
 		var blocks []string
-		blocks = append(blocks, ec2.ResourceTypeVpc+":"+aws.StringValue(v.VpcId))
+		blocks = append(blocks, string(ec2types.ResourceTypeVpc)+":"+aws.ToString(v.VpcId))
 
 		resourceTracker.Blocks = blocks
 

@@ -60,7 +60,12 @@ func (b *PackagesBuilder) Build(c *fi.NodeupModelBuilderContext) error {
 		c.AddTask(&nodetasks.Package{Name: "conntrack-tools"})
 		c.AddTask(&nodetasks.Package{Name: "ebtables"})
 		c.AddTask(&nodetasks.Package{Name: "ethtool"})
-		c.AddTask(&nodetasks.Package{Name: "iptables"})
+		if b.Distribution == distributions.DistributionAmazonLinux2023 {
+			// install iptables-nft in al2023 (NOT the iptables-legacy!)
+			c.AddTask(&nodetasks.Package{Name: "iptables-nft"})
+		} else {
+			c.AddTask(&nodetasks.Package{Name: "iptables"})
+		}
 		c.AddTask(&nodetasks.Package{Name: "libseccomp"})
 		c.AddTask(&nodetasks.Package{Name: "libtool-ltdl"})
 		c.AddTask(&nodetasks.Package{Name: "socat"})
@@ -71,8 +76,8 @@ func (b *PackagesBuilder) Build(c *fi.NodeupModelBuilderContext) error {
 			c.AddTask(&nodetasks.Package{Name: "container-selinux"})
 			c.AddTask(&nodetasks.Package{Name: "pigz"})
 		}
-		// RHEL9 does not have libcgroup
-		if b.Distribution != distributions.DistributionRhel9 {
+		// RHEL9 and Rocky 9 do not have libcgroup
+		if b.Distribution != distributions.DistributionRhel9 && b.Distribution != distributions.DistributionRocky9 {
 			c.AddTask(&nodetasks.Package{Name: "libcgroup"})
 		}
 		// Additional packages

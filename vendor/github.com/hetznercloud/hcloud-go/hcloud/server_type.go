@@ -20,7 +20,9 @@ type ServerType struct {
 	StorageType  StorageType
 	CPUType      CPUType
 	Architecture Architecture
-	// IncludedTraffic is the free traffic per month in bytes
+
+	// Deprecated: [ServerType.IncludedTraffic] is deprecated and will always report 0 after 2024-08-05.
+	// Use [ServerType.Pricings] instead to get the included traffic for each location.
 	IncludedTraffic int64
 	Pricings        []ServerTypeLocationPricing
 	DeprecatableResource
@@ -100,7 +102,7 @@ type ServerTypeListOpts struct {
 }
 
 func (l ServerTypeListOpts) values() url.Values {
-	vals := l.ListOpts.values()
+	vals := l.ListOpts.Values()
 	if l.Name != "" {
 		vals.Add("name", l.Name)
 	}
@@ -140,7 +142,7 @@ func (c *ServerTypeClient) All(ctx context.Context) ([]*ServerType, error) {
 
 // AllWithOpts returns all server types for the given options.
 func (c *ServerTypeClient) AllWithOpts(ctx context.Context, opts ServerTypeListOpts) ([]*ServerType, error) {
-	var allServerTypes []*ServerType
+	allServerTypes := []*ServerType{}
 
 	err := c.client.all(func(page int) (*Response, error) {
 		opts.Page = page

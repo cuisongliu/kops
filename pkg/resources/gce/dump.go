@@ -63,6 +63,12 @@ func DumpManagedInstance(op *resources.DumpOperation, r *resources.Resource) err
 		klog.Warningf("instance %q not found", instance.Instance)
 	} else {
 		for _, ni := range instanceDetails.NetworkInterfaces {
+			if ni.NetworkIP != "" {
+				i.PrivateAddresses = append(i.PrivateAddresses, ni.NetworkIP)
+			}
+			if ni.Ipv6Address != "" {
+				i.PrivateAddresses = append(i.PrivateAddresses, ni.Ipv6Address)
+			}
 			for _, ac := range ni.AccessConfigs {
 				if ac.NatIP != "" {
 					i.PublicAddresses = append(i.PublicAddresses, ac.NatIP)
@@ -73,8 +79,7 @@ func DumpManagedInstance(op *resources.DumpOperation, r *resources.Resource) err
 
 	op.Dump.Instances = append(op.Dump.Instances, i)
 
-	// Unclear if we should include the instance details in the dump - assume YAGNI until someone needs it
-	// dump.Resources = append(dump.Resources, instanceDetails)
+	op.Dump.Resources = append(op.Dump.Resources, instanceDetails)
 
 	return nil
 }
